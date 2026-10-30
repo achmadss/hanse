@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	herrors "github.com/achmadss/hanse/internal/errors"
 )
@@ -16,13 +17,25 @@ type Store interface {
 	Insert(rec Record) error
 	// Update replaces the record with the same ID.
 	Update(rec Record) error
-	// Get returns one record by operation ID.
-	Get(id string) (Record, bool)
+	// Get returns one record by operation ID. The bool reports whether
+	// the operation exists; a read failure is the error, so a caller can
+	// never mistake a broken store for a missing operation.
+	Get(id string) (Record, bool, error)
 	// List returns the records that satisfy f, sorted by operation ID.
-	List(f Filter) []Record
+	// A read failure is an error, never an empty list.
+	List(f Filter) ([]Record, error)
 	// ByIdempotency returns the operation of one requester and
-	// Idempotency-Key. An empty key never matches.
-	ByIdempotency(requester, key string) (Record, bool)
+	// Idempotency-Key. An empty key never matches. The bool reports
+	// whether a record matched; a read failure is the error, so a retry
+	// never looks like a new request when the lookup failed.
+	ByIdempotency(requester, key string) (Record, bool, error)
+}
+
+// Pruner is implemented by a Store that keeps records for a limited time.
+// It deletes only finished records older than the retention period; an
+// active record is never deleted.
+type Pruner interface {
+	PurgeOld(now time.Time) (int64, error)
 }
 
 // MemoryStore is the in-memory Store of the current Gateway. It is safe
@@ -86,24 +99,24 @@ func (s *MemoryStore) Update(rec Record) error {
 }
 
 // Get returns one record by operation ID.
-func (s *MemoryStore) Get(id string) (Record, bool) {
+func (s *MemoryStore) Get(id string) (Record, bool, error) {
 	if s == nil {
-		return Record{}, false
+		return Record{}, false, nil
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rec, ok := s.records[id]
 	if !ok {
-		return Record{}, false
+		return Record{}, false, nil
 	}
-	return rec.clone(), true
+	return rec.clone(), true, nil
 }
 
 // List returns the records that satisfy f, sorted by operation ID
 // (docs/architecture.md section 11.1: every list is sorted by ID).
-func (s *MemoryStore) List(f Filter) []Record {
+func (s *MemoryStore) List(f Filter) ([]Record, error) {
 	if s == nil {
-		return []Record{}
+		return []Record{}, nil
 	}
 	s.mu.RLock()
 	out := make([]Record, 0, len(s.records))
@@ -114,26 +127,26 @@ func (s *MemoryStore) List(f Filter) []Record {
 	}
 	s.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out
+	return out, nil
 }
 
 // ByIdempotency returns the operation of one requester and key.
-func (s *MemoryStore) ByIdempotency(requester, key string) (Record, bool) {
+func (s *MemoryStore) ByIdempotency(requester, key string) (Record, bool, error) {
 	if s == nil || key == "" {
-		return Record{}, false
+		return Record{}, false, nil
 	}
 	s.mu.RLock()
 	id, ok := s.idempotency[idempotencyIndex(requester, key)]
 	if !ok {
 		s.mu.RUnlock()
-		return Record{}, false
+		return Record{}, false, nil
 	}
 	rec, ok := s.records[id]
 	s.mu.RUnlock()
 	if !ok {
-		return Record{}, false
+		return Record{}, false, nil
 	}
-	return rec.clone(), true
+	return rec.clone(), true, nil
 }
 
 // idempotencyIndex builds the lookup key of one requester and key. The

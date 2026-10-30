@@ -67,8 +67,8 @@ func (f *Failure) clone() *Failure {
 }
 
 // Record is one stored operation. It holds no secret value: the elevation
-// password never reaches it, and the argument values are reduced to a
-// fingerprint (docs/architecture.md sections 9.6 and 15).
+// password never reaches it, and the arguments have their secret values
+// replaced by [redacted] (docs/architecture.md sections 9.6 and 15).
 type Record struct {
 	ID         string
 	Capability string
@@ -99,6 +99,10 @@ type Record struct {
 	// retry with the same key can be checked for the same request
 	// without storing argument values.
 	ArgumentFingerprint string
+	// Arguments are the request arguments with every secret value
+	// replaced by [redacted]. The elevation password never appears here
+	// (docs/architecture.md sections 8.5 and 9.6).
+	Arguments json.RawMessage
 	// ConcurrencyKey is the combination of `concurrency.key` argument
 	// values of this run, or "" when the operation sets no key.
 	ConcurrencyKey string
@@ -110,6 +114,9 @@ func (r Record) clone() Record {
 	out := r
 	if r.Result != nil {
 		out.Result = append(json.RawMessage(nil), r.Result...)
+	}
+	if r.Arguments != nil {
+		out.Arguments = append(json.RawMessage(nil), r.Arguments...)
 	}
 	out.Failure = r.Failure.clone()
 	return out
@@ -161,12 +168,16 @@ type Check struct {
 }
 
 // Filter narrows a list of operations. An empty field matches everything.
+// Active selects only the states that still count against concurrency
+// (`queued` and `running`), so a concurrency check never loads finished
+// history.
 type Filter struct {
 	Capability string
 	Operation  string
 	Executor   string
 	Status     State
 	Requester  string
+	Active     bool
 }
 
 // matches reports whether rec satisfies every filter field.
@@ -175,5 +186,6 @@ func (f Filter) matches(rec Record) bool {
 		(f.Operation == "" || rec.Operation == f.Operation) &&
 		(f.Executor == "" || rec.Executor == f.Executor) &&
 		(f.Status == "" || rec.Status == f.Status) &&
-		(f.Requester == "" || rec.Requester == f.Requester)
+		(f.Requester == "" || rec.Requester == f.Requester) &&
+		(!f.Active || rec.Status.active())
 }

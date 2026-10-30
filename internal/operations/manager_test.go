@@ -367,7 +367,9 @@ func TestValidate(t *testing.T) {
 	if check.Mode != registry.ModeAsync {
 		t.Errorf("check mode %q, want async", check.Mode)
 	}
-	if got := manager.List(operations.Filter{}); len(got) != 0 {
+	if got, err := manager.List(operations.Filter{}); err != nil {
+		t.Fatalf("list: %v", err)
+	} else if len(got) != 0 {
 		t.Errorf("validate stored %d operations, want none", len(got))
 	}
 
@@ -394,15 +396,149 @@ func TestListFilters(t *testing.T) {
 	}
 	waitFor(t, manager, second.ID, operations.StateCompleted)
 
-	all := manager.List(operations.Filter{})
+	all, err := manager.List(operations.Filter{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
 	if len(all) != 2 {
 		t.Fatalf("list returned %d operations, want 2", len(all))
 	}
 	if all[0].ID > all[1].ID {
 		t.Errorf("list is not sorted by ID: %s then %s", all[0].ID, all[1].ID)
 	}
-	byRequester := manager.List(operations.Filter{Requester: "other"})
+	byRequester, err := manager.List(operations.Filter{Requester: "other"})
+	if err != nil {
+		t.Fatalf("list by requester: %v", err)
+	}
 	if len(byRequester) != 1 || byRequester[0].ID != second.ID {
 		t.Errorf("requester filter returned %+v, want %s", byRequester, second.ID)
+	}
+}
+
+// failingReadStore wraps the memory store and fails every read, like a
+// closed or corrupted database.
+type failingReadStore struct {
+	*operations.MemoryStore
+	err error
+}
+
+func (s *failingReadStore) Get(string) (operations.Record, bool, error) {
+	return operations.Record{}, false, s.err
+}
+
+func (s *failingReadStore) List(operations.Filter) ([]operations.Record, error) {
+	return nil, s.err
+}
+
+func (s *failingReadStore) ByIdempotency(string, string) (operations.Record, bool, error) {
+	return operations.Record{}, false, s.err
+}
+
+// TestReadFailureDoesNotRunTheOperation proves that a failed idempotency
+// read is the Internal code and never looks like a new key, so a retry
+// cannot run the state-changing operation twice.
+func TestReadFailureDoesNotRunTheOperation(t *testing.T) {
+	d := newDispatcher()
+	backing := operations.NewMemoryStore()
+	store := &failingReadStore{MemoryStore: backing, err: errors.New("the database is closed")}
+	manager, err := operations.New(operations.Config{
+		Registry:   newFixture(t),
+		Dispatcher: d,
+		Store:      store,
+		Timeouts:   config.Timeouts{Operation: 5 * time.Second, GracePeriod: time.Second},
+	})
+	if err != nil {
+		t.Fatalf("build manager: %v", err)
+	}
+
+	_, err = manager.Submit(submit("alpha", "key-1", "tester"))
+	if !errors.Is(err, herrors.Internal) {
+		t.Fatalf("submit with a failed idempotency read: %v, want internal", err)
+	}
+	if got := d.callCount(); got != 0 {
+		t.Errorf("dispatcher ran %d times, want none", got)
+	}
+	if records, err := backing.List(operations.Filter{}); err != nil {
+		t.Fatalf("list backing store: %v", err)
+	} else if len(records) != 0 {
+		t.Errorf("the failed read stored %d operations, want none", len(records))
+	}
+
+	// A failed read must not turn a known operation into a 404.
+	if _, err := manager.Get("op_missing"); !errors.Is(err, herrors.Internal) {
+		t.Errorf("get with a failed read: %v, want internal", err)
+	}
+}
+
+// filterStore records the filters the manager passes to List.
+type filterStore struct {
+	*operations.MemoryStore
+	mu      sync.Mutex
+	filters []operations.Filter
+}
+
+func (s *filterStore) List(f operations.Filter) ([]operations.Record, error) {
+	s.mu.Lock()
+	s.filters = append(s.filters, f)
+	s.mu.Unlock()
+	return s.MemoryStore.List(f)
+}
+
+func (s *filterStore) lastFilter() operations.Filter {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.filters) == 0 {
+		return operations.Filter{}
+	}
+	return s.filters[len(s.filters)-1]
+}
+
+// TestConflictReadsOnlyActiveRecords checks that the concurrency check asks
+// the store for active records, and that a finished record with the same
+// key does not block a new run.
+func TestConflictReadsOnlyActiveRecords(t *testing.T) {
+	d := newDispatcher()
+	backing := operations.NewMemoryStore()
+	finished := operations.Record{
+		ID:             "op_finished",
+		Capability:     "demo",
+		Operation:      "run",
+		Requester:      "tester",
+		Status:         operations.StateCompleted,
+		ConcurrencyKey: `["alpha"]`,
+		CreatedAt:      time.Now().UTC().Add(-time.Hour),
+		FinishedAt:     time.Now().UTC().Add(-time.Minute),
+	}
+	if err := backing.Insert(finished); err != nil {
+		t.Fatalf("insert finished record: %v", err)
+	}
+	store := &filterStore{MemoryStore: backing}
+	manager, err := operations.New(operations.Config{
+		Registry:   newFixture(t),
+		Dispatcher: d,
+		Store:      store,
+		Timeouts:   config.Timeouts{Operation: 5 * time.Second, GracePeriod: time.Second},
+	})
+	if err != nil {
+		t.Fatalf("build manager: %v", err)
+	}
+
+	rec, err := manager.Submit(submit("alpha", "", "tester"))
+	if err != nil {
+		t.Fatalf("submit with only a finished record: %v", err)
+	}
+	if filter := store.lastFilter(); !filter.Active {
+		t.Errorf("conflict list filter %+v, want Active", filter)
+	}
+	waitFor(t, manager, rec.ID, operations.StateCompleted)
+
+	active, err := backing.List(operations.Filter{Capability: "demo", Operation: "run", Active: true})
+	if err != nil {
+		t.Fatalf("list active records: %v", err)
+	}
+	for _, record := range active {
+		if record.ID == finished.ID {
+			t.Errorf("active filter returned the finished record %s", finished.ID)
+		}
 	}
 }

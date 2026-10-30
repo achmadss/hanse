@@ -214,7 +214,11 @@ func (s *server) listOperations(w http.ResponseWriter, r *http.Request) {
 			}}}))
 		return
 	}
-	records := ops.List(filter)
+	records, err := ops.List(filter)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	out := operationsResponse{Operations: make([]operationView, 0, len(records))}
 	for _, rec := range records {
 		if err := id.Authorize(rec.Capability, rec.Operation); err != nil {
