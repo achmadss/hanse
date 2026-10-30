@@ -76,29 +76,7 @@ type OperationRoute struct {
 // nodes.yaml or routes.yaml semantics; that stays with issue #8. It
 // collects every problem it finds.
 func (in Input) validate() error {
-	var probs []error
-	seen := map[string]bool{}
-	for i := range in.Nodes {
-		n := &in.Nodes[i]
-		if !config.ValidID(n.ID) {
-			probs = append(probs, herrors.New(herrors.Internal,
-				"nodes: invalid node ID "+quote(n.ID), nil))
-		}
-		if seen[n.ID] {
-			probs = append(probs, herrors.New(herrors.Internal,
-				"nodes: duplicate node ID "+quote(n.ID), nil))
-		}
-		seen[n.ID] = true
-	}
-	if in.GatewayHost != "" {
-		if !config.ValidID(in.GatewayHost) {
-			probs = append(probs, herrors.New(herrors.Internal,
-				"gateway.yaml: node: invalid node ID "+quote(in.GatewayHost), nil))
-		} else if _, ok := in.node(in.GatewayHost); !ok {
-			probs = append(probs, herrors.New(herrors.Internal,
-				"gateway.yaml: node: Gateway host node "+quote(in.GatewayHost)+" is not in nodes.yaml", nil))
-		}
-	}
+	probs := in.validateNodes()
 	for capID, route := range in.Routes.Capabilities {
 		capField := "routes.yaml: capabilities." + capID
 		if !config.ValidID(capID) {
@@ -138,6 +116,36 @@ func (in Input) validate() error {
 		}
 	}
 	return errors.Join(probs...)
+}
+
+// validateNodes checks the node part of the input: every node ID is valid
+// and unique, and the Gateway host is a known node with a valid ID. It is
+// the shared check of validate and NewNodeRegistry.
+func (in Input) validateNodes() []error {
+	var probs []error
+	seen := map[string]bool{}
+	for i := range in.Nodes {
+		n := &in.Nodes[i]
+		if !config.ValidID(n.ID) {
+			probs = append(probs, herrors.New(herrors.Internal,
+				"nodes: invalid node ID "+quote(n.ID), nil))
+		}
+		if seen[n.ID] {
+			probs = append(probs, herrors.New(herrors.Internal,
+				"nodes: duplicate node ID "+quote(n.ID), nil))
+		}
+		seen[n.ID] = true
+	}
+	if in.GatewayHost != "" {
+		if !config.ValidID(in.GatewayHost) {
+			probs = append(probs, herrors.New(herrors.Internal,
+				"gateway.yaml: node: invalid node ID "+quote(in.GatewayHost), nil))
+		} else if _, ok := in.node(in.GatewayHost); !ok {
+			probs = append(probs, herrors.New(herrors.Internal,
+				"gateway.yaml: node: Gateway host node "+quote(in.GatewayHost)+" is not in nodes.yaml", nil))
+		}
+	}
+	return probs
 }
 
 // node returns the node with the given ID.
