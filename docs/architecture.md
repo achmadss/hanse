@@ -515,7 +515,7 @@ The HTTP statuses follow common API practice: 400 for a malformed request, 422 f
 | Timeout | `timeout` | 504 | 34 | The operation exceeded its deadline. |
 | Cancelled | `cancelled` | 409 | 35 | A client cancelled the operation. |
 
-Additional codes used inside the system, with wire values that the [handler contract](handler-contract.md) and the [agent protocol](agent-protocol.md) already define. They appear in operation records and agent messages; the HTTP status applies when one reaches an API response. The Gateway reports every handler's own error code under `handler_failed`, with the handler's `code`, `message`, and `details` inside that error's details.
+Additional codes used inside the system, with wire values that the [handler contract](handler-contract.md) and the [agent protocol](agent-protocol.md) already define. They appear in operation records and agent messages; the HTTP status applies when one reaches an API response. When an API response reports a handler's own error, it uses `handler_failed` and puts the handler's `code`, `message`, and `details` inside that error's details. The operation record keeps the handler's own code as its final-state code, as [handler contract §5](handler-contract.md#5-exit-codes-and-final-states) defines.
 
 | Code | Used by | HTTP | CLI exit | Meaning |
 |---|---|---|---|---|

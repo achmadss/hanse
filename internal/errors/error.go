@@ -3,6 +3,7 @@ package herrors
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -31,7 +32,7 @@ func New(code *Code, message string, details map[string]any) *Error {
 	if message == "" {
 		message = code.message
 	}
-	e := &Error{code: code, Message: message, Details: details}
+	e := &Error{code: code, Message: message, Details: cloneDetails(details)}
 	applySecrets(e)
 	return e
 }
@@ -82,11 +83,12 @@ func keysOf(m map[string]any) []string {
 	return keys
 }
 
-// From normalizes any error into an *Error. An error that already is an
-// *Error passes through without copying; anything else maps to the
+// From normalizes any error into an *Error. An error that is or wraps an
+// *Error yields that *Error without copying; anything else maps to the
 // Internal code but keeps the original error text as its message.
 func From(err error) *Error {
-	if e, ok := err.(*Error); ok {
+	var e *Error
+	if errors.As(err, &e) {
 		return e
 	}
 	return New(Internal, err.Error(), nil)
@@ -95,7 +97,8 @@ func From(err error) *Error {
 // HTTPStatus returns the fixed HTTP status for err. An error outside the
 // code set maps to the Internal code's status, 500.
 func HTTPStatus(err error) int {
-	if e, ok := err.(*Error); ok {
+	var e *Error
+	if errors.As(err, &e) {
 		return e.code.http
 	}
 	return Internal.http
@@ -104,7 +107,8 @@ func HTTPStatus(err error) int {
 // ExitCode returns the fixed CLI exit code for err. An error outside the
 // code set maps to the Internal code's exit code, 1.
 func ExitCode(err error) int {
-	if e, ok := err.(*Error); ok {
+	var e *Error
+	if errors.As(err, &e) {
 		return e.code.exit
 	}
 	return Internal.exit
@@ -222,6 +226,9 @@ func redactString(s, secret string) string {
 }
 
 func cloneDetails(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
 	out := make(map[string]any, len(m))
 	for k, v := range m {
 		out[k] = v

@@ -267,3 +267,30 @@ func TestWithDetailsDoesNotMutate(t *testing.T) {
 		t.Errorf("code changed: %s", next.Code().Name())
 	}
 }
+
+func TestHelpersSeeWrappedErrors(t *testing.T) {
+	wrapped := fmt.Errorf("resolve executor: %w", New(ExecutorNotEligible, "", nil))
+	if got := HTTPStatus(wrapped); got != 422 {
+		t.Errorf("HTTPStatus(wrapped) = %d, want 422", got)
+	}
+	if got := ExitCode(wrapped); got != 25 {
+		t.Errorf("ExitCode(wrapped) = %d, want 25", got)
+	}
+	if got := From(wrapped).Code(); got != ExecutorNotEligible {
+		t.Errorf("From(wrapped).Code() = %v, want %v", got, ExecutorNotEligible)
+	}
+}
+
+func TestNewDoesNotMutateCallerDetails(t *testing.T) {
+	ClearSecrets()
+	defer ClearSecrets()
+	AddSecretKey("password")
+	details := map[string]any{"password": "hunter2"}
+	e := New(ElevationDenied, "", details)
+	if details["password"] != "hunter2" {
+		t.Errorf("caller details mutated: %v", details)
+	}
+	if e.Details["password"] != redacted {
+		t.Errorf("error details not redacted: %v", e.Details)
+	}
+}
