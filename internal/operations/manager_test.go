@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -54,11 +55,30 @@ operations:
       properties:
         target:
           type: string
+
+  probe:
+    description: Probe one target node
+    mode: sync
+    node_filters:
+      node:
+        roles: [target]
+    arguments:
+      type: object
+      required: [node]
+      additionalProperties: false
+      properties:
+        node:
+          type: string
+          format: hanse:node
 `
 
-// fixtureNode is the only node and the Gateway host, so the resolver can
-// pick it as the default executor.
+// fixtureNode is the only routed node and the Gateway host, so the resolver
+// can pick it as the default executor.
 const fixtureNode = "node-a"
+
+// fixtureTarget is a node that is a valid `hanse:node` target but is not an
+// eligible executor.
+const fixtureTarget = "node-b"
 
 // newFixture loads the capability and marks the node online, so the
 // resolver accepts it.
@@ -79,7 +99,29 @@ func newFixture(t *testing.T) *registry.Registry {
 		Input: registry.Input{
 			GatewayHost: fixtureNode,
 			Nodes: []registry.Node{
-				{ID: fixtureNode, OS: "linux", Arch: "amd64", Enabled: true},
+				{
+					ID:      fixtureNode,
+					Name:    "Gateway host",
+					OS:      "linux",
+					Arch:    "amd64",
+					Address: "192.0.2.10",
+					Enabled: true,
+					Attributes: map[string]string{
+						"site": "lab",
+					},
+				},
+				{
+					ID:      fixtureTarget,
+					Name:    "Target machine",
+					OS:      "linux",
+					Arch:    "arm64",
+					Address: "192.0.2.11",
+					Roles:   []string{"target"},
+					Enabled: true,
+					Attributes: map[string]string{
+						"mac": "00:00:5e:00:53:02",
+					},
+				},
 			},
 			Routes: registry.Routes{Capabilities: map[string]registry.CapabilityRoute{
 				"demo": {
@@ -349,6 +391,60 @@ func TestEnvelope(t *testing.T) {
 	}
 	if call.Elevation != nil {
 		t.Errorf("envelope elevation %v, want none", call.Elevation)
+	}
+}
+
+// TestEnvelopeNodeObjects checks the full node object of the request
+// envelope, handler contract section 2.1: the executor and every
+// `hanse:node` target carry id, name, os, arch, address, and attributes.
+func TestEnvelopeNodeObjects(t *testing.T) {
+	d := newDispatcher()
+	manager := newManager(t, d)
+
+	rec, err := manager.Submit(operations.Request{
+		Capability: "demo",
+		Operation:  "probe",
+		Arguments:  json.RawMessage(`{"node":"` + fixtureTarget + `"}`),
+		Requester:  "tester",
+	})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if rec.Status != operations.StateCompleted {
+		t.Fatalf("status %q, want completed", rec.Status)
+	}
+	call := <-d.started
+	if call.Request == nil {
+		t.Fatal("dispatch received no request envelope")
+	}
+
+	executor := call.Request.Executor
+	wantExecutor := runtime.Node{
+		ID:         fixtureNode,
+		Name:       "Gateway host",
+		OS:         "linux",
+		Arch:       "amd64",
+		Address:    "192.0.2.10",
+		Attributes: map[string]any{"site": "lab"},
+	}
+	if !reflect.DeepEqual(executor, wantExecutor) {
+		t.Errorf("executor node %+v, want %+v", executor, wantExecutor)
+	}
+
+	target, ok := call.Request.Nodes[fixtureTarget]
+	if !ok {
+		t.Fatalf("envelope nodes %v have no target %s", call.Request.Nodes, fixtureTarget)
+	}
+	wantTarget := runtime.Node{
+		ID:         fixtureTarget,
+		Name:       "Target machine",
+		OS:         "linux",
+		Arch:       "arm64",
+		Address:    "192.0.2.11",
+		Attributes: map[string]any{"mac": "00:00:5e:00:53:02"},
+	}
+	if !reflect.DeepEqual(target, wantTarget) {
+		t.Errorf("target node %+v, want %+v", target, wantTarget)
 	}
 }
 

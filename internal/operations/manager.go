@@ -694,8 +694,10 @@ func runtimeNode(view registry.NodeView) runtime.Node {
 	}
 	return runtime.Node{
 		ID:         view.ID,
+		Name:       view.Name,
 		OS:         view.OS,
 		Arch:       view.Arch,
+		Address:    view.Address,
 		Attributes: attributes,
 	}
 }
