@@ -48,7 +48,8 @@ func getLogs(t *testing.T, server *httptest.Server, token, path string, headers 
 	return resp
 }
 
-// readSSE reads events until the stream closes.
+// readSSE reads events until the stream closes. An SSE comment line, such as
+// the keepalive, becomes an event named "comment".
 func readSSE(t *testing.T, resp *http.Response) []sseEvent {
 	t.Helper()
 	defer func() { _ = resp.Body.Close() }()
@@ -71,6 +72,8 @@ func readSSE(t *testing.T, resp *http.Response) []sseEvent {
 			current.Event = strings.TrimPrefix(line, "event: ")
 		case strings.HasPrefix(line, "data: "):
 			current.Data = strings.TrimPrefix(line, "data: ")
+		case strings.HasPrefix(line, ":"):
+			events = append(events, sseEvent{Event: "comment", Data: strings.TrimSpace(line[1:])})
 		case line == "":
 			if current.Event != "" {
 				events = append(events, current)
@@ -84,22 +87,30 @@ func readSSE(t *testing.T, resp *http.Response) []sseEvent {
 	return events
 }
 
-// splitLogEvents separates the log events from the final status event.
+// splitLogEvents separates the log events from the final status event and
+// drops the keepalive comments.
 func splitLogEvents(t *testing.T, events []sseEvent) ([]sseEvent, sseEvent) {
 	t.Helper()
-	if len(events) == 0 {
+	filtered := make([]sseEvent, 0, len(events))
+	for _, event := range events {
+		if event.Event == "comment" {
+			continue
+		}
+		filtered = append(filtered, event)
+	}
+	if len(filtered) == 0 {
 		t.Fatal("the followed log sent no events")
 	}
-	last := events[len(events)-1]
+	last := filtered[len(filtered)-1]
 	if last.Event != "status" {
 		t.Fatalf("last event %q, want status", last.Event)
 	}
-	for _, event := range events[:len(events)-1] {
+	for _, event := range filtered[:len(filtered)-1] {
 		if event.Event != "log" {
 			t.Fatalf("event %q before the status event, want log", event.Event)
 		}
 	}
-	return events[:len(events)-1], last
+	return filtered[:len(filtered)-1], last
 }
 
 // TestLogsEndpoint reads the stored log as JSON after the operation ended.
@@ -260,6 +271,55 @@ func TestFollowLogsResume(t *testing.T) {
 	}
 	if total := resumeAt + int64(len(resumed)); total != logEvents[len(logEvents)-1].ID {
 		t.Errorf("resume ended at %d, want the last line %d", total, logEvents[len(logEvents)-1].ID)
+	}
+	var final logStatusView
+	if err := json.Unmarshal([]byte(status.Data), &final); err != nil {
+		t.Fatalf("decode status event %q: %v", status.Data, err)
+	}
+	if final.Status != "completed" {
+		t.Errorf("status event %+v, want completed", final)
+	}
+}
+
+// TestFollowKeepAlive covers the reverse proxy case: a followed log that has
+// nothing to send still writes a comment line, and the comment carries no
+// id, so it cannot change Last-Event-ID.
+func TestFollowKeepAlive(t *testing.T) {
+	const keepAlive = time.Millisecond
+	fixture := newExecutionFixtureWithKeepAlive(t, keepAlive)
+	server := logServer(t, fixture)
+	body := `{"capability":"echo","operation":"sleep","arguments":{"seconds":40}}`
+	resp, payload := call(t, fixture.handler, fixture.token, http.MethodPost, "/v1/operations", body, nil)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("submit: status %d, body %s", resp.StatusCode, payload)
+	}
+	view := decodeOperation(t, payload)
+
+	follow := getLogs(t, server, fixture.token, "/v1/operations/"+view.ID+"/logs?follow=true", nil)
+	events := readSSE(t, follow)
+
+	comments := 0
+	for _, event := range events {
+		if event.Event != "comment" {
+			continue
+		}
+		comments++
+		if event.ID != 0 {
+			t.Errorf("keepalive comment %q carries id %d, want none", event.Data, event.ID)
+		}
+		if event.Data != "keepalive" {
+			t.Errorf("comment %q, want keepalive", event.Data)
+		}
+	}
+	if comments == 0 {
+		t.Fatal("a followed log that paused sent no keepalive comment")
+	}
+	// The comments must not disturb the log events or the final status.
+	logEvents, status := splitLogEvents(t, events)
+	for i, event := range logEvents {
+		if event.ID != int64(i+1) {
+			t.Fatalf("log event %d has sequence %d, want %d", i, event.ID, i+1)
+		}
 	}
 	var final logStatusView
 	if err := json.Unmarshal([]byte(status.Data), &final); err != nil {

@@ -128,6 +128,15 @@ func (s *server) followOperationLogs(w http.ResponseWriter, r *http.Request, ops
 		return
 	}
 
+	// A quiet run must not leave the stream silent, or a reverse proxy
+	// closes the idle upstream. A comment line carries no id, so it never
+	// changes Last-Event-ID.
+	var ticks <-chan time.Time
+	if s.keepAlive > 0 {
+		ticker := time.NewTicker(s.keepAlive)
+		defer ticker.Stop()
+		ticks = ticker.C
+	}
 	done := ops.Done(rec.ID)
 	for {
 		select {
@@ -145,6 +154,11 @@ func (s *server) followOperationLogs(w http.ResponseWriter, r *http.Request, ops
 			}
 			sendLogStatus(w, flusher, final)
 			return
+		case <-ticks:
+			if _, err := w.Write([]byte(": keepalive\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
 		case <-sub.Wake():
 			if !send(sub.Drain()) {
 				return

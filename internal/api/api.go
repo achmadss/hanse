@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/achmadss/hanse/internal/enroll"
 	herrors "github.com/achmadss/hanse/internal/errors"
@@ -26,7 +27,13 @@ import (
 // pretends to run an operation. enr may be nil as well; the join route then
 // answers with the Internal code.
 func New(reg *registry.Registry, ops *operations.Manager, enr *enroll.Service) http.Handler {
-	s := &server{reg: reg, ops: ops, enr: enr}
+	return newServer(reg, ops, enr, DefaultSSEKeepAlive)
+}
+
+// newServer builds the routes of a server with the given keepalive interval.
+// Tests lower the interval to see a keepalive comment on a short stream.
+func newServer(reg *registry.Registry, ops *operations.Manager, enr *enroll.Service, keepAlive time.Duration) http.Handler {
+	s := &server{reg: reg, ops: ops, enr: enr, keepAlive: keepAlive}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/version", s.getVersion)
 	mux.HandleFunc("GET /v1/capabilities", s.listCapabilities)
@@ -47,11 +54,20 @@ func New(reg *registry.Registry, ops *operations.Manager, enr *enroll.Service) h
 	return mux
 }
 
+// DefaultSSEKeepAlive is how often a followed log sends an SSE comment line
+// while it has no new line. A reverse proxy closes an idle upstream after
+// about 60 seconds, so the stream must not stay silent
+// (docs/architecture.md section 10).
+const DefaultSSEKeepAlive = 15 * time.Second
+
 // server is the shared state of the API handlers.
 type server struct {
 	reg *registry.Registry
 	ops *operations.Manager
 	enr *enroll.Service
+	// keepAlive is how often a followed log sends a keepalive comment.
+	// Zero disables the keepalive.
+	keepAlive time.Duration
 }
 
 // writeJSON writes v as an indented JSON response with the given status.
