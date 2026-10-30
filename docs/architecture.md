@@ -492,28 +492,51 @@ The Gateway validates all configuration at startup and refuses to start when it 
 
 ## 14. Errors
 
-The Gateway, the runtimes, and the CLI share one set of error codes. Each code has a fixed HTTP status and a fixed CLI exit code.
+The Gateway, the runtimes, and the CLI share one set of error codes. Each code has a snake_case wire value, a fixed HTTP status, and a fixed CLI exit code. The Go type lives in `internal/errors`.
 
-| Error | Meaning |
-|---|---|
-| Unknown capability | The capability does not exist. |
-| Unknown operation | The operation does not exist in that capability. |
-| Invalid arguments | The arguments do not match the schema. |
-| Missing argument | A required argument is absent. |
-| Invalid executor | The named executor is not a known node. |
-| Executor not eligible | The executor exists but cannot run this operation. |
-| No default executor | The request named no executor, and no default is configured. |
-| Executor unavailable | The executor is disabled, or its node agent is not connected. |
-| Authentication failed | The token is missing, wrong, or revoked. |
-| Forbidden | The token is valid but lacks permission for this operation. |
-| Elevation required | A privileged operation was requested without a password. |
-| Elevation denied | The password is wrong, elevation is turned off or not allowed for this operation on the node, or too many wrong passwords were given. |
-| Operation conflict | A run that the `concurrency` setting forbids running alongside this one is already in progress. |
-| Handler failed | The handler ran and reported an error, or returned malformed output. |
-| Timeout | The operation exceeded its deadline. |
-| Cancelled | A client cancelled the operation. |
+The HTTP statuses follow common API practice: 400 for a malformed request, 422 for a semantically invalid one, 404 for unknown resources, 409 for conflicts, 502 for handler failures, 503 for an unavailable executor or Gateway, and 504 for a timeout. The CLI exit codes start at 20 and group by category, avoid 0 (success), 1 (generic failure), 2 (usage, which every binary reserves), and 126 and above (which POSIX shells reserve). They are distinct per code so scripts can tell them apart.
 
-Error messages never contain secrets.
+| Error | Wire code | HTTP | CLI exit | Meaning |
+|---|---|---|---|---|
+| Unknown capability | `unknown_capability` | 404 | 20 | The capability does not exist. |
+| Unknown operation | `unknown_operation` | 404 | 21 | The operation does not exist in that capability. |
+| Invalid arguments | `invalid_arguments` | 422 | 22 | The arguments do not match the schema. |
+| Missing argument | `missing_argument` | 400 | 23 | A required argument is absent. |
+| Invalid executor | `invalid_executor` | 404 | 24 | The named executor is not a known node. |
+| Executor not eligible | `executor_not_eligible` | 422 | 25 | The executor exists but cannot run this operation. |
+| No default executor | `no_default_executor` | 422 | 26 | The request named no executor, and no default is configured. |
+| Executor unavailable | `executor_unavailable` | 503 | 27 | The executor is disabled, or its node agent is not connected. |
+| Authentication failed | `authentication_failed` | 401 | 28 | The token is missing, wrong, or revoked. |
+| Forbidden | `forbidden` | 403 | 29 | The token is valid but lacks permission for this operation. |
+| Elevation required | `elevation_required` | 403 | 30 | A privileged operation was requested without a password. |
+| Elevation denied | `elevation_denied` | 403 | 31 | The password is wrong, elevation is turned off or not allowed for this operation on the node, or too many wrong passwords were given. |
+| Operation conflict | `operation_conflict` | 409 | 32 | A run that the `concurrency` setting forbids running alongside this one is already in progress. |
+| Handler failed | `handler_failed` | 502 | 33 | The handler ran and reported an error, or returned malformed output. |
+| Timeout | `timeout` | 504 | 34 | The operation exceeded its deadline. |
+| Cancelled | `cancelled` | 409 | 35 | A client cancelled the operation. |
+
+Additional codes used inside the system, with wire values that the [handler contract](handler-contract.md) and the [agent protocol](agent-protocol.md) already define. They appear in operation records and agent messages; the HTTP status applies when one reaches an API response. When an API response reports a handler's own error, it uses `handler_failed` and puts the handler's `code`, `message`, and `details` inside that error's details. The operation record keeps the handler's own code as its final-state code, as [handler contract §5](handler-contract.md#5-exit-codes-and-final-states) defines.
+
+| Code | Used by | HTTP | CLI exit | Meaning |
+|---|---|---|---|---|
+| `executor_connection_lost` | architecture §8.2 | 502 | 36 | The node agent did not reconnect within 5 minutes, so a running operation failed. |
+| `gateway_restart` | architecture §9.6 | 503 | 37 | The Gateway stopped while the operation ran. |
+| `handler_exit` | handler contract §5 | 502 | 38 | The handler exited nonzero without a valid response. |
+| `handler_output_invalid` | handler contract §5 | 502 | 39 | The handler's response is missing or invalid. |
+| `http_status` | handler contract §9 | 502 | 40 | An `http` handler returned an unexpected HTTP status. |
+| `agent_busy` | agent protocol §4.5 | 503 | 41 | The node agent already runs its maximum number of handlers. |
+| `bundle_unavailable` | agent protocol §4.5 | 503 | 42 | The agent could not download the handler bundle. |
+| `handler_integrity` | agent protocol §4.5 | 502 | 43 | The cached handler files do not match the bundle hash. |
+| `handler_start_failed` | agent protocol §4.5 | 502 | 44 | The handler's entry command could not start. |
+| `unsupported_contract` | agent protocol §4.5 | 422 | 45 | The agent cannot run the handler contract version. |
+| `join_token_invalid` | agent protocol §2 | 401 | 46 | The join token is unknown, used, or expired. |
+| `node_mismatch` | agent protocol §2 | 409 | 47 | The agent's OS or architecture differs from its node entry. |
+| `invalid_request` | agent protocol §2 | 400 | 48 | The request body is malformed. |
+| `internal` | Gateway internals | 500 | 1 | An unexpected Gateway error. Any error outside this set maps here. |
+
+A `cancelled` operation is not an API error; the HTTP column applies only where the code surfaces as one.
+
+Error messages never contain secrets. Secret values that reach the Gateway are redacted from every error before it is returned.
 
 ## 15. Security
 
