@@ -221,6 +221,7 @@ func (m *Manager) Submit(req Request) (Record, error) {
 		CreatedAt:           m.now().UTC(),
 		IdempotencyKey:      req.IdempotencyKey,
 		ArgumentFingerprint: fingerprint,
+		Arguments:           redactArguments(op, req.Arguments, passwordOf(req.Elevation)),
 		ConcurrencyKey:      key,
 	}
 	if err := m.store.Insert(rec); err != nil {
@@ -272,6 +273,29 @@ func (m *Manager) Get(id string) (Record, error) {
 // List returns the operations that satisfy f, sorted by operation ID.
 func (m *Manager) List(f Filter) []Record {
 	return m.store.List(f)
+}
+
+// RecoverInterrupted fails every operation that a previous Gateway process
+// left queued or running. A store that does not survive a restart has
+// nothing to recover, so the call succeeds and reports zero.
+func (m *Manager) RecoverInterrupted() (int, error) {
+	recoverer, ok := m.store.(Recoverer)
+	if !ok {
+		return 0, nil
+	}
+	return recoverer.RecoverInterrupted(m.now().UTC())
+}
+
+// PurgeOld removes the finished operations older than the configured
+// retention. The history store runs this itself on startup and on a timer;
+// this method lets the Gateway trigger it, for example after a test or an
+// operator request. A store without retention returns zero.
+func (m *Manager) PurgeOld() (int64, error) {
+	pruner, ok := m.store.(Pruner)
+	if !ok {
+		return 0, nil
+	}
+	return pruner.PurgeOld(m.now().UTC())
 }
 
 // Cancel cancels one operation (docs/architecture.md section 9.5). A
@@ -420,11 +444,14 @@ func (m *Manager) execute(exec *execution, rec Record, op *registry.Operation) {
 	}
 
 	envelope := m.envelope(current, op, start, timeout, exec.args)
-	// The elevation input lives only for the dispatch.
+	// The elevation input lives only for the dispatch. The password is
+	// kept for the length of the call only, so the stored result and
+	// failure cannot echo it (docs/architecture.md section 8.5).
 	elevation := exec.elevation
 	exec.elevation = nil
+	password := passwordOf(elevation)
 	resp, err := m.dispatcher.Execute(ctx, &Call{Request: envelope, Elevation: elevation})
-	m.complete(ctx, current.ID, resp, err, exec.cancellationRequested())
+	m.complete(ctx, current.ID, resp, err, exec.cancellationRequested(), password)
 }
 
 // release closes the run's done channel and drops its in-memory state.
@@ -440,7 +467,7 @@ func (m *Manager) release(exec *execution, id string) {
 // complete stores the final state of one run. A record that already
 // reached a final state keeps it: only a queued operation is finalized
 // outside the run.
-func (m *Manager) complete(ctx context.Context, id string, resp runtime.Response, err error, cancelRequested bool) {
+func (m *Manager) complete(ctx context.Context, id string, resp runtime.Response, err error, cancelRequested bool, password string) {
 	state, failure := classify(ctx, resp, err, cancelRequested)
 
 	m.mu.Lock()
@@ -452,10 +479,10 @@ func (m *Manager) complete(ctx context.Context, id string, resp runtime.Response
 	rec.Status = state
 	rec.FinishedAt = m.now().UTC()
 	if state == StateCompleted || state == StateCancelled {
-		rec.Result = append(json.RawMessage(nil), resp.Result...)
-		rec.Summary = resp.Summary
+		rec.Result = append(json.RawMessage(nil), redactResult(resp.Result, password)...)
+		rec.Summary = redactText(resp.Summary, password)
 	}
-	rec.Failure = failure
+	rec.Failure = redactFailure(failure, password)
 	_ = m.store.Update(rec)
 }
 

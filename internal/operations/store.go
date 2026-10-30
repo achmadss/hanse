@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	herrors "github.com/achmadss/hanse/internal/errors"
 )
@@ -23,6 +24,20 @@ type Store interface {
 	// ByIdempotency returns the operation of one requester and
 	// Idempotency-Key. An empty key never matches.
 	ByIdempotency(requester, key string) (Record, bool)
+}
+
+// Recoverer is implemented by a Store that survives a restart. It fails
+// every operation that a previous process left queued or running, with the
+// gateway_restart code (docs/architecture.md section 9.6).
+type Recoverer interface {
+	RecoverInterrupted(now time.Time) (int, error)
+}
+
+// Pruner is implemented by a Store that keeps records for a limited time.
+// It deletes only finished records older than the retention period; an
+// active record is never deleted.
+type Pruner interface {
+	PurgeOld(now time.Time) (int64, error)
 }
 
 // MemoryStore is the in-memory Store of the current Gateway. It is safe
