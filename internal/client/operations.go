@@ -1,17 +1,11 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"time"
-
-	herrors "github.com/achmadss/hanse/internal/errors"
 )
 
 // The types in this file mirror the operation response shapes of
@@ -92,7 +86,7 @@ func (f OperationFilter) query() url.Values {
 // Operations returns GET /v1/operations.
 func (c *Client) Operations(ctx context.Context, filter OperationFilter) (OperationList, error) {
 	var out OperationList
-	err := c.operationRequest(ctx, http.MethodGet, &out, filter.query(), "v1", "operations")
+	err := c.do(ctx, http.MethodGet, &out, filter.query(), nil, "v1", "operations")
 	normalize(&out.Operations)
 	return out, err
 }
@@ -100,7 +94,7 @@ func (c *Client) Operations(ctx context.Context, filter OperationFilter) (Operat
 // Operation returns GET /v1/operations/{id}.
 func (c *Client) Operation(ctx context.Context, id string) (OperationRecord, error) {
 	var out OperationRecordEnvelope
-	err := c.operationRequest(ctx, http.MethodGet, &out, nil, "v1", "operations", id)
+	err := c.do(ctx, http.MethodGet, &out, nil, nil, "v1", "operations", id)
 	return out.Operation, err
 }
 
@@ -108,59 +102,6 @@ func (c *Client) Operation(ctx context.Context, id string) (OperationRecord, err
 // stands after the cancel request.
 func (c *Client) CancelOperation(ctx context.Context, id string) (OperationRecord, error) {
 	var out OperationRecord
-	err := c.operationRequest(ctx, http.MethodPost, &out, nil, "v1", "operations", id, "cancel")
+	err := c.do(ctx, http.MethodPost, &out, nil, nil, "v1", "operations", id, "cancel")
 	return out, err
-}
-
-// operationRequest performs one operation request and decodes its JSON body
-// into out. The path segments go through endpoint, so an ID cannot reach
-// another endpoint, and the query never changes the path. The request body
-// is empty: neither list, get, nor cancel sends one.
-func (c *Client) operationRequest(ctx context.Context, method string, out any, query url.Values, segments ...string) error {
-	endpoint, err := c.endpoint(segments)
-	if err != nil {
-		return err
-	}
-	if len(query) > 0 {
-		endpoint += "?" + query.Encode()
-	}
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
-	if err != nil {
-		return herrors.New(herrors.Internal, "the request could not be built: "+err.Error(), nil)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.token)
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return herrors.New(herrors.Internal,
-			fmt.Sprintf("cannot reach the Gateway at %s: %v", c.baseURL.Redacted(), err), nil)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-	if err != nil {
-		return herrors.New(herrors.Internal,
-			fmt.Sprintf("the response from %s could not be read: %v", c.baseURL.Redacted(), err), nil)
-	}
-	if len(body) > maxResponseBytes {
-		return herrors.New(herrors.Internal,
-			fmt.Sprintf("the response from %s is larger than %d bytes", c.baseURL.Redacted(), maxResponseBytes), nil)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return errorFromResponse(resp.StatusCode, body)
-	}
-
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	if err := dec.Decode(out); err != nil {
-		return herrors.New(herrors.Internal,
-			fmt.Sprintf("the Gateway at %s returned an invalid JSON response: %v", c.baseURL.Redacted(), err), nil)
-	}
-	var trailing any
-	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return herrors.New(herrors.Internal,
-			fmt.Sprintf("the Gateway at %s returned an invalid JSON response: trailing data", c.baseURL.Redacted()), nil)
-	}
-	return nil
 }
