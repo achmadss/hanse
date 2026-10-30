@@ -3,6 +3,7 @@ package registry
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -12,7 +13,14 @@ func TestBundleHashMatchesHandComputedValue(t *testing.T) {
 	// `${path}\x00${mode}\x00${sha256(content)}\n` per file:
 	//   handler.sh    755  #!/bin/sh\necho ok\n
 	//   data/notes.txt 644  notes\n
-	const want = "sha256:59620006995a6ec5ea5bd54d99d05e48ad14247fa38ed1d867bdeb55323d98c3"
+	// On Windows, agent-protocol 5.1 makes every file count as mode 644,
+	// so the hand-computed value differs there.
+	const windowsWant = "sha256:8ac76fa8fc222dd971744a901d855391e6a9dc4758285443243749bcabaf3622"
+	const othersWant = "sha256:59620006995a6ec5ea5bd54d99d05e48ad14247fa38ed1d867bdeb55323d98c3"
+	want := othersWant
+	if runtime.GOOS == "windows" {
+		want = windowsWant
+	}
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "handler.sh"), []byte("#!/bin/sh\necho ok\n"), 0o644); err != nil {
 		t.Fatal(err)
