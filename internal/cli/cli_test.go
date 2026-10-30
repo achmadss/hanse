@@ -522,25 +522,56 @@ func TestLoginReadsTokenFromStdin(t *testing.T) {
 	}
 }
 
-// TestLoginRefusesTerminalToken requires an explicit token source when the
-// input is interactive, because the terminal would echo it.
-func TestLoginRefusesTerminalToken(t *testing.T) {
+// TestLoginPromptsOnTerminal requires a no-echo prompt instead of the
+// --token flag, which would leak the token into the shell history.
+func TestLoginPromptsOnTerminal(t *testing.T) {
 	srv := newFixtureGateway(t)
 	configPath := filepath.Join(t.TempDir(), "hanse", "config.json")
 
 	var out, errOut bytes.Buffer
 	code := Run(context.Background(), []string{"login", "--url", srv.URL}, Options{
-		Stdin:           strings.NewReader(testToken),
+		Stdin:           strings.NewReader(""),
 		StdinIsTerminal: true,
-		Stdout:          &out,
-		Stderr:          &errOut,
-		ConfigPath:      configPath,
+		ReadPassword: func(int) ([]byte, error) {
+			return []byte(testToken + "\n"), nil
+		},
+		Stdout:     &out,
+		Stderr:     &errOut,
+		ConfigPath: configPath,
 	})
-	if code != 2 {
-		t.Fatalf("login: exit code %d, want 2; stderr %s", code, errOut.String())
+	if code != 0 {
+		t.Fatalf("login: exit code %d, want 0; stderr %s", code, errOut.String())
 	}
-	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
-		t.Errorf("login: configuration file exists after a usage error")
+	if strings.Contains(out.String(), testToken) || strings.Contains(errOut.String(), testToken) {
+		t.Error("login: the token was printed")
+	}
+	if !strings.Contains(errOut.String(), "Token:") {
+		t.Errorf("login: stderr %q, want a token prompt", errOut.String())
+	}
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if cfg.Token != testToken {
+		t.Errorf("saved token: got %q", cfg.Token)
+	}
+}
+
+// TestTokenFlagWarns requires the documented command line warning when
+// --token carries the secret.
+func TestTokenFlagWarns(t *testing.T) {
+	srv := newFixtureGateway(t)
+	configPath := filepath.Join(t.TempDir(), "hanse", "config.json")
+
+	stdout, stderr, code := runCLI(t, []string{"login", "--url", srv.URL, "--token", testToken}, configPath)
+	if code != 0 {
+		t.Fatalf("login: exit code %d, want 0; stderr %s", code, stderr)
+	}
+	if !strings.Contains(stderr, "warning") || !strings.Contains(stderr, "history") {
+		t.Errorf("login: stderr %q, want the command line warning", stderr)
+	}
+	if strings.Contains(stdout, testToken) || strings.Contains(stderr, testToken) {
+		t.Error("login: the token was printed")
 	}
 }
 
@@ -612,6 +643,21 @@ func TestAPIErrorExitCodes(t *testing.T) {
 			t.Errorf("stderr %q, want the internal code", stderr)
 		}
 	})
+}
+
+// TestSavedPlainHTTPRemoteURLRefused requires a configuration file with a
+// remote plain-HTTP URL to fail, not only the login command.
+func TestSavedPlainHTTPRemoteURLRefused(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hanse", "config.json")
+	writeTestConfig(t, configPath, "http://192.0.2.10:8080", testToken)
+
+	_, stderr, code := runCLI(t, []string{"capabilities"}, configPath)
+	if code != 1 {
+		t.Fatalf("exit code %d, want 1; stderr %s", code, stderr)
+	}
+	if !strings.Contains(stderr, "must use https") {
+		t.Errorf("stderr %q, want the TLS rule message", stderr)
+	}
 }
 
 // TestNoConfig requires a clear message and exit code 28 when the user has

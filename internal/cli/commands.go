@@ -12,6 +12,7 @@ import (
 	"github.com/achmadss/hanse/internal/api"
 	"github.com/achmadss/hanse/internal/client"
 	herrors "github.com/achmadss/hanse/internal/errors"
+	"golang.org/x/term"
 )
 
 // exitCode maps an error to the CLI exit code of
@@ -105,15 +106,17 @@ func (a *app) loginCommand(ctx context.Context, args []string) error {
 	return err
 }
 
-// readToken returns the token from the flag, or from standard input when
-// the flag is empty. An interactive terminal is refused: reading a token
-// without hiding the echo would show it on screen.
+// readToken returns the token from the flag, prompts for it without echo
+// on an interactive terminal, or reads it from a pipe or file.
 func (a *app) readToken(flagValue string) (string, error) {
 	if token := strings.TrimSpace(flagValue); token != "" {
+		// The documented --password warning applies here too: a command
+		// line is visible to the shell history and to other users.
+		a.warnf("--token puts the token on the command line: the shell can save it in its history and other users of this machine can see it while the command runs")
 		return token, nil
 	}
 	if a.stdinIsTerminal() {
-		return "", usagef("the token must come from --token or standard input")
+		return a.promptToken()
 	}
 	const maxTokenBytes = 1 << 20
 	data, err := io.ReadAll(io.LimitReader(a.opts.Stdin, maxTokenBytes+1))
@@ -130,24 +133,37 @@ func (a *app) readToken(flagValue string) (string, error) {
 	return token, nil
 }
 
+// promptToken reads the token from an interactive terminal without echo.
+// The prompt goes to stderr, so stdout stays clean for the command output.
+func (a *app) promptToken() (string, error) {
+	fd := 0
+	if f, ok := a.opts.Stdin.(*os.File); ok {
+		fd = int(f.Fd())
+	}
+	read := a.opts.ReadPassword
+	if read == nil {
+		read = term.ReadPassword
+	}
+	_, _ = fmt.Fprint(a.opts.Stderr, "Token: ")
+	data, err := read(fd)
+	_, _ = fmt.Fprintln(a.opts.Stderr)
+	if err != nil {
+		return "", herrors.New(herrors.Internal, "cannot read the token without echo: "+err.Error(), nil)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", usagef("the token is empty")
+	}
+	return token, nil
+}
+
 // stdinIsTerminal reports whether standard input is interactive.
 func (a *app) stdinIsTerminal() bool {
 	if a.opts.StdinIsTerminal {
 		return true
 	}
 	f, ok := a.opts.Stdin.(*os.File)
-	if !ok {
-		return false
-	}
-	info, err := f.Stat()
-	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
-		return false
-	}
-	// /dev/null is a character device but not an interactive terminal.
-	if nullInfo, err := os.Stat(os.DevNull); err == nil && os.SameFile(info, nullInfo) {
-		return false
-	}
-	return true
+	return ok && term.IsTerminal(int(f.Fd()))
 }
 
 // open loads the configuration, builds a client, and checks the Gateway's

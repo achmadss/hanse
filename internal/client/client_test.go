@@ -335,11 +335,39 @@ func TestSchemaKeepsNumbers(t *testing.T) {
 
 // TestNewRejectsBadURLs covers the URL validation.
 func TestNewRejectsBadURLs(t *testing.T) {
-	cases := []string{"", "not a url", "ftp://hanse.example", "http:///v1", "https://user:secret@hanse.example"}
+	cases := []string{
+		"",
+		"not a url",
+		"ftp://hanse.example",
+		"http:///v1",
+		"https://user:secret@hanse.example",
+		// Plain HTTP must not carry the token to a remote host
+		// (docs/architecture.md section 15).
+		"http://192.0.2.10:8080",
+		"http://hanse.example",
+	}
 	for _, raw := range cases {
 		t.Run(raw, func(t *testing.T) {
 			if _, err := New(Config{BaseURL: raw}); err == nil {
 				t.Errorf("New(%q): got no error", raw)
+			}
+		})
+	}
+}
+
+// TestNewAcceptsSecureAndLoopbackURLs covers the schemes a client may use.
+func TestNewAcceptsSecureAndLoopbackURLs(t *testing.T) {
+	cases := []string{
+		"https://192.0.2.10",
+		"https://hanse.example",
+		"http://127.0.0.1:8080",
+		"http://localhost:8080",
+		"http://[::1]:8080",
+	}
+	for _, raw := range cases {
+		t.Run(raw, func(t *testing.T) {
+			if _, err := New(Config{BaseURL: raw}); err != nil {
+				t.Errorf("New(%q): %v", raw, err)
 			}
 		})
 	}

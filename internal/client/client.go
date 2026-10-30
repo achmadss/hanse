@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/achmadss/hanse/internal/config"
 	herrors "github.com/achmadss/hanse/internal/errors"
 )
 
@@ -63,6 +64,12 @@ func New(cfg Config) (*Client, error) {
 	}
 	if u.User != nil {
 		return nil, fmt.Errorf("the Gateway URL must not contain a user name or password")
+	}
+	// The Gateway serves plain HTTP only on a loopback address
+	// (docs/architecture.md section 15). Anywhere else the bearer token
+	// would cross the network in clear text.
+	if u.Scheme == "http" && !config.IsLoopbackHost(u.Hostname()) {
+		return nil, fmt.Errorf("the Gateway URL %q must use https, unless its host is a loopback address", raw)
 	}
 	u.Path = strings.TrimRight(u.Path, "/")
 	u.RawPath = ""

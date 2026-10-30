@@ -25,6 +25,9 @@ type Options struct {
 	// StdinIsTerminal reports whether Stdin is an interactive terminal.
 	// When false and Stdin is an *os.File, Run detects it instead.
 	StdinIsTerminal bool
+	// ReadPassword reads one line from an interactive terminal without
+	// echo. Empty means term.ReadPassword. Tests replace it.
+	ReadPassword func(fd int) ([]byte, error)
 }
 
 // Run executes one hanse invocation and returns its exit code. The exit
