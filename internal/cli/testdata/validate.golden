@@ -1,0 +1,8 @@
+{
+  "valid": true,
+  "capability": "pc",
+  "operation": "up",
+  "mode": "async",
+  "executor": "node-b",
+  "executor_source": "explicit"
+}
