@@ -54,13 +54,15 @@ func New(cfg Config) (*Client, error) {
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return nil, fmt.Errorf("the Gateway URL %q is not valid: %w", raw, err)
+		// The parse error can echo the raw URL, which may hold a secret in
+		// a query string, so the message stays generic.
+		return nil, fmt.Errorf("the Gateway URL is not valid")
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, fmt.Errorf("the Gateway URL %q must use http or https", raw)
+		return nil, fmt.Errorf("the Gateway URL must use http or https")
 	}
 	if u.Host == "" {
-		return nil, fmt.Errorf("the Gateway URL %q has no host", raw)
+		return nil, fmt.Errorf("the Gateway URL has no host")
 	}
 	if u.User != nil {
 		return nil, fmt.Errorf("the Gateway URL must not contain a user name or password")
@@ -69,7 +71,7 @@ func New(cfg Config) (*Client, error) {
 	// (docs/architecture.md section 15). Anywhere else the bearer token
 	// would cross the network in clear text.
 	if u.Scheme == "http" && !config.IsLoopbackHost(u.Hostname()) {
-		return nil, fmt.Errorf("the Gateway URL %q must use https, unless its host is a loopback address", raw)
+		return nil, fmt.Errorf("the Gateway URL must use https, unless its host is a loopback address")
 	}
 	u.Path = strings.TrimRight(u.Path, "/")
 	u.RawPath = ""
