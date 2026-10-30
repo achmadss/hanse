@@ -62,7 +62,7 @@ func newExecutionFixture(t *testing.T) *executionFixture {
 		t.Fatalf("add limited token: %v", err)
 	}
 	return &executionFixture{
-		handler: store.Middleware(New(reg, manager)),
+		handler: store.Middleware(New(reg, manager, nil)),
 		manager: manager,
 		token:   token,
 		limited: limited,
@@ -376,7 +376,7 @@ func TestOperationsUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add token: %v", err)
 	}
-	handler := store.Middleware(New(newFixture(t), nil))
+	handler := store.Middleware(New(newFixture(t), nil, nil))
 	body := `{"capability":"echo","operation":"say","arguments":{"message":"hello"}}`
 	resp, payload := call(t, handler, token, http.MethodPost, "/v1/operations", body, nil)
 	if resp.StatusCode != http.StatusInternalServerError {
