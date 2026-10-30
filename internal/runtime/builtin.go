@@ -119,6 +119,8 @@ func (r *Registry) hasCapability(capability string) bool {
 // context is the run's cancellation channel; deadline enforcement against
 // req.Deadline belongs to the operation manager, not the runtime. onLog,
 // when not nil, receives every log line in order; nil discards them.
+// Calls that log from several goroutines get their lines serialized, so
+// onLog never runs concurrently.
 func (r *Registry) Run(ctx context.Context, req *Request, onLog func(line string)) (Response, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -130,7 +132,15 @@ func (r *Registry) Run(ctx context.Context, req *Request, onLog func(line string
 		return Response{}, herrors.New(herrors.UnsupportedContract,
 			fmt.Sprintf("handler contract %q, the builtin runtime speaks %s", req.Contract, ContractV1), nil)
 	}
-	if req.Kind != KindOperation && req.Kind != KindOptions {
+	switch req.Kind {
+	case KindOperation:
+	case KindOptions:
+		// Option providers exist in the contract, but their Gateway
+		// wiring comes with a later issue. Running the operation
+		// handler's code as an option provider would be wrong.
+		return Response{}, herrors.New(herrors.Internal,
+			"the builtin runtime does not run option providers yet", nil)
+	default:
 		return Response{}, herrors.New(herrors.Internal,
 			fmt.Sprintf("envelope kind %q is neither %s nor %s",
 				req.Kind, quote(KindOperation), quote(KindOptions)), nil)
@@ -147,6 +157,14 @@ func (r *Registry) Run(ctx context.Context, req *Request, onLog func(line string
 	call := &Call{Request: req, Log: onLog}
 	if call.Log == nil {
 		call.Log = func(string) {}
+	} else {
+		var logMu sync.Mutex
+		emit := call.Log
+		call.Log = func(line string) {
+			logMu.Lock()
+			defer logMu.Unlock()
+			emit(line)
+		}
 	}
 	return runHandler(ctx, call, h, req.Capability, req.Operation)
 }
@@ -155,6 +173,9 @@ func (r *Registry) Run(ctx context.Context, req *Request, onLog func(line string
 // so one handler's bug cannot take the Gateway down. Any other Go error
 // the handler returns also means the call has no protocol response; From
 // keeps herrors errors as they are and maps plain errors to internal.
+// A response with no protocol response shape — no status, an unknown
+// status, `error` without an error object or an error object without
+// `error` status — is an internal error too.
 func runHandler(ctx context.Context, call *Call, h Handler, capability, operation string) (resp Response, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -166,5 +187,29 @@ func runHandler(ctx context.Context, call *Call, h Handler, capability, operatio
 	if err != nil {
 		return Response{}, herrors.From(err)
 	}
+	if bad := responseProblem(resp); bad != "" {
+		return Response{}, herrors.New(herrors.Internal,
+			fmt.Sprintf("builtin handler %s.%s returned an invalid response: %s", capability, operation, bad), nil)
+	}
 	return resp, nil
+}
+
+// responseProblem names the first contract violation of one response, or
+// "" for a valid response, handler contract section 3.
+func responseProblem(resp Response) string {
+	switch resp.Status {
+	case StatusError:
+		if resp.Err == nil {
+			return "status error needs an error object"
+		}
+	case StatusOK, StatusCancelled:
+		if resp.Err != nil {
+			return fmt.Sprintf("status %s carries an error object", quote(resp.Status))
+		}
+	case "":
+		return "empty status"
+	default:
+		return fmt.Sprintf("unknown status %q", resp.Status)
+	}
+	return ""
 }

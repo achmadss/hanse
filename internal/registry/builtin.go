@@ -80,6 +80,9 @@ func (r *Registry) RegisterBuiltin(c *Capability) error {
 		return herrors.New(herrors.Internal,
 			fmt.Sprintf("builtin capability %q is registered twice", c.ID), nil)
 	}
+	if err := r.Nodes.addBuiltinCapability(c); err != nil {
+		return err
+	}
 	r.capabilities[c.ID] = c
 	return nil
 }

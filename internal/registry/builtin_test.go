@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -183,5 +184,111 @@ func TestNewReturnsWriteableRegistry(t *testing.T) {
 	// Capabilities and CapabilityOf keep working on the fresh registry.
 	if _, ok := r.Capability("echo"); ok {
 		t.Fatal("a fresh registry knows capabilities")
+	}
+}
+
+// refreshInput is the node part of a loaded configuration for the
+// refresh tests.
+func refreshInput() Input {
+	return Input{
+		Nodes: []Node{
+			{ID: "host-1", OS: "linux", Arch: "amd64", Enabled: true},
+			{ID: "node-2", OS: "darwin", Arch: "arm64"},
+		},
+		GatewayHost: "host-1",
+	}
+}
+
+func TestRegisterBuiltinRefreshesNodeCapabilities(t *testing.T) {
+	nodes, err := NewNodeRegistry(refreshInput(), nil)
+	if err != nil {
+		t.Fatalf("NewNodeRegistry: %v", err)
+	}
+	r := New()
+	r.Nodes = nodes
+	capability := builtinTestCapability(t)
+	route := OperationRouting{Executors: []string{"host-1"}, DefaultExecutor: "host-1"}
+	capability.Routing = map[string]OperationRouting{"say": route, "sleep": route}
+	if err := r.RegisterBuiltin(capability); err != nil {
+		t.Fatalf("RegisterBuiltin: %v", err)
+	}
+
+	hostCaps, ok := nodes.Capabilities("host-1")
+	if !ok {
+		t.Fatal("the Gateway host is not a known node")
+	}
+	found := false
+	for _, nc := range hostCaps {
+		if nc.Capability != "echo" {
+			continue
+		}
+		found = true
+		if len(nc.Operations) != 2 || nc.Operations[0] != "say" || nc.Operations[1] != "sleep" {
+			t.Fatalf("the Gateway host lists %v", nc.Operations)
+		}
+	}
+	if !found {
+		t.Fatalf("the Gateway host lists %v, without echo", hostCaps)
+	}
+	otherCaps, _ := nodes.Capabilities("node-2")
+	for _, nc := range otherCaps {
+		if nc.Capability == "echo" {
+			t.Fatal("node-2 must not list echo")
+		}
+	}
+	// The Gateway host's embedded agent keeps the node online from
+	// construction on; the refresh must not have interfered.
+	if status, ok := nodes.Status("host-1"); !ok || status != StatusOnline {
+		t.Fatalf("Gateway host status %v, %v", status, ok)
+	}
+	// The untouched registry keeps working.
+	if _, ok := r.Capability("echo"); !ok {
+		t.Fatal("echo is missing from the capability registry")
+	}
+}
+
+func TestRegisterBuiltinRejectsUnknownRoutingNode(t *testing.T) {
+	nodes, err := NewNodeRegistry(refreshInput(), nil)
+	if err != nil {
+		t.Fatalf("NewNodeRegistry: %v", err)
+	}
+	r := New()
+	r.Nodes = nodes
+	capability := builtinTestCapability(t)
+	route := OperationRouting{Executors: []string{"host-1"}, DefaultExecutor: "host-1"}
+	capability.Routing = map[string]OperationRouting{
+		"say":   {Executors: []string{"ghost-node"}, DefaultExecutor: "ghost-node"},
+		"sleep": route,
+	}
+	err = r.RegisterBuiltin(capability)
+	if err == nil {
+		t.Fatal("routing to an unknown node was accepted")
+	}
+	var e *herrors.Error
+	if !errors.As(err, &e) || e.Code() != herrors.Internal {
+		t.Fatalf("err %v", err)
+	}
+	if !strings.Contains(err.Error(), "ghost-node") {
+		t.Fatalf("the error does not name the unknown node: %q", err.Error())
+	}
+	if _, ok := r.Capability("echo"); ok {
+		t.Fatal("echo was registered despite the error")
+	}
+	if _, ok := nodes.Capabilities("ghost-node"); ok {
+		t.Fatal("the unknown node is in the node registry")
+	}
+}
+
+func TestRegisterBuiltinWithoutNodeRegistry(t *testing.T) {
+	r := New()
+	if r.Nodes != nil {
+		t.Fatal("a fresh registry unexpectedly has a node registry")
+	}
+	if err := r.RegisterBuiltin(builtinTestCapability(t)); err != nil {
+		t.Fatalf("RegisterBuiltin: %v", err)
+	}
+	caps, _ := r.Nodes.Capabilities("host-1")
+	if len(caps) != 0 {
+		t.Fatal("a nil node registry knows capabilities")
 	}
 }

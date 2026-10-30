@@ -85,7 +85,7 @@ func TestEchoPipeline(t *testing.T) {
 		t.Fatalf("sleep: %v, %v", sleep, ok)
 	}
 	routing, ok := capability.RoutingOf(SayOperation)
-	if !ok || routing.DefaultExecutor != ExecutorID || routing.Executors[0] != ExecutorID {
+	if !ok || routing.DefaultExecutor != DefaultGatewayHost || routing.Executors[0] != DefaultGatewayHost {
 		t.Fatalf("routing of say: %v, %v", routing, ok)
 	}
 	if _, ok := handlers.Handler(CapabilityID, SayOperation); !ok {
@@ -159,7 +159,7 @@ func TestSleepLogsOneLinePerInterval(t *testing.T) {
 		Capability: CapabilityID,
 		Operation:  SleepOperation,
 		Arguments:  []byte(`{"seconds":3}`),
-		Executor:   runtime.Node{ID: ExecutorID},
+		Executor:   runtime.Node{ID: DefaultGatewayHost},
 		Deadline:   time.Now().Add(time.Hour),
 	}, sink.add)
 	if err != nil {
@@ -202,7 +202,7 @@ func TestSleepCancellation(t *testing.T) {
 			Capability: CapabilityID,
 			Operation:  SleepOperation,
 			Arguments:  []byte(`{"seconds":600}`),
-			Executor:   runtime.Node{ID: ExecutorID},
+			Executor:   runtime.Node{ID: DefaultGatewayHost},
 			Deadline:   time.Now().Add(time.Hour),
 		}, sink.add)
 		done <- outcome{resp, err}
@@ -279,4 +279,135 @@ func codeOf(t *testing.T, err error, want *herrors.Code) {
 	if e.Code() != want {
 		t.Errorf("expected code %s, got %s (message: %s)", want.Name(), e.Code().Name(), e.Message)
 	}
+}
+
+// TestRegisterIntoLoadedRegistry installs echo into a registry that
+// registry.Load built, the shape the execution and HTTP wiring issue #16
+// will have, and checks the routing, the node registry's view, and a run.
+func TestRegisterIntoLoadedRegistry(t *testing.T) {
+	dir := t.TempDir()
+	loadInput := registry.Input{
+		Nodes: []registry.Node{
+			{ID: "host-1", OS: "linux", Arch: "amd64", Enabled: true},
+			{ID: "node-2", OS: "windows", Arch: "amd64", Enabled: true},
+		},
+		GatewayHost: "host-1",
+	}
+	loaded, warnings, err := registry.Load(registry.Options{Dirs: []string{dir}, Input: loadInput})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings %v", warnings)
+	}
+	handlers := runtime.NewRegistry()
+	opts := Options{GatewayHost: "host-1", SleepInterval: fastInterval}
+	if err := Register(handlers, loaded, opts); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	capability, ok := loaded.Capability(CapabilityID)
+	if !ok {
+		t.Fatal("the loaded registry does not hold echo")
+	}
+	routing, ok := capability.RoutingOf(SayOperation)
+	if !ok || routing.DefaultExecutor != "host-1" || len(routing.Executors) != 1 || routing.Executors[0] != "host-1" {
+		t.Fatalf("routing of say: %v, %v", routing, ok)
+	}
+
+	// The node registry learned echo after Load built it: the Gateway
+	// host lists echo's operations, the other node lists nothing.
+	hostCaps, ok := loaded.Nodes.Capabilities("host-1")
+	if !ok {
+		t.Fatal("the Gateway host is not a known node")
+	}
+	found := false
+	for _, nc := range hostCaps {
+		if nc.Capability != CapabilityID {
+			continue
+		}
+		found = true
+		if len(nc.Operations) != 2 || nc.Operations[0] != SayOperation || nc.Operations[1] != SleepOperation {
+			t.Fatalf("the Gateway host lists %v", nc.Operations)
+		}
+	}
+	if !found {
+		t.Fatalf("the Gateway host lists %v, without echo", hostCaps)
+	}
+	otherCaps, _ := loaded.Nodes.Capabilities("node-2")
+	for _, nc := range otherCaps {
+		if nc.Capability == CapabilityID {
+			t.Fatal("node-2 must not list echo")
+		}
+	}
+
+	// The run: the loaded registry resolved the operation, the handler
+	// registry executed it.
+	resp, err := RunSay(handlers, "op_loaded", "hello host")
+	if err != nil {
+		t.Fatalf("RunSay: %v", err)
+	}
+	if resp.Status != runtime.StatusOK || string(resp.Result) != `{"said":"hello host"}` {
+		t.Fatalf("response %+v", resp)
+	}
+}
+
+func TestRegisterRejectsOptions(t *testing.T) {
+	handlers := runtime.NewRegistry()
+	loaded, err := LoadMinimal(t)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	t.Run("missing GatewayHost", func(t *testing.T) {
+		err := Register(handlers, loaded, Options{})
+		if err == nil || !strings.Contains(err.Error(), "GatewayHost is required") {
+			t.Fatalf("err %v", err)
+		}
+		if _, ok := loaded.Capability(CapabilityID); ok {
+			t.Fatal("echo was registered despite the error")
+		}
+	})
+	t.Run("invalid GatewayHost", func(t *testing.T) {
+		err := Register(handlers, loaded, Options{GatewayHost: "Host-1"})
+		if err == nil || !strings.Contains(err.Error(), "not a valid node ID") {
+			t.Fatalf("err %v", err)
+		}
+		if _, ok := loaded.Capability(CapabilityID); ok {
+			t.Fatal("echo was registered despite the error")
+		}
+	})
+	t.Run("unknown node", func(t *testing.T) {
+		err := Register(handlers, loaded, Options{GatewayHost: "ghost-node"})
+		if err == nil {
+			t.Fatal("an unknown Gateway host node was accepted")
+		}
+		if _, ok := loaded.Capability(CapabilityID); ok {
+			t.Fatal("echo was registered despite the error")
+		}
+	})
+	t.Run("nil registries", func(t *testing.T) {
+		if err := Register(nil, loaded, Options{GatewayHost: "host-1"}); err == nil {
+			t.Fatal("a nil handler registry was accepted")
+		}
+		if err := Register(handlers, nil, Options{GatewayHost: "host-1"}); err == nil {
+			t.Fatal("a nil capability registry was accepted")
+		}
+	})
+}
+
+// LoadMinimal loads an empty capability tree with two nodes, the Gateway
+// host among them: the registries the execution wiring issue #16 will
+// own, minus real capabilities.
+func LoadMinimal(t *testing.T) (*registry.Registry, error) {
+	t.Helper()
+	loadInput := registry.Input{
+		Nodes: []registry.Node{
+			{ID: "host-1", OS: "linux", Arch: "amd64", Enabled: true},
+			{ID: "node-2", OS: "windows", Arch: "amd64", Enabled: true},
+		},
+		GatewayHost: "host-1",
+	}
+	loaded, _, err := registry.Load(registry.Options{Dirs: []string{t.TempDir()}, Input: loadInput})
+	return loaded, err
 }

@@ -6,7 +6,7 @@
 //
 // The handler contract reserves the `builtin` kind for core Gateway
 // operations, so a normal Gateway binary never imports this package:
-// `echo` exists only where a test harness calls New. Issue #20 adds
+// `echo` exists only where a test harness calls Register. Issue #20 adds
 // `capabilities/echo`, an `exec` package with the same operations, for
 // real use and the quickstart.
 package echotest
@@ -18,22 +18,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/achmadss/hanse/internal/config"
 	"github.com/achmadss/hanse/internal/registry"
 	"github.com/achmadss/hanse/internal/runtime"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-// The echo capability's IDs and the executor its operations route to.
-// Builtin handlers run inside the Gateway, so the Gateway host node is
-// the only eligible executor.
+// The echo capability's operation IDs and the placeholder Gateway host
+// node ID the convenience constructor routes to.
 const (
 	CapabilityID   = "echo"
 	SayOperation   = "say"
 	SleepOperation = "sleep"
-	// ExecutorID is the placeholder executor node ID of the Gateway host.
-	// A node of this ID does not exist automatically; keep it in sync
-	// with the node registry of the system under test.
-	ExecutorID = "gateway-host"
+	// DefaultGatewayHost is the placeholder Gateway host node ID that New
+	// uses. It is not a real node anywhere; routes built from it resolve
+	// only inside the system under test.
+	DefaultGatewayHost = "gateway-host"
 )
 
 // DefaultSleepInterval is the interval echo.sleep logs at: one line per
@@ -43,30 +43,54 @@ const DefaultSleepInterval = time.Second
 // deadline never passes: the test requests outlive it.
 var deadline = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// New builds the echo test capability and registers it in both registries.
-// It returns the builtin handler registry holding echo.say and echo.sleep,
-// and the capability registry holding the echo capability, which it adds
-// through the builtin hook, registry.RegisterBuiltin. A non-positive
-// sleepInterval falls back to DefaultSleepInterval.
-func New(sleepInterval time.Duration) (*runtime.Registry, *registry.Registry, error) {
-	if sleepInterval <= 0 {
-		sleepInterval = DefaultSleepInterval
-	}
-	handlers := runtime.NewRegistry()
-	if err := handlers.Register(CapabilityID, SayOperation, sayHandler); err != nil {
-		return nil, nil, err
-	}
-	if err := handlers.Register(CapabilityID, SleepOperation, sleepHandler(sleepInterval)); err != nil {
-		return nil, nil, err
-	}
+// Options configures Register.
+type Options struct {
+	// GatewayHost is the node ID of the Gateway host node, from
+	// gateway.yaml's `node`. Echo runs inside the Gateway, so that node is
+	// echo's only eligible executor. Required and validated.
+	GatewayHost string
+	// SleepInterval is the interval echo.sleep logs at; zero or less keeps
+	// DefaultSleepInterval. Tests pass a sub-second interval to stay fast.
+	SleepInterval time.Duration
+}
 
-	say, err := newOperation(SayOperation, registry.ModeSync, saySchema)
-	if err != nil {
-		return nil, nil, err
+// Register installs the echo capability into the registries a test
+// harness assembled: the handlers echo.say and echo.sleep into the builtin
+// runtime registry, and the capability itself into the capability registry
+// through the builtin hook, routed to opts.GatewayHost. A loaded registry
+// from registry.Load works: its node registry learns echo's executable
+// operations too, because RegisterBuiltin refreshes the mapping that
+// Load's node registry built before echo existed.
+func Register(handlers *runtime.Registry, capabilities *registry.Registry, opts Options) error {
+	if handlers == nil {
+		return fmt.Errorf("echotest: the handler registry is nil")
 	}
-	sleep, err := newOperation(SleepOperation, registry.ModeAsync, sleepSchema)
+	if capabilities == nil {
+		return fmt.Errorf("echotest: the capability registry is nil")
+	}
+	if opts.GatewayHost == "" {
+		return fmt.Errorf("echotest: Options.GatewayHost is required")
+	}
+	if !config.ValidID(opts.GatewayHost) {
+		return fmt.Errorf("echotest: Options.GatewayHost %q is not a valid node ID", opts.GatewayHost)
+	}
+	interval := opts.SleepInterval
+	if interval <= 0 {
+		interval = DefaultSleepInterval
+	}
+	if err := handlers.Register(CapabilityID, SayOperation, sayHandler); err != nil {
+		return err
+	}
+	if err := handlers.Register(CapabilityID, SleepOperation, sleepHandler(interval)); err != nil {
+		return err
+	}
+	say, err := sayOperation()
 	if err != nil {
-		return nil, nil, err
+		return err
+	}
+	sleep, err := sleepOperation()
+	if err != nil {
+		return err
 	}
 	capability := &registry.Capability{
 		ID:          CapabilityID,
@@ -83,23 +107,32 @@ func New(sleepInterval time.Duration) (*runtime.Registry, *registry.Registry, er
 			SleepOperation: sleep,
 		},
 		Routing: map[string]registry.OperationRouting{
-			SayOperation:   gatewayHostRoute(),
-			SleepOperation: gatewayHostRoute(),
+			SayOperation:   gatewayHostRoute(opts.GatewayHost),
+			SleepOperation: gatewayHostRoute(opts.GatewayHost),
 		},
 	}
+	return capabilities.RegisterBuiltin(capability)
+}
+
+// New builds both registries itself and registers echo in them, with the
+// placeholder Gateway host node ID DefaultGatewayHost. Harnesses that
+// carry real configuration use Register with a registry from Load.
+func New(sleepInterval time.Duration) (*runtime.Registry, *registry.Registry, error) {
+	handlers := runtime.NewRegistry()
 	capabilities := registry.New()
-	if err := capabilities.RegisterBuiltin(capability); err != nil {
+	opts := Options{GatewayHost: DefaultGatewayHost, SleepInterval: sleepInterval}
+	if err := Register(handlers, capabilities, opts); err != nil {
 		return nil, nil, err
 	}
 	return handlers, capabilities, nil
 }
 
-// gatewayHostRoute routes one operation to the Gateway host node, the only
-// eligible executor of a builtin capability.
-func gatewayHostRoute() registry.OperationRouting {
+// gatewayHostRoute routes one operation to the Gateway host node, the
+// only eligible executor of a builtin capability.
+func gatewayHostRoute(host string) registry.OperationRouting {
 	return registry.OperationRouting{
-		Executors:       []string{ExecutorID},
-		DefaultExecutor: ExecutorID,
+		Executors:       []string{host},
+		DefaultExecutor: host,
 	}
 }
 
@@ -122,33 +155,44 @@ const sleepSchema = `{
 	}
 }`
 
-// newOperation builds one echo operation with its compiled schema.
-func newOperation(id, mode, schemaText string) (*registry.Operation, error) {
-	schema, err := compileSchema(schemaText)
-	if err != nil {
-		return nil, err
-	}
-	return &registry.Operation{
-		ID:     id,
-		Mode:   mode,
-		Schema: schema,
-	}, nil
+// sayOperation builds echo.say's registry entry: mode sync.
+func sayOperation() (*registry.Operation, error) {
+	return newOperation(SayOperation, registry.ModeSync, saySchema)
 }
 
-// compileSchema compiles one self-contained draft 2020-12 argument schema,
-// the same dialect manifest.yaml `arguments` values use.
-func compileSchema(schemaText string) (*jsonschema.Schema, error) {
+// sleepOperation builds echo.sleep's registry entry: mode async.
+func sleepOperation() (*registry.Operation, error) {
+	return newOperation(SleepOperation, registry.ModeAsync, sleepSchema)
+}
+
+// newOperation builds one echo operation with its compiled schema.
+func newOperation(id, mode, schemaText string) (*registry.Operation, error) {
+	op := &registry.Operation{ID: id, Mode: mode}
+	if err := compileInto(schemaText, op); err != nil {
+		return nil, fmt.Errorf("echotest: operation %s: %w", id, err)
+	}
+	return op, nil
+}
+
+// compileInto compiles one self-contained draft 2020-12 argument schema
+// the same dialect manifest.yaml `arguments` values use, into op.Schema.
+func compileInto(schemaText string, op *registry.Operation) error {
 	doc, err := jsonschema.UnmarshalJSON(strings.NewReader(schemaText))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	c := jsonschema.NewCompiler()
 	c.DefaultDraft(jsonschema.Draft2020)
 	const location = "http://hanse.local/schemas/argument.json"
 	if err := c.AddResource(location, doc); err != nil {
-		return nil, err
+		return err
 	}
-	return c.Compile(location)
+	schema, err := c.Compile(location)
+	if err != nil {
+		return err
+	}
+	op.Schema = schema
+	return nil
 }
 
 // sayHandler answers with the message, synchronously.
@@ -170,8 +214,8 @@ func sayHandler(_ context.Context, call *runtime.Call) (runtime.Response, error)
 }
 
 // sleepHandler logs once per interval, `seconds` times, and stops cleanly
-// with the partial count when the context is cancelled. The interval comes
-// from New, so tests stay fast; production builds pass
+// with the partial count when the context is cancelled. The interval
+// comes from Register, so tests stay fast; production harnesses pass
 // DefaultSleepInterval.
 func sleepHandler(interval time.Duration) runtime.Handler {
 	return func(ctx context.Context, call *runtime.Call) (runtime.Response, error) {
@@ -222,7 +266,7 @@ func RunSay(handlers *runtime.Registry, callID, message string) (runtime.Respons
 		Capability: CapabilityID,
 		Operation:  SayOperation,
 		Arguments:  args,
-		Executor:   runtime.Node{ID: ExecutorID},
+		Executor:   runtime.Node{ID: DefaultGatewayHost},
 		Deadline:   deadline,
 	}, nil)
 }
