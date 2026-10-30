@@ -1,6 +1,9 @@
 # Build output
 bin/
 
+# GoReleaser output (snapshot builds)
+dist/
+
 # Coverage
 *.out
 coverage.txt

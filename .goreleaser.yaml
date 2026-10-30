@@ -1,0 +1,130 @@
+# GoReleaser configuration for Hanse.
+# Validate with: go run github.com/goreleaser/goreleaser/v2@latest check
+version: 2
+
+project_name: hanse
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - id: hanse
+    main: ./cmd/hanse
+    binary: hanse
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/achmadss/hanse/internal/version.Version={{ .Version }}
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: hanse-gateway
+    main: ./cmd/hanse-gateway
+    binary: hanse-gateway
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/achmadss/hanse/internal/version.Version={{ .Version }}
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: hanse-node
+    main: ./cmd/hanse-node
+    binary: hanse-node
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/achmadss/hanse/internal/version.Version={{ .Version }}
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: hanse
+    ids:
+      - hanse
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+
+  - id: hanse-gateway
+    ids:
+      - hanse-gateway
+    name_template: >-
+      hanse-gateway_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+
+  - id: hanse-node
+    ids:
+      - hanse-node
+    name_template: >-
+      hanse-node_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^style:"
+      - "Merge pull request"
+      - "Merge branch"
+
+release:
+  github:
+    owner: achmadss
+    name: hanse
