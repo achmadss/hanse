@@ -178,7 +178,16 @@ func exchangeJoin(endpoint, joinToken string) (joinOutput, error) {
 		return joinOutput{}, fmt.Errorf("cannot build the join request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: joinTimeout}
+	client := &http.Client{
+		Timeout: joinTimeout,
+		// A redirect would resend the body, which carries the join token,
+		// to another location that may be plain http or another host. The
+		// join endpoint never redirects, so refuse every redirect and keep
+		// the answer as it is.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return joinOutput{}, fmt.Errorf("cannot reach the Gateway: %v", err)

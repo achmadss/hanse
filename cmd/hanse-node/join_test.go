@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -142,6 +143,41 @@ func TestJoinRejectsPlainHTTP(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "must use https") {
 		t.Errorf("stderr = %q, want the https rule", stderr.String())
+	}
+}
+
+// TestJoinRefusesRedirect proves that a redirect never carries the join
+// token to another location, which may be plain http or another host.
+func TestJoinRefusesRedirect(t *testing.T) {
+	var reached atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"node":"node-a","credential":"` + testCredential + `"}`))
+	}))
+	defer target.Close()
+	moved := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/v1/agent/join", http.StatusTemporaryRedirect)
+	}))
+	defer moved.Close()
+	stateDir := t.TempDir()
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"join", moved.URL, testJoinToken, "--state-dir", stateDir}, &stdout, &stderr)
+	if code != exitFail {
+		t.Fatalf("exit = %d, want %d", code, exitFail)
+	}
+	if got := reached.Load(); got != 0 {
+		t.Errorf("the redirect target got %d request(s), want none: the token must not follow a redirect", got)
+	}
+	if !strings.Contains(stderr.String(), "307") {
+		t.Errorf("stderr = %q, want the redirect status", stderr.String())
+	}
+	if strings.Contains(stderr.String(), testJoinToken) {
+		t.Error("stderr holds the join token")
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, credentialFileName)); !os.IsNotExist(err) {
+		t.Errorf("a credential file exists after a refused join: %v", err)
 	}
 }
 
