@@ -30,6 +30,10 @@ func (s NodeStatus) valid() bool { return s == StatusOnline || s == StatusOfflin
 type NodeView struct {
 	Node
 	Status NodeStatus
+	// AgentVersion is the release version the node's agent reported when
+	// it connected, or "" when no agent has connected since the Gateway
+	// started. It changes only with the connection.
+	AgentVersion string
 }
 
 // NodeCapability is one capability a node can execute, with the
@@ -45,6 +49,9 @@ type nodeState struct {
 	mu   sync.RWMutex
 	// status is guarded by mu.
 	status NodeStatus
+	// agentVersion is guarded by mu. It is the agent version reported by
+	// the current or most recent connection.
+	agentVersion string
 }
 
 // NodeRegistry holds every node from nodes.yaml, its enabled flag, its
@@ -146,7 +153,7 @@ func (n *NodeRegistry) Get(id string) (NodeView, bool) {
 		return NodeView{}, false
 	}
 	state.mu.RLock()
-	view := NodeView{Node: copyNode(state.node), Status: state.status}
+	view := NodeView{Node: copyNode(state.node), Status: state.status, AgentVersion: state.agentVersion}
 	state.mu.RUnlock()
 	return view, true
 }
@@ -167,7 +174,7 @@ func (n *NodeRegistry) List() []NodeView {
 	for _, id := range ids {
 		state := n.states[id]
 		state.mu.RLock()
-		out = append(out, NodeView{Node: copyNode(state.node), Status: state.status})
+		out = append(out, NodeView{Node: copyNode(state.node), Status: state.status, AgentVersion: state.agentVersion})
 		state.mu.RUnlock()
 	}
 	return out
@@ -210,11 +217,39 @@ func (n *NodeRegistry) GatewayHost() string {
 	return n.gatewayHost
 }
 
+// SetAgentPresence reports the agent connection state and the agent
+// version of one node. Agent connections call it when they connect and
+// when they are lost (docs/architecture.md section 8.2); it is the same
+// check as SetStatus plus the version a hello reported.
+func (n *NodeRegistry) SetAgentPresence(id string, status NodeStatus, agentVersion string) error {
+	if err := n.checkStatus(id, status); err != nil {
+		return err
+	}
+	state := n.state(id)
+	state.mu.Lock()
+	state.status = status
+	state.agentVersion = agentVersion
+	state.mu.Unlock()
+	return nil
+}
+
 // SetStatus reports that the node's agent connection changed. Agent
 // connections set a node online when they connect and offline when the
 // connection is lost. It rejects an unknown node, an invalid status, and
 // the Gateway host node, whose embedded agent keeps it online.
 func (n *NodeRegistry) SetStatus(id string, status NodeStatus) error {
+	if err := n.checkStatus(id, status); err != nil {
+		return err
+	}
+	state := n.state(id)
+	state.mu.Lock()
+	state.status = status
+	state.mu.Unlock()
+	return nil
+}
+
+// checkStatus validates a status update for one node.
+func (n *NodeRegistry) checkStatus(id string, status NodeStatus) error {
 	if n == nil {
 		return herrors.New(herrors.Internal,
 			"nodes: the node registry is not available", nil)
@@ -227,13 +262,9 @@ func (n *NodeRegistry) SetStatus(id string, status NodeStatus) error {
 		return herrors.New(herrors.Internal,
 			"nodes: node "+quote(id)+" is the Gateway host: its status is always online and managed by the embedded agent", nil)
 	}
-	state := n.state(id)
-	if state == nil {
+	if n.state(id) == nil {
 		return herrors.New(herrors.Internal, "nodes: unknown node "+quote(id), nil)
 	}
-	state.mu.Lock()
-	state.status = status
-	state.mu.Unlock()
 	return nil
 }
 
