@@ -327,11 +327,11 @@ func (m *Manager) Cancel(id string) (Record, error) {
 // argument validation, and executor resolution.
 func (m *Manager) prepare(req Request) (*registry.Capability, *registry.Operation, resolver.Resolution, error) {
 	if req.Capability == "" {
-		return nil, nil, resolver.Resolution{}, herrors.New(herrors.MissingArgument,
+		return nil, nil, resolver.Resolution{}, herrors.New(herrors.InvalidRequest,
 			"the request needs a capability ID", map[string]any{"field": "capability"})
 	}
 	if req.Operation == "" {
-		return nil, nil, resolver.Resolution{}, herrors.New(herrors.MissingArgument,
+		return nil, nil, resolver.Resolution{}, herrors.New(herrors.InvalidRequest,
 			"the request needs an operation ID", map[string]any{"field": "operation"})
 	}
 	c, ok := m.registry.Capability(req.Capability)
@@ -386,6 +386,17 @@ func (m *Manager) conflict(capID string, op *registry.Operation, key string) (Re
 func (m *Manager) execute(exec *execution, rec Record, op *registry.Operation) {
 	defer m.release(exec, rec.ID)
 
+	// The cancel function is registered before the record becomes
+	// running, so a cancel that arrives the moment the run starts can
+	// never find a nil one and be lost.
+	timeout := config.ResolveTimeouts(m.timeouts, &config.OperationTimeouts{
+		Timeout:     op.Timeout,
+		GracePeriod: op.GracePeriod,
+	}).Operation
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	exec.setCancel(cancel)
+	defer cancel()
+
 	m.mu.Lock()
 	current, ok := m.store.Get(rec.ID)
 	if !ok || current.Status != StateQueued {
@@ -402,13 +413,11 @@ func (m *Manager) execute(exec *execution, rec Record, op *registry.Operation) {
 	}
 	m.mu.Unlock()
 
-	timeout := config.ResolveTimeouts(m.timeouts, &config.OperationTimeouts{
-		Timeout:     op.Timeout,
-		GracePeriod: op.GracePeriod,
-	}).Operation
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	exec.setCancel(cancel)
-	defer cancel()
+	// A cancel that landed after the running update still stops the
+	// handler through the registered cancel function.
+	if exec.cancellationRequested() {
+		cancel()
+	}
 
 	envelope := m.envelope(current, op, start, timeout, exec.args)
 	// The elevation input lives only for the dispatch.

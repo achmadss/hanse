@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -160,9 +162,11 @@ func (s *server) validateOperation(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// getOperation answers GET /v1/operations/{id}.
+// getOperation answers GET /v1/operations/{id}. A token may read only an
+// operation its allow list covers (docs/architecture.md section 15).
 func (s *server) getOperation(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.identity(w, r); !ok {
+	id, ok := s.identity(w, r)
+	if !ok {
 		return
 	}
 	ops, ok := s.operations(w)
@@ -174,13 +178,19 @@ func (s *server) getOperation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	if err := id.Authorize(rec.Capability, rec.Operation); err != nil {
+		writeError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, operationResponse{Operation: operationViewOf(rec)})
 }
 
 // listOperations answers GET /v1/operations. The filters are the query
-// parameters capability, operation, executor, status, and requester.
+// parameters capability, operation, executor, status, and requester. The
+// list drops every operation the token's allow list does not cover.
 func (s *server) listOperations(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.identity(w, r); !ok {
+	id, ok := s.identity(w, r)
+	if !ok {
 		return
 	}
 	ops, ok := s.operations(w)
@@ -207,21 +217,35 @@ func (s *server) listOperations(w http.ResponseWriter, r *http.Request) {
 	records := ops.List(filter)
 	out := operationsResponse{Operations: make([]operationView, 0, len(records))}
 	for _, rec := range records {
+		if err := id.Authorize(rec.Capability, rec.Operation); err != nil {
+			continue
+		}
 		out.Operations = append(out.Operations, operationViewOf(rec))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// cancelOperation answers POST /v1/operations/{id}/cancel.
+// cancelOperation answers POST /v1/operations/{id}/cancel. The token is
+// authorized against the stored record before anything changes.
 func (s *server) cancelOperation(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.identity(w, r); !ok {
+	id, ok := s.identity(w, r)
+	if !ok {
 		return
 	}
 	ops, ok := s.operations(w)
 	if !ok {
 		return
 	}
-	rec, err := ops.Cancel(r.PathValue("id"))
+	rec, err := ops.Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := id.Authorize(rec.Capability, rec.Operation); err != nil {
+		writeError(w, err)
+		return
+	}
+	rec, err = ops.Cancel(rec.ID)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -252,22 +276,40 @@ func (s *server) operations(w http.ResponseWriter) (*operations.Manager, bool) {
 	return s.ops, true
 }
 
-// decodeSubmit reads one submit or validate body. A body that is not a
-// JSON object is the InvalidArguments code with the same problem shape as
-// argument validation.
+// maxRequestBody is the largest accepted request body: 1 MiB, the same
+// value as the default handler response limit. gateway.yaml has no request
+// size limit of its own, so the Gateway picks this cap
+// (docs/architecture.md section 15, Limits).
+const maxRequestBody = 1 << 20
+
+// decodeSubmit reads one submit or validate body. A malformed body is the
+// InvalidRequest code, HTTP 400 (docs/architecture.md section 14): a body
+// that is not a JSON object, trailing data after the object, an unknown
+// top-level field, or a body larger than maxRequestBody. Argument-schema
+// failures stay InvalidArguments.
 func decodeSubmit(w http.ResponseWriter, r *http.Request) (submitInput, bool) {
-	var body submitInput
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	var body submitInput
 	if err := dec.Decode(&body); err != nil {
-		writeError(w, herrors.New(herrors.InvalidArguments,
-			"the request body is not valid JSON",
-			map[string]any{"errors": []any{map[string]any{
-				"path": "", "rule": "json",
-				"message": "the request body is not a JSON object",
-			}}}))
+		writeInvalidRequest(w, err)
+		return submitInput{}, false
+	}
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		writeInvalidRequest(w, errors.New("trailing data after the request object"))
 		return submitInput{}, false
 	}
 	return body, true
+}
+
+// writeInvalidRequest writes the InvalidRequest error for a malformed
+// request body. The reason is the decoder's text, which names a field or a
+// position and never a value.
+func writeInvalidRequest(w http.ResponseWriter, err error) {
+	writeError(w, herrors.New(herrors.InvalidRequest,
+		"the request body is malformed",
+		map[string]any{"reason": err.Error()}))
 }
 
 // elevationOf converts the request's elevation object, or returns nil.

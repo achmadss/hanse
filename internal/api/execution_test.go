@@ -381,3 +381,126 @@ func TestOperationsUnavailable(t *testing.T) {
 		t.Errorf("no manager: code %q, want internal", got)
 	}
 }
+
+// TestOperationAuthorization covers the allow list on read, list, and
+// cancel: a token never sees or stops an operation outside its list.
+func TestOperationAuthorization(t *testing.T) {
+	fixture := newExecutionFixture(t)
+	body := `{"capability":"echo","operation":"say","arguments":{"message":"hello"}}`
+	resp, payload := call(t, fixture.handler, fixture.token, http.MethodPost, "/v1/operations", body, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("submit: status %d, body %s", resp.StatusCode, payload)
+	}
+	view := decodeOperation(t, payload)
+
+	resp, payload = call(t, fixture.handler, fixture.limited, http.MethodGet, "/v1/operations/"+view.ID, "", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("read with a limited token: status %d, body %s", resp.StatusCode, payload)
+	}
+	if got := decodeWireError(t, payload).Code; got != "forbidden" {
+		t.Errorf("read with a limited token: code %q, want forbidden", got)
+	}
+
+	resp, payload = call(t, fixture.handler, fixture.limited, http.MethodGet, "/v1/operations", "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list with a limited token: status %d, body %s", resp.StatusCode, payload)
+	}
+	var listed operationsResponse
+	if err := json.Unmarshal(payload, &listed); err != nil {
+		t.Fatalf("list body: %v (%s)", err, payload)
+	}
+	if len(listed.Operations) != 0 {
+		t.Errorf("list with a limited token returned %d operations, want none", len(listed.Operations))
+	}
+
+	// A running operation is not stopped by a token outside its list.
+	body = `{"capability":"echo","operation":"sleep","arguments":{"seconds":30}}`
+	resp, payload = call(t, fixture.handler, fixture.token, http.MethodPost, "/v1/operations", body, nil)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("submit sleep: status %d, body %s", resp.StatusCode, payload)
+	}
+	running := decodeOperation(t, payload)
+	awaitOperation(t, fixture, running.ID, "running")
+
+	resp, payload = call(t, fixture.handler, fixture.limited, http.MethodPost, "/v1/operations/"+running.ID+"/cancel", "", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("cancel with a limited token: status %d, body %s", resp.StatusCode, payload)
+	}
+	resp, payload = call(t, fixture.handler, fixture.token, http.MethodGet, "/v1/operations/"+running.ID, "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("read running operation: status %d, body %s", resp.StatusCode, payload)
+	}
+	var wrapped operationResponse
+	if err := json.Unmarshal(payload, &wrapped); err != nil {
+		t.Fatalf("read running operation: %v (%s)", err, payload)
+	}
+	if wrapped.Operation.Status != "running" {
+		t.Errorf("the refused cancel changed the status to %q, want running", wrapped.Operation.Status)
+	}
+
+	resp, payload = call(t, fixture.handler, fixture.token, http.MethodPost, "/v1/operations/"+running.ID+"/cancel", "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("cancel with the full token: status %d, body %s", resp.StatusCode, payload)
+	}
+	if got := decodeOperation(t, payload).Status; got != "cancelled" {
+		t.Errorf("cancel with the full token: status %q, want cancelled", got)
+	}
+}
+
+// TestMalformedRequestBodies requires the InvalidRequest code for every
+// body that is not exactly one known JSON object, and no operation.
+func TestMalformedRequestBodies(t *testing.T) {
+	fixture := newExecutionFixture(t)
+	valid := `{"capability":"echo","operation":"say","arguments":{"message":"hello"}}`
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"not json", `not json`},
+		{"not an object", `["echo"]`},
+		{"trailing data", valid + ` {}`},
+		{"unknown field", `{"capability":"echo","operation":"say","arguments":{"message":"hello"},"argument":{}}`},
+		{"too large", valid + strings.Repeat(" ", maxRequestBody)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, payload := call(t, fixture.handler, fixture.token, http.MethodPost, "/v1/operations", tc.body, nil)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status %d, want 400, body %s", resp.StatusCode, payload)
+			}
+			if got := decodeWireError(t, payload).Code; got != "invalid_request" {
+				t.Errorf("code %q, want invalid_request", got)
+			}
+		})
+	}
+	if records := fixture.manager.List(operations.Filter{}); len(records) != 0 {
+		t.Errorf("malformed requests created %d operations, want none", len(records))
+	}
+}
+
+// TestMissingRequestFields reports the request envelope's own missing
+// fields as InvalidRequest, not as a missing operation argument.
+func TestMissingRequestFields(t *testing.T) {
+	fixture := newExecutionFixture(t)
+	cases := []struct {
+		name string
+		path string
+		body string
+	}{
+		{"submit without capability", "/v1/operations", `{"operation":"say","arguments":{"message":"hello"}}`},
+		{"submit without operation", "/v1/operations", `{"capability":"echo","arguments":{"message":"hello"}}`},
+		{"validate without capability", "/v1/operations/validate", `{"operation":"say"}`},
+		{"validate without operation", "/v1/operations/validate", `{"capability":"echo"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, payload := call(t, fixture.handler, fixture.token, http.MethodPost, tc.path, tc.body, nil)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status %d, want 400, body %s", resp.StatusCode, payload)
+			}
+			if got := decodeWireError(t, payload).Code; got != "invalid_request" {
+				t.Errorf("code %q, want invalid_request", got)
+			}
+		})
+	}
+}
