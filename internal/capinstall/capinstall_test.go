@@ -329,6 +329,170 @@ func TestInvalidRemoveID(t *testing.T) {
 	}
 }
 
+// TestSourceClassification covers the transports that are accepted and the
+// ones that are refused before any git command runs.
+func TestSourceClassification(t *testing.T) {
+	copyDir := filepath.Join(t.TempDir(), "copy")
+	writePackage(t, copyDir, "demo")
+	gitDir := filepath.Join(t.TempDir(), "git")
+	writePackage(t, gitDir, "demo")
+	if err := os.MkdirAll(filepath.Join(gitDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name   string
+		source string
+		kind   sourceKind
+		refuse bool
+	}{
+		{"https", "https://example.com/demo.git", sourceGit, false},
+		{"ssh", "ssh://git@example.com/demo.git", sourceGit, false},
+		{"scp", "git@example.com:demo.git", sourceGit, false},
+		{"file", "file:///tmp/demo", sourceGit, false},
+		{"http loopback", "http://127.0.0.1:8080/demo.git", sourceGit, false},
+		{"http loopback ipv6", "http://[::1]:8080/demo.git", sourceGit, false},
+		{"http non-loopback", "http://192.0.2.1/demo.git", sourceGit, true},
+		{"http example.com", "http://example.com/demo.git", sourceGit, true},
+		{"git transport", "git://example.com/demo.git", sourceGit, true},
+		{"ext transport", "ext::sh -c touch% /tmp/pwned", sourceGit, true},
+		{"fd transport", "fd::3", sourceGit, true},
+		{"unknown scheme", "ftp://example.com/demo.git", sourceGit, true},
+		{"missing local path", filepath.Join(t.TempDir(), "missing.git"), sourceCopy, true},
+		{"local copy", copyDir, sourceCopy, false},
+		{"local git", gitDir, sourceGit, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec, err := classifySource(tc.source)
+			if tc.refuse {
+				if err == nil {
+					t.Fatalf("classifySource(%q) = %+v, want a refusal", tc.source, spec)
+				}
+				if !errors.Is(err, herrors.InvalidArguments) {
+					t.Errorf("classifySource(%q) error = %v, want invalid_arguments", tc.source, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("classifySource(%q): %v", tc.source, err)
+			}
+			if spec.kind != tc.kind {
+				t.Errorf("classifySource(%q) kind = %v, want %v", tc.source, spec.kind, tc.kind)
+			}
+		})
+	}
+}
+
+// TestOptionInjectionRefused proves that a source and a ref that begin with
+// "-" never reach git as an option.
+func TestOptionInjectionRefused(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "pwned")
+	source := "--upload-pack=touch " + marker
+
+	if _, err := Prepare(source, ""); !errors.Is(err, herrors.InvalidArguments) {
+		t.Fatalf("Prepare(%q) error = %v, want invalid_arguments", source, err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the injected source command ran: %v", err)
+	}
+
+	dir := filepath.Join(t.TempDir(), "clone")
+	if _, err := cloneGit(source, "", dir); err == nil {
+		t.Fatal("cloneGit accepted an option-shaped source")
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("git read the source as an option and ran it: %v", err)
+	}
+}
+
+// TestRefOptionInjectionRefused refuses a ref that git could read as an
+// option, before any git command runs.
+func TestRefOptionInjectionRefused(t *testing.T) {
+	requireGit(t)
+	marker := filepath.Join(t.TempDir(), "pwned")
+	repo := filepath.Join(t.TempDir(), "repo")
+	writePackage(t, repo, "demo")
+	runGitTest(t, repo, "init", "-b", "main")
+	runGitTest(t, repo, "add", ".")
+	runGitTest(t, repo, "commit", "-m", "initial")
+
+	ref := "--upload-pack=touch " + marker
+	if _, err := Prepare(repo, ref); !errors.Is(err, herrors.InvalidArguments) {
+		t.Fatalf("Prepare(ref=%q) error = %v, want invalid_arguments", ref, err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the injected ref command ran: %v", err)
+	}
+	for _, bad := range []string{"-x", "main\nrm -rf /", "mas ter"} {
+		if _, err := Prepare(repo, bad); !errors.Is(err, herrors.InvalidArguments) {
+			t.Errorf("Prepare(ref=%q) error = %v, want invalid_arguments", bad, err)
+		}
+	}
+}
+
+// runGitTest runs one git command in dir for the tests.
+func runGitTest(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(requireGit(t), args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=Hanse Test",
+		"GIT_AUTHOR_EMAIL=test@example.com",
+		"GIT_COMMITTER_NAME=Hanse Test",
+		"GIT_COMMITTER_EMAIL=test@example.com",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// TestExtTransportRefused checks that a source that names git's ext or fd
+// transport is refused before any git command runs.
+func TestExtTransportRefused(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "pwned")
+	sources := []string{
+		"ext::sh -c touch% " + marker,
+		"fd::3",
+		"git://example.com/demo.git",
+		"http://192.0.2.1/demo.git",
+	}
+	for _, source := range sources {
+		if _, err := Prepare(source, ""); !errors.Is(err, herrors.InvalidArguments) {
+			t.Errorf("Prepare(%q) error = %v, want invalid_arguments", source, err)
+		}
+		if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Prepare(%q) ran a command: %v", source, err)
+		}
+	}
+}
+
+// TestGitCommandEnvironment checks that every git call restricts the
+// transports and ignores the system configuration.
+func TestGitCommandEnvironment(t *testing.T) {
+	t.Setenv("GIT_ALLOW_PROTOCOL", "ext")
+	env := map[string]string{}
+	for _, entry := range gitCommand("version").Env {
+		name, value, _ := strings.Cut(entry, "=")
+		if _, seen := env[name]; seen && (name == "GIT_ALLOW_PROTOCOL" || name == "GIT_CONFIG_NOSYSTEM") {
+			t.Errorf("%s appears twice in the git environment", name)
+		}
+		env[name] = value
+	}
+	for name, want := range map[string]string{
+		"GIT_ALLOW_PROTOCOL":  "https:ssh:file",
+		"GIT_CONFIG_NOSYSTEM": "1",
+		"GIT_TERMINAL_PROMPT": "0",
+		"GCM_INTERACTIVE":     "never",
+	} {
+		if got := env[name]; got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+}
+
 // requireGit returns the git executable path or skips the test.
 func requireGit(t *testing.T) string {
 	t.Helper()

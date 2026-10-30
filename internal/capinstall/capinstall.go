@@ -76,33 +76,40 @@ type sourcePin struct {
 // Prepare fetches a package from a git URL, a local git repository, or a
 // local directory, validates its manifest, and returns it without changing
 // the install target. The caller shows the preview, confirms, and calls
-// Install. Ref is optional: a branch, tag, or commit SHA; only a git source
-// uses it.
+// Install. Ref is optional: a branch, tag, or commit SHA of a git source.
 func Prepare(source, ref string) (*Package, error) {
 	source = strings.TrimSpace(source)
-	if source == "" {
-		return nil, herrors.New(herrors.InvalidArguments, "the install source is empty", nil)
-	}
 	root, err := os.MkdirTemp("", "hanse-capinstall-")
 	if err != nil {
 		return nil, herrors.New(herrors.Internal, "cannot create a temporary directory: "+err.Error(), nil)
 	}
 	pkg := &Package{Source: source, Ref: ref, root: root, dir: filepath.Join(root, "package")}
 
-	if isGitSource(source) {
-		commit, err := cloneGit(source, ref, pkg.dir)
+	spec, err := classifySource(source)
+	if err != nil {
+		pkg.Cleanup()
+		return nil, err
+	}
+	if err := validateRef(ref); err != nil {
+		pkg.Cleanup()
+		return nil, err
+	}
+	switch spec.kind {
+	case sourceGit:
+		commit, err := cloneGit(spec.location, ref, pkg.dir)
 		if err != nil {
 			pkg.Cleanup()
 			return nil, err
 		}
 		pkg.SHA = commit
-	} else {
-		abs, err := localDir(source)
-		if err != nil {
+		pkg.Source = spec.location
+	case sourceCopy:
+		if ref != "" {
 			pkg.Cleanup()
-			return nil, err
+			return nil, herrors.New(herrors.InvalidArguments,
+				fmt.Sprintf("%s is a local directory, not a git repository: --ref is used only with a git source", spec.location), nil)
 		}
-		if err := copyDir(abs, pkg.dir); err != nil {
+		if err := copyDir(spec.location, pkg.dir); err != nil {
 			pkg.Cleanup()
 			return nil, err
 		}
@@ -130,32 +137,6 @@ func Prepare(source, ref string) (*Package, error) {
 		})
 	}
 	return pkg, nil
-}
-
-// localDir resolves a local package path to an absolute directory. A path
-// that is a symbolic link is resolved first, so the package being read is
-// the one the operator named.
-func localDir(source string) (string, error) {
-	abs, err := filepath.Abs(source)
-	if err != nil {
-		return "", herrors.New(herrors.InvalidArguments,
-			fmt.Sprintf("cannot resolve %q: %s", source, err), nil)
-	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		return "", herrors.New(herrors.InvalidArguments,
-			fmt.Sprintf("%s: %s", abs, err), nil)
-	}
-	if !info.IsDir() {
-		return "", herrors.New(herrors.InvalidArguments,
-			fmt.Sprintf("%s is not a directory", abs), nil)
-	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return "", herrors.New(herrors.InvalidArguments,
-			fmt.Sprintf("cannot resolve %q: %s", abs, err), nil)
-	}
-	return resolved, nil
 }
 
 // inspect validates the fetched package with the same loader the Gateway
