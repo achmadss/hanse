@@ -1,0 +1,41 @@
+{
+  "nodes": [
+    {
+      "id": "gateway",
+      "os": "linux",
+      "arch": "amd64",
+      "roles": [
+        "server"
+      ],
+      "attributes": {},
+      "enabled": true,
+      "status": "online"
+    },
+    {
+      "id": "node-a",
+      "os": "linux",
+      "arch": "arm64",
+      "roles": [
+        "server"
+      ],
+      "attributes": {},
+      "enabled": true,
+      "status": "offline"
+    },
+    {
+      "id": "node-c",
+      "os": "windows",
+      "arch": "amd64",
+      "roles": [
+        "pc"
+      ],
+      "attributes": {
+        "broadcast": "192.0.2.255",
+        "mac": "00:00:5e:00:53:01",
+        "ssh_user": "hanse"
+      },
+      "enabled": true,
+      "status": "offline"
+    }
+  ]
+}

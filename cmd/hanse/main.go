@@ -1,29 +1,19 @@
-// Command hanse is the Hanse CLI client. This is a skeleton entry point;
-// it only reports its version and usage.
+// Command hanse is the Hanse CLI client (docs/architecture.md section 12).
+// It stores the Gateway URL and token in the user configuration directory
+// and reads every capability, node, schema, and value from the Gateway.
 package main
 
 import (
-	"flag"
-	"fmt"
+	"context"
 	"os"
 
-	"github.com/achmadss/hanse/internal/version"
+	"github.com/achmadss/hanse/internal/cli"
 )
 
 func main() {
-	var showVersion bool
-	flag.BoolVar(&showVersion, "version", false, "print the version and exit")
-	flag.Usage = usage
-	flag.Parse()
-
-	if showVersion {
-		fmt.Printf("hanse %s\n", version.Version)
-		return
-	}
-	usage()
-	os.Exit(2)
-}
-
-func usage() {
-	fmt.Fprintln(os.Stderr, "usage: hanse [--version]")
+	os.Exit(cli.Run(context.Background(), os.Args[1:], cli.Options{
+		Stdin:  os.Stdin,
+		Stdout: os.Stdout,
+		Stderr: os.Stderr,
+	}))
 }

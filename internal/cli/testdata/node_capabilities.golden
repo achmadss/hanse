@@ -1,0 +1,19 @@
+{
+  "node": "node-a",
+  "capabilities": [
+    {
+      "id": "demo",
+      "operations": [
+        "clean"
+      ]
+    },
+    {
+      "id": "pc",
+      "operations": [
+        "down",
+        "status",
+        "up"
+      ]
+    }
+  ]
+}

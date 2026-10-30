@@ -1,0 +1,17 @@
+{
+  "node": {
+    "id": "node-c",
+    "os": "windows",
+    "arch": "amd64",
+    "roles": [
+      "pc"
+    ],
+    "attributes": {
+      "broadcast": "192.0.2.255",
+      "mac": "00:00:5e:00:53:01",
+      "ssh_user": "hanse"
+    },
+    "enabled": true,
+    "status": "offline"
+  }
+}
