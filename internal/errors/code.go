@@ -109,6 +109,9 @@ var (
 	// HandlerOutputInvalid: the handler's response is missing or invalid.
 	// Wire value per the handler contract's final-state table.
 	HandlerOutputInvalid = &Code{name: "handler_output_invalid", http: 502, exit: 39, message: "handler produced invalid output", internal: true}
+	// HandlerOutputTooLarge: the handler's response exceeded the response
+	// size limit (handler contract section 11).
+	HandlerOutputTooLarge = &Code{name: "handler_output_too_large", http: 502, exit: 49, message: "handler output is too large", internal: true}
 	// HTTPStatus: an http handler returned an unexpected HTTP status.
 	// Wire value per the handler contract §9. Named to avoid clashing with
 	// the HTTPStatus(err) helper.
@@ -215,7 +218,7 @@ var all = []*Code{
 	AuthenticationFailed, Forbidden, ElevationRequired, ElevationDenied,
 	OperationConflict, HandlerFailed, Timeout, Cancelled,
 	ExecutorConnectionLost, GatewayRestart, HandlerExit, HandlerOutputInvalid,
-	HandlerHTTPStatus, AgentBusy, BundleUnavailable, HandlerIntegrity,
+	HandlerOutputTooLarge, HandlerHTTPStatus, AgentBusy, BundleUnavailable, HandlerIntegrity,
 	HandlerStartFailed, UnsupportedContract, JoinTokenInvalid, NodeMismatch,
 	InvalidRequest, Internal,
 }
