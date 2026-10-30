@@ -409,7 +409,7 @@ Every discovery response is JSON. Object keys keep a fixed order, and every list
 
 A capability object holds `id`, `name`, `description`, `contract`, `handler`, and `operations`, where each operation holds `id`, `description`, `mode`, and `privileged`.
 
-A node object holds `id`, `os`, `arch`, `roles`, `attributes`, `enabled`, and `status`.
+A node object holds `id`, `os`, `arch`, `roles`, `attributes`, `enabled`, `status`, and `agent_version`. `status` is `online` while the node's agent connection is up and `offline` otherwise. `agent_version` is the release version the agent reported in its last `hello`, or an empty string before any agent has connected (docs/agent-protocol.md section 4.1).
 
 In `describe`, `required` lists the schema's required arguments, `options` lists the arguments with an option provider as `{field, provider}`, `node_filters` maps each `hanse:node` argument to its filter, and `executors` lists `{id, status, default}`. `executor_required` is `true` when no default executor is configured, so the request must name one.
 

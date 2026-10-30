@@ -12,6 +12,7 @@
       "ssh_user": "hanse"
     },
     "enabled": true,
-    "status": "offline"
+    "status": "offline",
+    "agent_version": ""
   }
 }

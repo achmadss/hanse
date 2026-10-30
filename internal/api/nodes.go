@@ -17,6 +17,10 @@ type nodeView struct {
 	Attributes map[string]string `json:"attributes"`
 	Enabled    bool              `json:"enabled"`
 	Status     string            `json:"status"`
+	// AgentVersion is the version the node's agent reported on its last
+	// connection, or "" when none has connected since the Gateway
+	// started (docs/agent-protocol.md section 4.1).
+	AgentVersion string `json:"agent_version"`
 }
 
 // nodeCapabilityView is one capability a node can execute, with the
@@ -46,12 +50,13 @@ type nodeCapabilitiesResponse struct {
 // null, so a client always parses the same JSON types.
 func nodeViewOf(view registry.NodeView) nodeView {
 	n := nodeView{
-		ID:      view.ID,
-		OS:      view.OS,
-		Arch:    view.Arch,
-		Roles:   append([]string{}, view.Roles...),
-		Enabled: view.Enabled,
-		Status:  string(view.Status),
+		ID:           view.ID,
+		OS:           view.OS,
+		Arch:         view.Arch,
+		Roles:        append([]string{}, view.Roles...),
+		Enabled:      view.Enabled,
+		Status:       string(view.Status),
+		AgentVersion: view.AgentVersion,
 	}
 	n.Attributes = make(map[string]string, len(view.Attributes))
 	for k, v := range view.Attributes {
