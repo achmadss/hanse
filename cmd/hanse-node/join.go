@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/achmadss/hanse/internal/config"
 	"github.com/achmadss/hanse/internal/version"
 )
@@ -63,7 +65,7 @@ type credentialFile struct {
 // the state directory. The credential and the token never appear in
 // output: the printed line names the node and the file only.
 func runJoin(args []string, stdout, stderr io.Writer, stateDir string) int {
-	positionals, dir, ok := parseJoinArgs(args, stateDir, stderr)
+	positionals, dir, configPath, ok := parseJoinArgs(args, stateDir, stderr)
 	if !ok {
 		return exitUse
 	}
@@ -92,19 +94,27 @@ func runJoin(args []string, stdout, stderr io.Writer, stateDir string) int {
 		printf(stderr, "hanse-node: %v\n", err)
 		return exitFail
 	}
+	if configPath != "" {
+		if err := writeGatewayURL(configPath, gatewayURL); err != nil {
+			printf(stderr, "hanse-node: %v\n", err)
+			return exitFail
+		}
+	}
 	printf(stdout, "enrolled node %s; the credential is stored in %s\n", out.Node, path)
 	return exitOK
 }
 
 func joinUsage(w io.Writer) {
-	printf(w, "usage: hanse-node join <gateway-url> <join-token> [--state-dir <path>]\n")
+	printf(w, "usage: hanse-node join <gateway-url> <join-token> [--state-dir <path>] [--config <path>]\n")
 }
 
 // parseJoinArgs scans the join arguments. The Gateway URL and the join
-// token are positionals, and --state-dir may appear anywhere, so
-// `hanse-node join --state-dir X <url> <token>` and
+// token are positionals, and --state-dir and --config may appear anywhere,
+// so `hanse-node join --state-dir X <url> <token>` and
 // `hanse-node join <url> <token> --state-dir X` name the same directory.
-func parseJoinArgs(args []string, stateDir string, stderr io.Writer) (positionals []string, dir string, ok bool) {
+// configPath is empty unless --config was given: only then does join write
+// gateway_url into agent.yaml (docs/configuration.md section 7.1).
+func parseJoinArgs(args []string, stateDir string, stderr io.Writer) (positionals []string, dir, configPath string, ok bool) {
 	dir = stateDir
 	for i := 0; i < len(args); i++ {
 		s := args[i]
@@ -114,29 +124,33 @@ func parseJoinArgs(args []string, stateDir string, stderr io.Writer) (positional
 			name, value, hasEq = name[:eq], name[eq+1:], true
 		}
 		switch name {
-		case "state-dir":
+		case "state-dir", "config":
 			if !hasEq {
 				if i+1 >= len(args) {
 					printf(stderr, "hanse-node: %s needs a value\n", s)
-					return nil, "", false
+					return nil, "", "", false
 				}
 				i++
 				value = args[i]
 			}
 			if value == "" {
 				printf(stderr, "hanse-node: %s needs a value\n", s)
-				return nil, "", false
+				return nil, "", "", false
 			}
-			dir = value
+			if name == "state-dir" {
+				dir = value
+			} else {
+				configPath = value
+			}
 		default:
 			if strings.HasPrefix(s, "-") {
 				printf(stderr, "hanse-node: unknown flag: %s\n", s)
-				return nil, "", false
+				return nil, "", "", false
 			}
 			positionals = append(positionals, s)
 		}
 	}
-	return positionals, dir, true
+	return positionals, dir, configPath, true
 }
 
 // joinEndpoint validates the Gateway URL and returns the join endpoint.
@@ -281,6 +295,91 @@ func restrictMode(path string, mode os.FileMode) error {
 	}
 	if err := os.Chmod(path, mode); err != nil {
 		return fmt.Errorf("cannot set the mode of %s: %v", path, err)
+	}
+	return nil
+}
+
+// writeGatewayURL stores gateway_url in agent.yaml, keeping every other
+// value and comment, so a fresh enrollment leaves the node ready to run
+// (docs/configuration.md section 7.1). A missing file is created with the
+// format version and the URL.
+func writeGatewayURL(path, gatewayURL string) error {
+	if path == "" {
+		return nil
+	}
+	var doc yaml.Node
+	data, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if len(bytes.TrimSpace(data)) > 0 {
+			if err := yaml.Unmarshal(data, &doc); err != nil {
+				return fmt.Errorf("cannot read %s: %v", path, err)
+			}
+		}
+	case os.IsNotExist(err):
+	default:
+		return fmt.Errorf("cannot read %s: %v", path, err)
+	}
+	if doc.Kind == 0 {
+		doc.Kind = yaml.DocumentNode
+		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("%s is not a YAML mapping", path)
+	}
+	mapping := doc.Content[0]
+	value := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: gatewayURL}
+	found := false
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == "gateway_url" {
+			mapping.Content[i+1] = value
+			found = true
+			break
+		}
+	}
+	if !found {
+		if len(mapping.Content) == 0 {
+			mapping.Content = append(mapping.Content,
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "version"},
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: "1"},
+			)
+		}
+		mapping.Content = append(mapping.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "gateway_url"},
+			value,
+		)
+	}
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return fmt.Errorf("cannot encode %s: %v", path, err)
+	}
+	mode := os.FileMode(0o600)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("cannot create %s: %v", dir, err)
+	}
+	tmp, err := os.CreateTemp(dir, ".agent-*")
+	if err != nil {
+		return fmt.Errorf("cannot write %s: %v", path, err)
+	}
+	name := tmp.Name()
+	defer func() { _ = os.Remove(name) }()
+	if _, err := tmp.Write(out); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("cannot write %s: %v", path, err)
+	}
+	if err := tmp.Chmod(mode); err != nil && runtime.GOOS != "windows" {
+		_ = tmp.Close()
+		return fmt.Errorf("cannot set the mode of %s: %v", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("cannot write %s: %v", path, err)
+	}
+	if err := os.Rename(name, path); err != nil {
+		return fmt.Errorf("cannot store %s: %v", path, err)
 	}
 	return nil
 }
