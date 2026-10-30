@@ -624,6 +624,17 @@ func TestLoadTopLevelSchemaUnionTypeFails(t *testing.T) {
 	}
 }
 
+func TestLoadNegativeDurationFails(t *testing.T) {
+	root := t.TempDir()
+	writeCapability(t, root, "pc", strings.Replace(pcManifest,
+		"timeout: 3m", "timeout: -3m", 1))
+	_, _, err := Load(Options{Dirs: []string{root}, Input: baseInput()})
+	if err == nil || !strings.Contains(err.Error(), "must not be negative") ||
+		!strings.Contains(err.Error(), "operations.up.timeout") {
+		t.Fatalf("err = %v, want negative duration error", err)
+	}
+}
+
 func TestLoadExecCapabilitiesWarnWithoutGatewayNode(t *testing.T) {
 	root := t.TempDir()
 	writeCapability(t, root, "pc", pcManifest)

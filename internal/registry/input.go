@@ -4,14 +4,14 @@ import (
 	"errors"
 	"strconv"
 
+	"github.com/achmadss/hanse/internal/config"
 	herrors "github.com/achmadss/hanse/internal/errors"
 )
 
-// Input is what the registry needs from the other configuration files. It
-// mirrors the parts of nodes.yaml and routes.yaml this package uses, with
-// their own validation rules applied here. Once issue #8 (loading and
-// validating nodes.yaml and routes.yaml) merges, these types should be
-// replaced by, or wrap, the corresponding types from internal/config.
+// Input is what the registry needs from the other configuration files.
+// It keeps the registry's own shape for the node and route values so the
+// wiring issue can connect it to internal/config; ID checks already go
+// through config.ValidID.
 type Input struct {
 	// Nodes is every node from nodes.yaml.
 	Nodes []Node
@@ -80,7 +80,7 @@ func (in Input) validate() error {
 	seen := map[string]bool{}
 	for i := range in.Nodes {
 		n := &in.Nodes[i]
-		if !validID(n.ID) {
+		if !config.ValidID(n.ID) {
 			probs = append(probs, herrors.New(herrors.Internal,
 				"nodes: invalid node ID "+quote(n.ID), nil))
 		}
@@ -91,7 +91,7 @@ func (in Input) validate() error {
 		seen[n.ID] = true
 	}
 	if in.GatewayHost != "" {
-		if !validID(in.GatewayHost) {
+		if !config.ValidID(in.GatewayHost) {
 			probs = append(probs, herrors.New(herrors.Internal,
 				"gateway.yaml: node: invalid node ID "+quote(in.GatewayHost), nil))
 		} else if _, ok := in.node(in.GatewayHost); !ok {
@@ -101,37 +101,37 @@ func (in Input) validate() error {
 	}
 	for capID, route := range in.Routes.Capabilities {
 		capField := "routes.yaml: capabilities." + capID
-		if !validID(capID) {
+		if !config.ValidID(capID) {
 			probs = append(probs, herrors.New(herrors.Internal,
 				"routes.yaml: capabilities."+quote(capID)+": invalid capability ID", nil))
 		}
 		if !route.Wildcard {
 			for i, id := range route.Executors {
-				if !validID(id) {
+				if !config.ValidID(id) {
 					probs = append(probs, herrors.New(herrors.Internal,
 						capField+".executors["+strconv.Itoa(i)+"]: invalid node ID "+quote(id), nil))
 				}
 			}
 		}
-		if route.DefaultExecutor != "" && !validID(route.DefaultExecutor) {
+		if route.DefaultExecutor != "" && !config.ValidID(route.DefaultExecutor) {
 			probs = append(probs, herrors.New(herrors.Internal,
 				capField+".default_executor: invalid node ID "+quote(route.DefaultExecutor), nil))
 		}
 		for opID, op := range route.Operations {
 			opField := capField + ".operations." + opID
-			if !validID(opID) {
+			if !config.ValidID(opID) {
 				probs = append(probs, herrors.New(herrors.Internal,
 					capField+".operations."+quote(opID)+": invalid operation ID", nil))
 			}
 			if !op.Wildcard {
 				for i, id := range op.Executors {
-					if !validID(id) {
+					if !config.ValidID(id) {
 						probs = append(probs, herrors.New(herrors.Internal,
 							opField+".executors["+strconv.Itoa(i)+"]: invalid node ID "+quote(id), nil))
 					}
 				}
 			}
-			if op.DefaultExecutor != "" && !validID(op.DefaultExecutor) {
+			if op.DefaultExecutor != "" && !config.ValidID(op.DefaultExecutor) {
 				probs = append(probs, herrors.New(herrors.Internal,
 					opField+".default_executor: invalid node ID "+quote(op.DefaultExecutor), nil))
 			}

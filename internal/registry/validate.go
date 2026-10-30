@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/achmadss/hanse/internal/config"
 	herrors "github.com/achmadss/hanse/internal/errors"
 )
 
@@ -52,7 +53,7 @@ func validateManifest(path string, m *Manifest) error {
 	if m.Version != 1 {
 		return manifestErr(path, "version", "version is required and must be 1")
 	}
-	if !validID(m.ID) {
+	if !config.ValidID(m.ID) {
 		return manifestErr(path, "id", "id must match ^[a-z][a-z0-9_-]*$ and be at most 63 characters long, not %q", m.ID)
 	}
 	if m.Name == "" {
@@ -69,7 +70,7 @@ func validateManifest(path string, m *Manifest) error {
 	}
 	ids := m.OperationIDs()
 	for _, id := range ids {
-		if !validID(id) {
+		if !config.ValidID(id) {
 			return manifestErr(path, opField(id, ""), "operation ID must match ^[a-z][a-z0-9_-]*$ and be at most 63 characters long, got %q", id)
 		}
 		if err := validateOperation(path, m, id, m.Operations[id]); err != nil {
@@ -248,13 +249,18 @@ func validateOperation(path string, m *Manifest, opID string, spec *OperationSpe
 }
 
 // parseOptionalDuration parses a manifest duration that may be empty.
+// config.ParseDuration does the format check; the registry adds the
+// manifest rule that a duration must not be negative.
 func parseOptionalDuration(s string) (*time.Duration, error) {
 	if s == "" {
 		return nil, nil
 	}
-	d, err := parseDuration(s)
+	d, err := config.ParseDuration(s)
 	if err != nil {
 		return nil, err
+	}
+	if d < 0 {
+		return nil, fmt.Errorf("duration %q must not be negative", s)
 	}
 	return &d, nil
 }
