@@ -248,7 +248,7 @@ func checkGolden(t *testing.T, name string, got []byte) {
 
 // TestGolden covers every discovery endpoint.
 func TestGolden(t *testing.T) {
-	handler := New(newFixture(t))
+	handler := New(newFixture(t), nil)
 	cases := []struct {
 		name string
 		path string
@@ -280,7 +280,7 @@ func TestGolden(t *testing.T) {
 // TestDeterministicResponses fetches every endpoint twice and requires
 // byte-identical bodies, so a client can compare and cache responses.
 func TestDeterministicResponses(t *testing.T) {
-	handler := New(newFixture(t))
+	handler := New(newFixture(t), nil)
 	paths := []string{
 		"/v1/capabilities",
 		"/v1/nodes",
@@ -310,7 +310,7 @@ type wireError struct {
 
 // TestErrors covers the documented codes of the discovery routes.
 func TestErrors(t *testing.T) {
-	handler := New(newFixture(t))
+	handler := New(newFixture(t), nil)
 	cases := []struct {
 		name   string
 		path   string
@@ -348,7 +348,7 @@ func TestErrors(t *testing.T) {
 
 // TestMethodNotAllowed rejects every method but GET.
 func TestMethodNotAllowed(t *testing.T) {
-	handler := New(newFixture(t))
+	handler := New(newFixture(t), nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/version", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -359,7 +359,7 @@ func TestMethodNotAllowed(t *testing.T) {
 // TestNoRegistry reports the Internal code instead of panicking when the
 // Gateway has no loaded registry.
 func TestNoRegistry(t *testing.T) {
-	handler := New(nil)
+	handler := New(nil, nil)
 	for _, path := range []string{"/v1/capabilities", "/v1/nodes", "/v1/capabilities/pc"} {
 		resp, body := get(t, handler, path)
 		if resp.StatusCode != http.StatusInternalServerError {
@@ -378,7 +378,7 @@ func TestNoRegistry(t *testing.T) {
 // TestNodeOptions covers the node filter semantics of the options
 // endpoint (docs/configuration.md section 6.4).
 func TestNodeOptions(t *testing.T) {
-	handler := New(newFixture(t))
+	handler := New(newFixture(t), nil)
 	cases := []struct {
 		name string
 		path string
@@ -427,7 +427,7 @@ func TestNodeOptions(t *testing.T) {
 
 // TestNodeWithoutCapabilities covers a node that only exists as a target.
 func TestNodeWithoutCapabilities(t *testing.T) {
-	handler := New(newFixture(t))
+	handler := New(newFixture(t), nil)
 	resp, body := get(t, handler, "/v1/nodes/node-c/capabilities")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, body %s", resp.StatusCode, body)
@@ -452,7 +452,7 @@ func TestBuiltinCapability(t *testing.T) {
 	if err := echotest.Register(handlers, reg, echotest.Options{GatewayHost: "gateway"}); err != nil {
 		t.Fatalf("register echo: %v", err)
 	}
-	handler := New(reg)
+	handler := New(reg, nil)
 
 	resp, body := get(t, handler, "/v1/capabilities/echo")
 	if resp.StatusCode != http.StatusOK {
@@ -523,7 +523,7 @@ func TestMissingRawSchema(t *testing.T) {
 		t.Fatal("the fixture has no pc capability")
 	}
 	delete(c.Manifest.Operations, "up")
-	handler := New(reg)
+	handler := New(reg, nil)
 	for _, path := range []string{
 		"/v1/operations/pc/up/schema",
 		"/v1/operations/pc/up/describe",

@@ -1,5 +1,6 @@
-// Package api serves the read-only discovery endpoints of the versioned
-// HTTP API under /v1 (docs/architecture.md section 11). Execution
-// endpoints and the server wiring come later; New returns a handler that a
-// server mounts behind authentication.
+// Package api serves the versioned HTTP API under /v1: the read-only
+// discovery endpoints (docs/architecture.md section 11) and the execution
+// endpoints for submitting, validating, listing, reading, and cancelling
+// operations (issue #16). The server mounts the returned handler under /v1
+// and wraps it with auth.Store.Middleware.
 package api
