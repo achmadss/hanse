@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/achmadss/hanse/internal/agentconn"
 	"github.com/achmadss/hanse/internal/enroll"
 	herrors "github.com/achmadss/hanse/internal/errors"
 	"github.com/achmadss/hanse/internal/operations"
@@ -14,26 +15,32 @@ import (
 )
 
 // New returns the routes of the versioned API: the discovery endpoints, the
-// execution endpoints of issue #16, and the agent enrollment endpoint of
-// issue #37. The server mounts the handler under /v1 and wraps it with
+// execution endpoints of issue #16, and the agent endpoints of issues #37
+// and #38. The server mounts the handler under /v1 and wraps it with
 // auth.Store.Middleware, which authenticates every request and stores the
-// identity the execution routes authorize. POST /v1/agent/join is the one
-// exception: its join token authenticates it, so the middleware must skip
-// that route when the server wires the two together.
+// identity the execution routes authorize. Three routes are the exception:
+// POST /v1/agent/join, GET /v1/agent/connect, and GET /v1/agent/bundles/
+// {hash} authenticate themselves with a join token or a node credential,
+// so the middleware must skip them when the server wires the two together.
 //
 // reg may be nil: every discovery route then answers with the Internal
 // code instead of panicking. ops may be nil too; the execution routes then
 // answer with the Internal code, so a Gateway without a dispatcher never
 // pretends to run an operation. enr may be nil as well; the join route then
-// answers with the Internal code.
-func New(reg *registry.Registry, ops *operations.Manager, enr *enroll.Service) http.Handler {
-	return newServer(reg, ops, enr, DefaultSSEKeepAlive)
+// answers with the Internal code. Options carry the agent connection hub
+// and the bundle source; a Gateway without them answers the agent routes
+// with the Internal or BundleUnavailable code.
+func New(reg *registry.Registry, ops *operations.Manager, enr *enroll.Service, options ...Option) http.Handler {
+	return newServer(reg, ops, enr, DefaultSSEKeepAlive, options...)
 }
 
 // newServer builds the routes of a server with the given keepalive interval.
 // Tests lower the interval to see a keepalive comment on a short stream.
-func newServer(reg *registry.Registry, ops *operations.Manager, enr *enroll.Service, keepAlive time.Duration) http.Handler {
+func newServer(reg *registry.Registry, ops *operations.Manager, enr *enroll.Service, keepAlive time.Duration, options ...Option) http.Handler {
 	s := &server{reg: reg, ops: ops, enr: enr, keepAlive: keepAlive}
+	for _, option := range options {
+		option(s)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/version", s.getVersion)
 	mux.HandleFunc("GET /v1/capabilities", s.listCapabilities)
@@ -52,6 +59,8 @@ func newServer(reg *registry.Registry, ops *operations.Manager, enr *enroll.Serv
 	mux.HandleFunc("GET /v1/operations/{id}/logs", s.getOperationLogs)
 	mux.HandleFunc("POST /v1/operations/{id}/cancel", s.cancelOperation)
 	mux.HandleFunc("POST /v1/agent/join", s.joinAgent)
+	mux.HandleFunc("GET /v1/agent/connect", s.connectAgent)
+	mux.HandleFunc("GET /v1/agent/bundles/{hash}", s.getBundle)
 	return mux
 }
 
@@ -61,6 +70,17 @@ func newServer(reg *registry.Registry, ops *operations.Manager, enr *enroll.Serv
 // (docs/architecture.md section 10).
 const DefaultSSEKeepAlive = 15 * time.Second
 
+// Option sets an optional part of the API, such as the agent connection
+// hub. The variadic form keeps existing callers working while the Gateway
+// wiring adds parts.
+type Option func(*server)
+
+// WithAgentHub sets the node agent connection hub that the connect route
+// and the bundle credential check use.
+func WithAgentHub(hub *agentconn.Hub) Option {
+	return func(s *server) { s.agents = hub }
+}
+
 // server is the shared state of the API handlers.
 type server struct {
 	reg *registry.Registry
@@ -69,6 +89,19 @@ type server struct {
 	// keepAlive is how often a followed log sends a keepalive comment.
 	// Zero disables the keepalive.
 	keepAlive time.Duration
+	agents    *agentconn.Hub
+	bundles   BundleSource
+}
+
+// connectAgent answers GET /v1/agent/connect: the hub authenticates the
+// node credential, upgrades the connection, and runs the agent protocol.
+func (s *server) connectAgent(w http.ResponseWriter, r *http.Request) {
+	if s.agents == nil {
+		writeError(w, herrors.New(herrors.Internal,
+			"the agent connection hub is not available", nil))
+		return
+	}
+	s.agents.ServeConnect(w, r)
 }
 
 // writeJSON writes v as an indented JSON response with the given status.

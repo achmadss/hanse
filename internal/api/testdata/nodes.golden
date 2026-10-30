@@ -9,7 +9,8 @@
       ],
       "attributes": {},
       "enabled": true,
-      "status": "online"
+      "status": "online",
+      "agent_version": ""
     },
     {
       "id": "node-a",
@@ -20,7 +21,8 @@
       ],
       "attributes": {},
       "enabled": true,
-      "status": "offline"
+      "status": "offline",
+      "agent_version": ""
     },
     {
       "id": "node-b",
@@ -31,7 +33,8 @@
       ],
       "attributes": {},
       "enabled": true,
-      "status": "offline"
+      "status": "offline",
+      "agent_version": ""
     },
     {
       "id": "node-c",
@@ -46,7 +49,8 @@
         "ssh_user": "hanse"
       },
       "enabled": true,
-      "status": "offline"
+      "status": "offline",
+      "agent_version": ""
     },
     {
       "id": "node-d",
@@ -61,7 +65,8 @@
         "ssh_user": "hanse"
       },
       "enabled": false,
-      "status": "offline"
+      "status": "offline",
+      "agent_version": ""
     },
     {
       "id": "node-e",
@@ -74,7 +79,8 @@
         "mac": "00:00:5e:00:53:03"
       },
       "enabled": true,
-      "status": "offline"
+      "status": "offline",
+      "agent_version": ""
     }
   ]
 }
