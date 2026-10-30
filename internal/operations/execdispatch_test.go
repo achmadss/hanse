@@ -160,6 +160,60 @@ func TestExecDispatcherEchoEndToEnd(t *testing.T) {
 	}
 }
 
+// TestExecDispatcherStderrStream covers the stream name of exec handler
+// lines: every stderr line is stored and followed as `stderr`, while the
+// manager's own events stay `system`.
+func TestExecDispatcherStderrStream(t *testing.T) {
+	if !echoInterpreterAvailable() {
+		t.Skip("the interpreter of capabilities/echo is not installed")
+	}
+	reg := loadEchoRegistry(t)
+	manager, err := New(Config{
+		Registry:   reg,
+		Dispatcher: echoDispatcher(t, reg),
+		Timeouts: config.Timeouts{
+			Operation:   10 * time.Second,
+			Options:     10 * time.Second,
+			GracePeriod: time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatalf("build the manager: %v", err)
+	}
+	rec, err := manager.Submit(Request{
+		Capability: "echo",
+		Operation:  "say",
+		Arguments:  json.RawMessage(`{"message":"hello"}`),
+		Requester:  "test",
+	})
+	if err != nil {
+		t.Fatalf("submit echo.say: %v", err)
+	}
+	if rec.Status != StateCompleted {
+		t.Fatalf("echo.say status = %q, want completed (failure %+v)", rec.Status, rec.Failure)
+	}
+	if !logContainsStream(t, manager, rec.ID, StreamStderr, "say:") {
+		t.Errorf("the handler line is not stored with stream %q: %v", StreamStderr, logLines(t, manager, rec.ID))
+	}
+	if !logContainsStream(t, manager, rec.ID, StreamSystem, "handler started") {
+		t.Errorf("the manager event is not stored with stream %q: %v", StreamSystem, logLines(t, manager, rec.ID))
+	}
+	sub, backlog, err := manager.Follow(rec.ID, 0)
+	if err != nil {
+		t.Fatalf("follow: %v", err)
+	}
+	defer sub.Close()
+	found := false
+	for _, entry := range backlog {
+		if entry.Stream == StreamStderr && strings.Contains(entry.Line, "say:") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the follower backlog has no %q line: %v", StreamStderr, backlog)
+	}
+}
+
 // logContains reports whether one operation log holds text.
 func logContains(t *testing.T, manager *Manager, id, text string) bool {
 	t.Helper()
@@ -183,6 +237,22 @@ func logLines(t *testing.T, manager *Manager, id string) []string {
 		lines = append(lines, entry.Line)
 	}
 	return lines
+}
+
+// logContainsStream reports whether one operation log holds text with the
+// given stream.
+func logContainsStream(t *testing.T, manager *Manager, id, stream, text string) bool {
+	t.Helper()
+	entries, err := manager.Logs(id, 0)
+	if err != nil {
+		t.Fatalf("read logs of %s: %v", id, err)
+	}
+	for _, entry := range entries {
+		if entry.Stream == stream && strings.Contains(entry.Line, text) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestExecDispatcherRejectsRemoteExecutor covers a call for a node agent

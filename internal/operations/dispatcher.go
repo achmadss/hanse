@@ -14,11 +14,11 @@ import (
 type Call struct {
 	Request   *runtime.Request
 	Elevation *Elevation
-	// Log appends one line to the operation's log. The manager supplies
-	// it, and the log sink applies the run's redaction terms, so a
-	// dispatcher passes the line through unchanged. A nil Log discards
-	// the lines.
-	Log func(line string)
+	// Log appends one line to the operation's log with its stream name,
+	// StreamSystem or StreamStderr. The manager supplies it, and the log
+	// sink applies the run's redaction terms, so a dispatcher passes the
+	// line through unchanged. A nil Log discards the lines.
+	Log func(stream, line string)
 }
 
 // Dispatcher runs one validated call on its executor. The builtin runtime
@@ -56,5 +56,9 @@ func (d *BuiltinDispatcher) Execute(ctx context.Context, call *Call) (runtime.Re
 		return runtime.Response{}, herrors.New(herrors.Internal,
 			"the builtin handler registry is not available", nil)
 	}
-	return d.handlers.Run(ctx, call.Request, call.Log)
+	var onLog func(line string)
+	if call.Log != nil {
+		onLog = func(line string) { call.Log(StreamSystem, line) }
+	}
+	return d.handlers.Run(ctx, call.Request, onLog)
 }

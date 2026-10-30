@@ -75,5 +75,9 @@ func (d *ExecDispatcher) Execute(ctx context.Context, call *Call) (runtime.Respo
 				req.Executor.ID, host),
 			map[string]any{"executor": req.Executor.ID})
 	}
-	return d.agent.Execute(ctx, req, call.Log)
+	var onLog func(line string)
+	if call.Log != nil {
+		onLog = func(line string) { call.Log(StreamStderr, line) }
+	}
+	return d.agent.Execute(ctx, req, onLog)
 }

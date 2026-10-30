@@ -506,9 +506,9 @@ func (m *Manager) execute(exec *execution, rec Record, op *registry.Operation) {
 	resp, err := m.dispatcher.Execute(ctx, &Call{
 		Request:   envelope,
 		Elevation: elevation,
-		// Builtin handlers have no stderr; the contract maps their
-		// lines to `system` entries.
-		Log: func(line string) { write(StreamSystem, line) },
+		// A dispatcher names the stream of every line: exec handlers
+		// write stderr, builtin handlers write system events.
+		Log: write,
 	})
 	m.complete(ctx, current.ID, resp, err, exec.cancellationRequested(), password, write)
 }
