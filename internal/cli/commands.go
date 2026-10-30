@@ -205,8 +205,18 @@ func (a *app) warnVersionMismatch(gatewayAPIVersion string) {
 	a.warnf("the CLI speaks API version %s but the Gateway speaks %s", api.APIVersion, gatewayAPIVersion)
 }
 
-// capabilitiesCommand implements capabilities and capabilities show.
+// capabilitiesCommand implements capabilities and capabilities show. The
+// install and remove subcommands run on the Gateway host and live in
+// capinstall.go.
 func (a *app) capabilitiesCommand(ctx context.Context, args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "install":
+			return a.capabilitiesInstallCommand(ctx, args[1:])
+		case "remove":
+			return a.capabilitiesRemoveCommand(ctx, args[1:])
+		}
+	}
 	fs := newFlagSet("capabilities")
 	formatValue := formatFlag(fs)
 	positional, err := parseArgs(fs, args)

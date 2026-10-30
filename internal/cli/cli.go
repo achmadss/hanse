@@ -132,6 +132,8 @@ func printUsage(w io.Writer) {
 Commands:
   login --url <url> [--token <token>]       Save the Gateway URL and token.
   capabilities [show <id>]                  List capabilities or show one.
+  capabilities install <git-url|path>       Install a package on the Gateway host (--ref, --yes).
+  capabilities remove <id>                  Remove an installed capability (--yes).
   nodes [show <id>]                         List nodes or show one.
   nodes capabilities <id>                   List the capabilities of a node.
   schema <capability> <operation>           Show an operation's argument schema.
