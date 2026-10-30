@@ -62,8 +62,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitUse
 	}
 	if fs.NArg() > 0 {
-		if fs.Arg(0) == "token" {
+		switch fs.Arg(0) {
+		case "token":
 			return runToken(fs.Args()[1:], stdout, stderr, configPath)
+		case "node":
+			return runNode(fs.Args()[1:], stdout, stderr, configPath)
 		}
 		usage(stderr, fs)
 		return exitUse
@@ -108,6 +111,8 @@ func usage(w io.Writer, fs *flag.FlagSet) {
 	printf(w, "       hanse-gateway token add <name> [--allow <cap.op>,...] [--config <path>]\n")
 	printf(w, "       hanse-gateway token list [--config <path>]\n")
 	printf(w, "       hanse-gateway token revoke <name> [--config <path>]\n")
+	printf(w, "       hanse-gateway node enroll <id> [--config <path>]\n")
+	printf(w, "       hanse-gateway node revoke <id> [--config <path>]\n")
 	fs.SetOutput(w)
 	fs.PrintDefaults()
 }

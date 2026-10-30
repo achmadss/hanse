@@ -30,7 +30,7 @@ Read the [architecture document](architecture.md) first. The [handler contract](
 The Gateway also uses two files that its commands manage. Do not edit them by hand:
 
 - The tokens file, named in `gateway.yaml`, which `hanse-gateway token` manages.
-- The database in the state directory, which holds history, logs, join tokens, and node credential hashes.
+- The databases in the state directory: one holds history and logs, and one holds join tokens and node credential hashes.
 
 ### 1.1 Default locations
 
@@ -489,7 +489,7 @@ For example, the secret `api_token` of the capability `backup` lives in `/etc/ha
 | Secret | Where it lives |
 |---|---|
 | API token hashes | The tokens file, managed by `hanse-gateway token` |
-| Join token and node credential hashes | The Gateway database |
+| Join token and node credential hashes | The enrollment database, `<state_dir>/enroll.db` |
 | The node credential | `<state_dir>/credential` on the node, written by `hanse-node join` |
 | Elevation passwords | Nowhere. Clients send them with each request, and they stay in memory. |
 | TLS private key | `tls.key_file`, with the same permission rules as secret files |
