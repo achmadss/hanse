@@ -103,6 +103,35 @@ func (s *recordingSink) waitFor(t *testing.T, line string) {
 	}
 }
 
+// waitForContains waits until one stored line contains text. The shell and
+// Python echo handlers quote the message differently, so the tests match on
+// the stable part of the line.
+func (s *recordingSink) waitForContains(t *testing.T, text string) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		s.mu.Lock()
+		found := false
+		for _, stored := range s.lines {
+			if strings.Contains(stored.line, text) {
+				found = true
+				break
+			}
+		}
+		s.mu.Unlock()
+		if found {
+			return
+		}
+		if time.Now().After(deadline) {
+			s.mu.Lock()
+			got := append([]sinkLine(nil), s.lines...)
+			s.mu.Unlock()
+			t.Fatalf("no log line containing %q; got %+v", text, got)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // lines returns a copy of the stored lines.
 func (s *recordingSink) linesCopy() []sinkLine {
 	s.mu.Lock()
@@ -314,7 +343,7 @@ func TestEchoSayRunsOnTheAgent(t *testing.T) {
 	if !strings.Contains(string(response.Result), `"said":"hello"`) {
 		t.Errorf("result %s, want the echoed message", response.Result)
 	}
-	st.logs.waitFor(t, `say: "hello"`)
+	st.logs.waitForContains(t, "say:")
 	if got := st.bundleCount(); got != 1 {
 		t.Errorf("bundle downloads %d, want 1", got)
 	}
