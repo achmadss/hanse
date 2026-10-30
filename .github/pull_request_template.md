@@ -1,25 +1,8 @@
-## What?
+<!-- After `Closes #`, fill in the issue number. If this PR closes several issues, list each one, for example `Closes #7, closes #8` (each needs its own keyword for GitHub to close it).
 
-<!-- A few short sentences describing the change. Reference an issue only after explaining the change, never instead of it. -->
+`Notes:` lists any discrepancy or inconsistency found (between the issue, the docs, and the code), and any decision the implementer assumed because the issue did not specify it. One bullet per point, short. If there is nothing to note, delete the Notes section entirely. -->
 
-## Why?
+Closes #
 
-<!-- The goal this change achieves, in complete sentences with active voice. Not "See #12". -->
-
-## How?
-
-<!-- Significant design decisions and why they were made. Do not restate the diff. -->
-
-## Testing?
-
-<!-- The tests included, how to verify anything the tests cannot cover, and untested edge cases with their risk. -->
-
-## Screenshots or output
-
-<!-- Optional. Relevant command output for this backend/CLI project. Put large output in a collapsible <details><summary>...</summary> block. -->
-
-## Anything else?
-
-<!-- Architecture changes, technical debt, alternatives considered, follow-ups for the reviewer. -->
-
-Closes # <!-- Fill in the issue number, or delete this line if the change does not close an issue. -->
+Notes:
+-
