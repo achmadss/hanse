@@ -7,15 +7,21 @@ import (
 	"net/http"
 
 	herrors "github.com/achmadss/hanse/internal/errors"
+	"github.com/achmadss/hanse/internal/operations"
 	"github.com/achmadss/hanse/internal/registry"
 )
 
-// New returns the discovery routes of the API. The returned handler serves
-// only GET requests; the server (#16) mounts it under /v1 and wraps it with
-// auth.Store.Middleware. reg may be nil: every route then answers with the
-// Internal code instead of panicking.
-func New(reg *registry.Registry) http.Handler {
-	s := &server{reg: reg}
+// New returns the routes of the versioned API: the discovery endpoints and
+// the execution endpoints of issue #16. The server mounts the handler under
+// /v1 and wraps it with auth.Store.Middleware, which authenticates every
+// request and stores the identity the execution routes authorize.
+//
+// reg may be nil: every discovery route then answers with the Internal
+// code instead of panicking. ops may be nil too; the execution routes then
+// answer with the Internal code, so a Gateway without a dispatcher never
+// pretends to run an operation.
+func New(reg *registry.Registry, ops *operations.Manager) http.Handler {
+	s := &server{reg: reg, ops: ops}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/version", s.getVersion)
 	mux.HandleFunc("GET /v1/capabilities", s.listCapabilities)
@@ -26,12 +32,18 @@ func New(reg *registry.Registry) http.Handler {
 	mux.HandleFunc("GET /v1/operations/{capability}/{operation}/schema", s.getSchema)
 	mux.HandleFunc("GET /v1/operations/{capability}/{operation}/describe", s.describeOperation)
 	mux.HandleFunc("GET /v1/operations/{capability}/{operation}/options/{field}", s.listOptions)
+	mux.HandleFunc("POST /v1/operations", s.submitOperation)
+	mux.HandleFunc("POST /v1/operations/validate", s.validateOperation)
+	mux.HandleFunc("GET /v1/operations", s.listOperations)
+	mux.HandleFunc("GET /v1/operations/{id}", s.getOperation)
+	mux.HandleFunc("POST /v1/operations/{id}/cancel", s.cancelOperation)
 	return mux
 }
 
-// server is the shared state of the discovery handlers.
+// server is the shared state of the API handlers.
 type server struct {
 	reg *registry.Registry
+	ops *operations.Manager
 }
 
 // writeJSON writes v as an indented JSON response with the given status.
