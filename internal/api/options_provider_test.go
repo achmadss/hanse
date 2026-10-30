@@ -23,7 +23,10 @@ import (
 // interpreter that capabilities/echo uses.
 func apiEchoInterpreterAvailable() bool {
 	if goruntime.GOOS == "windows" {
-		_, err := exec.LookPath("powershell")
+		if _, err := exec.LookPath("python"); err == nil {
+			return true
+		}
+		_, err := exec.LookPath("python3")
 		return err == nil
 	}
 	_, err := exec.LookPath("sh")

@@ -27,7 +27,10 @@ func echoCapabilityDirs() []string {
 // interpreter that capabilities/echo uses.
 func echoInterpreterAvailable() bool {
 	if goruntime.GOOS == "windows" {
-		_, err := exec.LookPath("powershell")
+		if _, err := exec.LookPath("python"); err == nil {
+			return true
+		}
+		_, err := exec.LookPath("python3")
 		return err == nil
 	}
 	_, err := exec.LookPath("sh")
@@ -116,7 +119,7 @@ func TestExecDispatcherEchoEndToEnd(t *testing.T) {
 		t.Fatalf("submit echo.say: %v", err)
 	}
 	if said.Status != StateCompleted {
-		t.Fatalf("echo.say status = %q, want completed (failure %+v)", said.Status, said.Failure)
+		t.Fatalf("echo.say status = %q, want completed (failure %+v, logs %v)", said.Status, said.Failure, logLines(t, manager, said.ID))
 	}
 	if string(said.Result) != `{"said":"hello"}` {
 		t.Errorf("echo.say result = %s, want {\"said\":\"hello\"}", said.Result)
@@ -160,16 +163,26 @@ func TestExecDispatcherEchoEndToEnd(t *testing.T) {
 // logContains reports whether one operation log holds text.
 func logContains(t *testing.T, manager *Manager, id, text string) bool {
 	t.Helper()
-	entries, err := manager.Logs(id, 0)
-	if err != nil {
-		t.Fatalf("read logs of %s: %v", id, err)
-	}
-	for _, entry := range entries {
-		if strings.Contains(entry.Line, text) {
+	for _, line := range logLines(t, manager, id) {
+		if strings.Contains(line, text) {
 			return true
 		}
 	}
 	return false
+}
+
+// logLines returns the text of one operation log.
+func logLines(t *testing.T, manager *Manager, id string) []string {
+	t.Helper()
+	entries, err := manager.Logs(id, 0)
+	if err != nil {
+		t.Fatalf("read logs of %s: %v", id, err)
+	}
+	lines := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		lines = append(lines, entry.Line)
+	}
+	return lines
 }
 
 // TestExecDispatcherRejectsRemoteExecutor covers a call for a node agent
