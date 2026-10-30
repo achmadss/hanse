@@ -254,6 +254,25 @@ func TestLoadValidationRules(t *testing.T) {
 			want: nil,
 		},
 		{
+			name: "null capability is empty routing, not a crash",
+			files: func() map[string]entry {
+				f := baseFiles()
+				f["routes.yaml"] = entry{content: "version: 1\ncapabilities:\n  demo:\n"}
+				return f
+			},
+			want: nil,
+		},
+		{
+			name: "null operation is empty routing, not a crash",
+			files: func() map[string]entry {
+				f := baseFiles()
+				f["routes.yaml"] = entry{content: routesBase +
+					"\n    operations:\n      run:\n"}
+				return f
+			},
+			want: nil,
+		},
+		{
 			name: "unknown key in gateway.yaml",
 			files: func() map[string]entry {
 				return withGateway("timeuouts:\n  operation: 5m\n")
@@ -559,13 +578,40 @@ func TestLoadValidationRules(t *testing.T) {
 			want: []string{"gateway.yaml: public_url: must use https, unless its host is a loopback address"},
 		},
 		{
+			name: "https on a non-loopback host is fine",
+			files: func() map[string]entry {
+				f := baseFiles()
+				f["gateway.yaml"] = entry{content: strings.Replace(gwBase, "public_url: http://127.0.0.1:8443", "public_url: https://gw.example.test", 1)}
+				return f
+			},
+			want: nil,
+		},
+		{
+			name: "a scheme that is not http or https is a problem, even on loopback",
+			files: func() map[string]entry {
+				f := baseFiles()
+				f["gateway.yaml"] = entry{content: strings.Replace(gwBase, "public_url: http://127.0.0.1:8443", "public_url: ftp://127.0.0.1", 1)}
+				return f
+			},
+			want: []string{"/gateway.yaml: public_url: must use https, unless its host is a loopback address"},
+		},
+		{
+			name: "a scheme that is not http or https is a problem on any host",
+			files: func() map[string]entry {
+				f := baseFiles()
+				f["gateway.yaml"] = entry{content: strings.Replace(gwBase, "public_url: http://127.0.0.1:8443", "public_url: ftp://gw.example.test", 1)}
+				return f
+			},
+			want: []string{"/gateway.yaml: public_url: must use https, unless its host is a loopback address"},
+		},
+		{
 			name: "public_url is required",
 			files: func() map[string]entry {
 				f := baseFiles()
 				f["gateway.yaml"] = entry{content: strings.Replace(gwBase, "public_url: http://127.0.0.1:8443\n", "", 1)}
 				return f
 			},
-			want: []string{"gateway.yaml: public_url: is required"},
+			want: []string{"/gateway.yaml: public_url: is required"},
 		},
 		{
 			name: "public_url is not a URL",
@@ -574,7 +620,7 @@ func TestLoadValidationRules(t *testing.T) {
 				f["gateway.yaml"] = entry{content: strings.Replace(gwBase, "public_url: http://127.0.0.1:8443", "public_url: \":\"", 1)}
 				return f
 			},
-			want: []string{"gateway.yaml: public_url: is not a valid URL"},
+			want: []string{"/gateway.yaml: public_url: is not a valid URL"},
 		},
 		{
 			name: "listen on a non-loopback address without TLS",

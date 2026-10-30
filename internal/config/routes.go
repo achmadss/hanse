@@ -45,21 +45,41 @@ func (c *CapabilityRoutes) effectiveList(op *OperationRoutes) ExecutorList {
 	return c.Executors
 }
 
+// finalizeRoutes replaces null values with empty routing: a null
+// capability or operation decodes to a nil pointer, and a null entry
+// means "no routing configured", which is valid (docs/configuration.md
+// §5.1 defaults executors to []). Normalizing here is what keeps every
+// later loop nil-safe; the loops never see a nil entry.
+func finalizeRoutes(r *RoutesConfig) {
+	for id, c := range r.Capabilities {
+		if c == nil {
+			r.Capabilities[id] = &CapabilityRoutes{}
+			continue
+		}
+		for op, o := range c.Operations {
+			if o == nil {
+				c.Operations[op] = &OperationRoutes{}
+			}
+		}
+	}
+}
+
 // checkRoutes validates routes.yaml alone. Name is the file's path as
-// given on the command line. The per-node existence and enabled checks
-// run in checkRouting, which needs nodes.yaml.
+// given on the command line; every problem carries it. The per-node
+// existence and enabled checks run in checkRouting, which needs
+// nodes.yaml.
 func checkRoutes(r *RoutesConfig, file string, problems *Problems) {
 	if r.Version != 1 {
 		*problems = append(*problems, Problem{file, "version", "must be 1"})
 	}
-	for capID, cap := range r.Capabilities {
+	for capID, c := range r.Capabilities {
 		if !ValidID(capID) {
 			*problems = append(*problems, Problem{file, "capabilities." + capID,
 				"is not a valid capability ID: lowercase letters, digits, \"_\" and \"-\", starting with a letter, at most 63 characters"})
 		}
-		checkList(&cap.Executors, problems, file, "capabilities."+capID+".executors", false)
-		checkNodeRef(cap.DefaultExecutor, problems, file, "capabilities."+capID+".default_executor")
-		for opID, op := range cap.Operations {
+		checkList(&c.Executors, problems, file, "capabilities."+capID+".executors")
+		checkNodeRef(c.DefaultExecutor, problems, file, "capabilities."+capID+".default_executor")
+		for opID, op := range c.Operations {
 			if !ValidID(opID) {
 				*problems = append(*problems, Problem{file, "capabilities." + capID + ".operations." + opID,
 					"is not a valid operation ID: lowercase letters, digits, \"_\" and \"-\", starting with a letter, at most 63 characters"})
@@ -68,10 +88,10 @@ func checkRoutes(r *RoutesConfig, file string, problems *Problems) {
 				if op.Executors.Star {
 					continue // subset trivially: the capability's whole list
 				}
-				if cap.Executors.Star {
+				if c.Executors.Star {
 					continue // every node is a subset of "*"
 				}
-				checkSubset(op.Executors.Nodes, cap.Executors.Nodes, problems, file,
+				checkSubset(op.Executors.Nodes, c.Executors.Nodes, problems, file,
 					"capabilities."+capID+".operations."+opID+".executors")
 			}
 			checkNodeRef(op.DefaultExecutor, problems, file,
@@ -110,10 +130,9 @@ func checkNodeRef(id string, problems *Problems, file, field string) {
 	}
 }
 
-// checkList validates an executor list's syntax and default executor.
-// The namesInWhole argument reports whether membership can be checked
-// locally (false for "*"-shaped lists).
-func checkList(e *ExecutorList, problems *Problems, file, field string, _ bool) {
+// checkList validates an executor list's syntax: every item must be a
+// node ID, and a "*" must stand alone as the whole value.
+func checkList(e *ExecutorList, problems *Problems, file, field string) {
 	for _, id := range e.Nodes {
 		if id == "*" {
 			*problems = append(*problems, Problem{file, field, "must list node IDs; \"*\" alone is the form for all nodes"})

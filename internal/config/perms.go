@@ -21,10 +21,11 @@ func permsCheckable() bool { return runtime.GOOS != "windows" }
 
 // checkPermissions checks the permissions of the credentials directory,
 // the secret files inside it, and the TLS key, per docs/configuration.md
-// §8. It never reads or logs a secret's contents: every check inspects
-// file metadata only, and every message names a path only.
-func checkPermissions(g *GatewayConfig, problems *Problems) {
-	const file = "gateway.yaml"
+// §8. Name is the gateway.yaml path as given on the command line; every
+// problem carries it. It never reads or logs a secret's contents: every
+// check inspects file metadata only, and every message names a path
+// only.
+func checkPermissions(g *GatewayConfig, file string, problems *Problems) {
 	if !permsCheckable() {
 		// Skipped on Windows: POSIX mode bits and ACL ownership do not
 		// map to each other, so there is nothing to check here yet.
@@ -57,7 +58,10 @@ func checkCredentialsDir(dir, file string, problems *Problems) {
 			"cannot read the directory: " + err.Error()})
 		return
 	}
-	if checkMode(info, dir, problems, file, "paths.credentials_dir", "") && !info.IsDir() {
+	// The mode and the kind are independent problems; report both, not
+	// either one.
+	checkMode(info, dir, problems, file, "paths.credentials_dir", "")
+	if !info.IsDir() {
 		*problems = append(*problems, Problem{file, "paths.credentials_dir",
 			"is not a directory"})
 	}

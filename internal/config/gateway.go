@@ -224,11 +224,10 @@ func finalizeGateway(g *GatewayConfig, baseDir string) {
 	}
 }
 
-// checkGateway validates gateway.yaml alone. The node checks that need
-// nodes.yaml run later, in Load.
-func checkGateway(g *GatewayConfig, problems *Problems) {
-	const file = "gateway.yaml"
-
+// checkGateway validates gateway.yaml alone. Name is the file's path as
+// given on the command line; every problem carries it. The node checks
+// that need nodes.yaml run later, in Load.
+func checkGateway(g *GatewayConfig, file string, problems *Problems) {
 	if g.Version != 1 {
 		*problems = append(*problems, Problem{file, "version", "must be 1"})
 	}
@@ -237,8 +236,8 @@ func checkGateway(g *GatewayConfig, problems *Problems) {
 	} else if !ValidID(g.Node) {
 		*problems = append(*problems, Problem{file, "node", "must be a valid node ID: lowercase letters, digits, \"_\" and \"-\", starting with a letter"})
 	}
-	checkPublicURL(g, problems)
-	checkListen(g, problems)
+	checkPublicURL(g, file, problems)
+	checkListen(g, file, problems)
 	if g.TLS != nil && (g.TLS.CertFile == "") != (g.TLS.KeyFile == "") {
 		*problems = append(*problems, Problem{file, "tls", "set both tls.cert_file and tls.key_file, or neither"})
 	}
@@ -269,8 +268,8 @@ func checkGateway(g *GatewayConfig, problems *Problems) {
 
 // checkPublicURL validates public_url: a parseable URL that uses https,
 // unless its host is a loopback address (docs/configuration.md §3.2).
-func checkPublicURL(g *GatewayConfig, problems *Problems) {
-	const file, field = "gateway.yaml", "public_url"
+func checkPublicURL(g *GatewayConfig, file string, problems *Problems) {
+	const field = "public_url"
 	if g.PublicURL == "" {
 		*problems = append(*problems, Problem{file, field, "is required"})
 		return
@@ -280,20 +279,20 @@ func checkPublicURL(g *GatewayConfig, problems *Problems) {
 		*problems = append(*problems, Problem{file, field, "is not a valid URL"})
 		return
 	}
-	if u.Scheme == "https" {
+	// The scheme must be https, or http on a loopback host
+	// (docs/configuration.md §3.2).
+	if u.Scheme == "https" || u.Scheme == "http" && isLoopbackHost(u.Hostname()) {
 		return
 	}
-	if !isLoopbackHost(u.Hostname()) {
-		*problems = append(*problems, Problem{file, field,
-			"must use https, unless its host is a loopback address"})
-	}
+	*problems = append(*problems, Problem{file, field,
+		"must use https, unless its host is a loopback address"})
 }
 
 // checkListen validates listen: a host:port address that is loopback, or
 // allow_insecure_http is set, or TLS is configured (docs/configuration.md
 // §3.2).
-func checkListen(g *GatewayConfig, problems *Problems) {
-	const file, field = "gateway.yaml", "listen"
+func checkListen(g *GatewayConfig, file string, problems *Problems) {
+	const field = "listen"
 	host, port, err := splitHostPort(*g.Listen)
 	if err != nil {
 		*problems = append(*problems, Problem{file, field, "must be a host:port address"})

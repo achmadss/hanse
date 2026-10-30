@@ -50,6 +50,7 @@ func Load(path string) (*Config, Problems, error) {
 	routesLoaded := false
 	if g.Paths.Routes != "" {
 		if loaded, ok := loadRoutes(g.Paths.Routes, &problems); ok {
+			finalizeRoutes(loaded)
 			routes = loaded
 			checkRoutes(routes, g.Paths.Routes, &problems)
 			routesLoaded = true
@@ -65,7 +66,7 @@ func Load(path string) (*Config, Problems, error) {
 	if routesLoaded && nodesLoaded {
 		checkRouting(routes, nodes, g.Paths.Routes, &problems)
 	}
-	checkPermissions(g, &problems)
+	checkPermissions(g, path, &problems)
 
 	return &Config{Gateway: *g, Nodes: *nodes, Routes: *routes}, problems, nil
 }
@@ -79,7 +80,7 @@ func loadGateway(path string, problems *Problems) (*GatewayConfig, bool) {
 		return nil, false
 	}
 	finalizeGateway(g, filepath.Dir(path))
-	checkGateway(g, problems)
+	checkGateway(g, path, problems)
 	return g, true
 }
 

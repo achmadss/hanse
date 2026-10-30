@@ -55,6 +55,7 @@ func TestDecodeRepoExamples(t *testing.T) {
 	if errs := decodeStrict(t, filepath.Join(dir, "routes.example.yaml"), &routes); errs != nil {
 		t.Errorf("routes.example.yaml does not decode strictly: %v", errs)
 	}
+	finalizeRoutes(&routes)
 	checkRoutes(&routes, "routes.example.yaml", &problems)
 	checkRouting(&routes, &nodes, "routes.example.yaml", &problems)
 	assertProblems(t, problems, nil)

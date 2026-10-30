@@ -4,13 +4,13 @@ package config
 // referenced node exists, enabled, and every default executor is in its
 // level's eligible list (docs/configuration.md §5.2).
 func checkRouting(r *RoutesConfig, nodes *NodesConfig, file string, problems *Problems) {
-	for capID, cap := range r.Capabilities {
+	for capID, c := range r.Capabilities {
 		base := "capabilities." + capID
-		checkRefs(&cap.Executors, nodes, problems, file, base+".executors")
-		if cap.DefaultExecutor != "" {
-			checkDefault(&cap.Executors, cap.DefaultExecutor, nodes, problems, file, base+".default_executor")
+		checkRefs(&c.Executors, nodes, problems, file, base+".executors")
+		if c.DefaultExecutor != "" {
+			checkDefault(&c.Executors, c.DefaultExecutor, nodes, problems, file, base+".default_executor")
 		}
-		for opID, op := range cap.Operations {
+		for opID, op := range c.Operations {
 			opBase := base + ".operations." + opID
 			if op.Executors != nil && !op.Executors.Star {
 				// The subset check already ran; here only existence and
@@ -18,7 +18,7 @@ func checkRouting(r *RoutesConfig, nodes *NodesConfig, file string, problems *Pr
 				checkRefs(&ExecutorList{Nodes: op.Executors.Nodes}, nodes, problems, file, opBase+".executors")
 			}
 			if op.DefaultExecutor != "" {
-				list := cap.effectiveList(op)
+				list := c.effectiveList(op)
 				checkDefault(&list, op.DefaultExecutor, nodes, problems, file, opBase+".default_executor")
 			}
 		}
