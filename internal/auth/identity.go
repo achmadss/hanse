@@ -46,14 +46,24 @@ func (id *Identity) Authorize(capID, opID string) error {
 // Authenticate checks a presented plain token. A missing, wrong, or
 // revoked token is the AuthenticationFailed code, HTTP 401
 // (architecture.md §14); the error and the store never contain a token
-// value.
+// value. Before checking, Authenticate stats the tokens file and
+// reloads it when it changed, so `hanse-gateway token revoke` reaches a
+// running Gateway. When the file cannot be reloaded (unreadable,
+// invalid, or unsafe), authentication fails closed: every request
+// answers 401 until the file is fixed. The refusal of a failed reload
+// is not sticky, so a fixed file serves again.
 func (s *Store) Authenticate(plain string) (*Identity, error) {
 	if plain == "" {
 		return nil, herrors.New(herrors.AuthenticationFailed, "", nil)
 	}
 	hash := Hash(plain)
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.changedLocked() {
+		if err := s.loadLocked(); err != nil {
+			return nil, herrors.New(herrors.AuthenticationFailed, "", nil)
+		}
+	}
 	for _, r := range s.tokens {
 		if hashesMatch(r.Hash, hash) {
 			return &Identity{Name: r.Name, allow: append([]string(nil), r.Allow...)}, nil
@@ -77,6 +87,8 @@ func (s *Store) Middleware(next http.Handler) http.Handler {
 		plain := BearerToken(r)
 		id, err := s.Authenticate(plain)
 		if err != nil {
+			// RFC 6750: the challenge accompanies the 401.
+			w.Header().Set("WWW-Authenticate", "Bearer")
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(herrors.HTTPStatus(err))
 			_ = herrors.WriteJSON(w, err)

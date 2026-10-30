@@ -114,6 +114,9 @@ func TestMiddleware(t *testing.T) {
 		if rec.Code != 401 {
 			t.Errorf("status = %d, want 401", rec.Code)
 		}
+		if got := rec.Header().Get("WWW-Authenticate"); got != "Bearer" {
+			t.Errorf("WWW-Authenticate = %q, want Bearer (RFC 6750)", got)
+		}
 		var body struct{ Code, Message string }
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 			t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
@@ -130,6 +133,9 @@ func TestMiddleware(t *testing.T) {
 		h.ServeHTTP(rec, req)
 		if rec.Code != 401 {
 			t.Errorf("status = %d, want 401", rec.Code)
+		}
+		if got := rec.Header().Get("WWW-Authenticate"); got != "Bearer" {
+			t.Errorf("WWW-Authenticate = %q, want Bearer (RFC 6750)", got)
 		}
 		if rec.Body.String() != `{"code":"authentication_failed","message":"authentication failed"}` &&
 			strings.ReplaceAll(rec.Body.String(), "\n", "") != `{"code":"authentication_failed","message":"authentication failed"}` {

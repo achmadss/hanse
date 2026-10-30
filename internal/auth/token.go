@@ -56,16 +56,32 @@ type file struct {
 
 // Store holds the tokens read from, or about to be written to, the
 // tokens file named in gateway.yaml. A running Gateway reads a Store
-// concurrently, so every read and write takes the mutex.
+// concurrently, so every read and write takes the mutex. Authenticate
+// re-checks the file and reloads it when it changed, so a revocation
+// made by `hanse-gateway token revoke` reaches the running Gateway
+// without a restart (issue #13).
 type Store struct {
-	mu     sync.RWMutex
+	mu     sync.Mutex
 	path   string
 	tokens []Record
+	// The change-detection snapshot: what the file looked like when the
+	// store last loaded it. It is deliberately approximate (size and
+	// mtime) and errs on the side of reloading. snapMiss records that
+	// the load itself saw no file.
+	snapSet  bool
+	snapMiss bool
+	snapSize int64
+	snapMod  time.Time
 }
 
-// ErrNotFound is the error Revoke and Add report for an unknown or
-// duplicated name. It never names a token value.
-var ErrNotFound = stderrors.New("token name is unknown")
+// ErrNotFound and ErrExists are the failures of Add and Revoke. They
+// are separate sentinels so callers can tell "add failed, the name is
+// taken" from "revoke failed, the name is unknown"; they never name a
+// token value.
+var (
+	ErrNotFound = stderrors.New("token name is unknown")
+	ErrExists   = stderrors.New("token name already exists")
+)
 
 // LoadStore reads the tokens file at path and returns the store. A file
 // that does not exist yields an empty store, so the first
@@ -76,51 +92,128 @@ var ErrNotFound = stderrors.New("token name is unknown")
 // owner is refused.
 func LoadStore(path string) (*Store, error) {
 	s := &Store{path: path}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if stderrors.Is(err, fs.ErrNotExist) {
-			return s, nil
-		}
-		return nil, fmt.Errorf("cannot read the tokens file: %w", err)
-	}
-	var f file
-	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("the tokens file is not valid JSON: %w", err)
-	}
-	if f.Version != fileVersion {
-		return nil, fmt.Errorf("the tokens file version must be %d, got %d", fileVersion, f.Version)
-	}
-	seen := make(map[string]bool, len(f.Tokens))
-	for _, r := range f.Tokens {
-		if r.Name == "" || !config.ValidID(r.Name) {
-			return nil, fmt.Errorf("the tokens file holds an invalid token name %q", r.Name)
-		}
-		if _, err := hex.DecodeString(r.Hash); err != nil {
-			return nil, fmt.Errorf("the tokens file holds an invalid hash for token %q", r.Name)
-		}
-		for _, a := range r.Allow {
-			if !ValidAllowEntry(a) {
-				return nil, fmt.Errorf("the tokens file holds an invalid allow entry %q for token %q", a, r.Name)
-			}
-		}
-		if seen[r.Name] {
-			return nil, fmt.Errorf("the tokens file holds the token name %q twice", r.Name)
-		}
-		seen[r.Name] = true
-	}
-	if err := checkTokensFileMode(path); err != nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.loadLocked(); err != nil {
 		return nil, err
 	}
-	s.tokens = f.Tokens
 	return s, nil
+}
+
+// Reload re-reads the tokens file from disk and replaces the token
+// set. It reports the problem when the file is unreadable, invalid, or
+// unsafe; the store then keeps the previously loaded set until Reload
+// or a change-triggered refresh succeeds.
+func (s *Store) Reload() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadLocked()
 }
 
 // Path returns the tokens file path of this store.
 func (s *Store) Path() string { return s.path }
 
-// Add generates a new fresh random token for name, persists its hash,
-// and returns the plain token, which the caller prints once. If the
-// name is already in use it reports ErrNotFound and nothing is written.
+// loadLocked re-reads and validates the whole tokens file and replaces
+// the in-memory set. Callers hold s.mu. On any failure the previous
+// set and snapshot stay untouched, so the process can retry.
+func (s *Store) loadLocked() error {
+	tokens, missing, err := loadTokensData(s.path)
+	if err != nil {
+		return err
+	}
+	if missing {
+		s.tokens = nil
+		s.snapMiss = true
+		s.snapSet = false
+		return nil
+	}
+	if err := checkTokensFileMode(s.path); err != nil {
+		return err
+	}
+	s.tokens = tokens
+	s.setSnapLocked()
+	return nil
+}
+
+// loadTokensData reads and validates the tokens file. missing reports
+// that the file does not exist, which only LoadStore and the reload
+// path turn into an empty store; an Authenticate that re-finds no file
+// runs with an empty set, so every token fails (issues #13: fail
+// closed).
+func loadTokensData(path string) ([]Record, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if stderrors.Is(err, fs.ErrNotExist) {
+			return nil, true, nil
+		}
+		return nil, false, fmt.Errorf("cannot read the tokens file: %w", err)
+	}
+	var f file
+	if err := json.Unmarshal(data, &f); err != nil {
+		return nil, false, fmt.Errorf("the tokens file is not valid JSON: %w", err)
+	}
+	if f.Version != fileVersion {
+		return nil, false, fmt.Errorf("the tokens file version must be %d, got %d", fileVersion, f.Version)
+	}
+	seen := make(map[string]bool, len(f.Tokens))
+	for _, r := range f.Tokens {
+		if r.Name == "" || !config.ValidID(r.Name) {
+			return nil, false, fmt.Errorf("the tokens file holds an invalid token name %q", r.Name)
+		}
+		if _, err := hex.DecodeString(r.Hash); err != nil {
+			return nil, false, fmt.Errorf("the tokens file holds an invalid hash for token %q", r.Name)
+		}
+		for _, a := range r.Allow {
+			if !ValidAllowEntry(a) {
+				return nil, false, fmt.Errorf("the tokens file holds an invalid allow entry %q for token %q", a, r.Name)
+			}
+		}
+		if seen[r.Name] {
+			return nil, false, fmt.Errorf("the tokens file holds the token name %q twice", r.Name)
+		}
+		seen[r.Name] = true
+	}
+	if f.Tokens == nil {
+		f.Tokens = []Record{}
+	}
+	return f.Tokens, false, nil
+}
+
+// setSnapLocked records the file state after a successful load so the
+// next change check can compare against it.
+func (s *Store) setSnapLocked() {
+	info, err := os.Stat(s.path)
+	if err != nil {
+		// Stat should succeed right after a read; if it does not, mark
+		// the snapshot unusable so the next check forces a reload.
+		s.snapSet = false
+		s.snapMiss = false
+		return
+	}
+	s.snapSet = true
+	s.snapMiss = false
+	s.snapSize = info.Size()
+	s.snapMod = info.ModTime()
+}
+
+// changedLocked reports whether the tokens file may differ from the
+// set the store holds. The check is deliberately conservative: size
+// and mtime, with a reload for anything that does not match exactly,
+// including a file that vanished (issues #13: a revocation must reach
+// a running Gateway).
+func (s *Store) changedLocked() bool {
+	info, err := os.Stat(s.path)
+	if err != nil {
+		// No file: unchanged only when the store itself loaded nothing.
+		return !s.snapMiss || s.snapSet
+	}
+	return !s.snapSet || info.Size() != s.snapSize || !info.ModTime().Equal(s.snapMod)
+}
+
+// Add generates a new fresh token for name, persists its hash, and
+// returns the plain token, which the caller prints exactly once. If
+// the name is already in use it reports ErrExists and nothing is
+// written.
 func (s *Store) Add(name string, allow []string) (string, error) {
 	if !config.ValidID(name) {
 		return "", fmt.Errorf("token name %q: must be lowercase letters, digits, \"_\" and \"-\", starting with a letter, at most 63 characters", name)
@@ -131,17 +224,16 @@ func (s *Store) Add(name string, allow []string) (string, error) {
 		}
 	}
 
-	plain, hash, err := Generate()
-	if err != nil {
-		return "", fmt.Errorf("cannot generate a token: %w", err)
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, r := range s.tokens {
 		if r.Name == name {
-			return "", ErrNotFound
+			return "", ErrExists
 		}
+	}
+	plain, hash, err := Generate()
+	if err != nil {
+		return "", fmt.Errorf("cannot generate a token: %w", err)
 	}
 	rec := Record{Name: name, Hash: hash, Allow: append([]string(nil), allow...), Created: time.Now().UTC().Format(time.RFC3339)}
 	tokens := append(append([]Record(nil), s.tokens...), rec)
@@ -151,11 +243,13 @@ func (s *Store) Add(name string, allow []string) (string, error) {
 		return "", fmt.Errorf("cannot write the tokens file: %w", err)
 	}
 	s.tokens = tokens
+	s.setSnapLocked()
 	return plain, nil
 }
 
-// Revoke removes the named token and persists the change. An unknown
-// name reports ErrNotFound and never writes the file.
+// Revoke removes the named token and persists the change, so every
+// Gateway sharing the file stops accepting it. An unknown name reports
+// ErrNotFound and never writes the file.
 func (s *Store) Revoke(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -175,13 +269,14 @@ func (s *Store) Revoke(name string) error {
 		return fmt.Errorf("cannot write the tokens file: %w", err)
 	}
 	s.tokens = tokens
+	s.setSnapLocked()
 	return nil
 }
 
 // List returns a copy of the stored tokens, sorted by name.
 func (s *Store) List() []Record {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	out := append([]Record(nil), s.tokens...)
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

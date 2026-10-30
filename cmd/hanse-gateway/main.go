@@ -63,7 +63,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if fs.NArg() > 0 {
 		if fs.Arg(0) == "token" {
-			return runToken(fs.Args()[1:], stdout, stderr)
+			return runToken(fs.Args()[1:], stdout, stderr, configPath)
 		}
 		usage(stderr, fs)
 		return exitUse

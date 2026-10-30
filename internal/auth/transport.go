@@ -3,7 +3,8 @@ package auth
 import (
 	"fmt"
 	"net"
-	"strings"
+
+	"github.com/achmadss/hanse/internal/config"
 )
 
 // CheckTransport decides whether the Gateway may listen on the address
@@ -21,23 +22,8 @@ func CheckTransport(listen string, useTLS, allowInsecureHTTP bool) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: is not a host:port address", listen)
 	}
-	if !isLoopbackHost(host) {
+	if !config.IsLoopbackHost(host) {
 		return fmt.Errorf("listen %s: is not a loopback address: without TLS the Gateway listens only on a loopback address; set tls.cert_file and tls.key_file, or set allow_insecure_http", listen)
 	}
 	return nil
-}
-
-// isLoopbackHost reports whether host is a loopback address: the name
-// localhost, or an IP in the loopback range. An empty host listens on
-// every interface, so it is not loopback.
-func isLoopbackHost(host string) bool {
-	host = strings.Trim(host, "[]")
-	if host == "" {
-		return false
-	}
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }

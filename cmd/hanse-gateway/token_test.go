@@ -125,8 +125,12 @@ func TestTokenErrors(t *testing.T) {
 		{"token", "dance"},                             // unknown subcommand
 		{"token", "add", "--config", configPath},       // no name
 		{"token", "add", "CI", "--config", configPath}, // invalid name
-		{"token", "add", "x", "--allow", "ALL", "--config", configPath}, // bad allow entry
-		{"token", "revoke", "--config", configPath},                     // no name
+		{"token", "add", "x", "--allow", "ALL", "--config", configPath},               // bad allow entry
+		{"token", "revoke", "--config", configPath},                                   // no name
+		{"token", "list", "extra", "--config", configPath},                            // too many names
+		{"token", "add", "x", "--allow=", "--config", configPath},                     // empty allow value
+		{"token", "add", "x", "--allow", "", "--config", configPath},                  // empty allow value
+		{"token", "add", "x", "--allow=pc.up", "--allow", "", "--config", configPath}, // empty again
 	}
 	for _, args := range cases {
 		var stdout, stderr bytes.Buffer
@@ -135,6 +139,50 @@ func TestTokenErrors(t *testing.T) {
 			t.Errorf("run(%v) = exitOK, want a failure", args)
 		}
 	}
+}
+
+// TestTokenConfigForms shows the three forms the review asked for: the
+// default path, --config before `token`, and --config after it.
+func TestTokenConfigForms(t *testing.T) {
+	t.Run("default path", func(t *testing.T) {
+		// A run with no --config at all must resolve the OS default,
+		// which is not this fixture: it fails as "cannot read the
+		// default file", not with an empty path's odd message.
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"token", "add", "ci"}, &stdout, &stderr)
+		if code != exitFail {
+			t.Errorf("exit = %d, want %d", code, exitFail)
+		}
+		if strings.Contains(stderr.String(), "open : no such file") {
+			t.Errorf("stderr = %q, want a real default path, not an empty one", stderr.String())
+		}
+	})
+	t.Run("outer --config", func(t *testing.T) {
+		configPath, _ := tokenFixture(t)
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"--config", configPath, "token", "add", "ci"}, &stdout, &stderr)
+		if code != exitOK {
+			t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
+		}
+		if !strings.HasPrefix(strings.TrimSpace(stdout.String()), "hst_") {
+			t.Errorf("stdout = %q, want a token", stdout.String())
+		}
+	})
+	t.Run("inner --config", func(t *testing.T) {
+		configPath, _ := tokenFixture(t)
+		var stdout, stderr bytes.Buffer
+		if run([]string{"token", "add", "ci", "--config", configPath}, &stdout, &stderr) != exitOK {
+			t.Fatal("add failed")
+		}
+		stdout.Reset()
+		code := run([]string{"--config", configPath, "token", "revoke", "ci"}, &stdout, &stderr)
+		if code != exitOK {
+			t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "revoked ci") {
+			t.Errorf("stdout = %q, want the revoke confirmation", stdout.String())
+		}
+	})
 }
 
 func TestTokenAddWithAllowStoresOnlyAllow(t *testing.T) {
