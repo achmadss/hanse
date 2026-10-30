@@ -60,6 +60,8 @@ type nodeState struct {
 type NodeRegistry struct {
 	gatewayHost string
 	states      map[string]*nodeState
+	// capsMu guards capabilities, which a registry reload replaces.
+	capsMu sync.RWMutex
 	// capabilities maps a node ID to its executable capabilities, sorted.
 	capabilities map[string][]NodeCapability
 }
@@ -246,6 +248,8 @@ func (n *NodeRegistry) Capabilities(id string) ([]NodeCapability, bool) {
 	if _, ok := n.states[id]; !ok {
 		return nil, false
 	}
+	n.capsMu.RLock()
+	defer n.capsMu.RUnlock()
 	caps, ok := n.capabilities[id]
 	if !ok {
 		// A known node can execute nothing.
