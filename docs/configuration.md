@@ -236,6 +236,7 @@ nodes:
 
 - A default executor must be in the eligible list of its level.
 - An operation's list must be a subset of the capability's list. `"*"` at operation level means the capability's whole list.
+- The Gateway makes `http` handler calls itself, so an `http` capability's list may contain only the Gateway host node, named by `node` in `gateway.yaml`. `"*"` means that node only.
 - A capability that `routes.yaml` does not mention has no eligible executors. The Gateway logs a warning at startup, and every request for it fails with `Executor not eligible`.
 - A request can run an operation only on a node from its eligible list. A request that names any other node fails with `Executor not eligible`, even if that node runs an agent.
 
@@ -519,6 +520,7 @@ The checks include:
 - Every ID is valid and unique, and every reference points to something that exists: nodes in `routes.yaml`, `gateway.yaml`'s `node`, secrets in operations, and arguments in `concurrency.key`, `options`, and `node_filters`.
 - Every argument schema compiles, and its top level is `type: object`.
 - `privileged` appears only on `exec` operations.
+- An `http` capability lists no executor other than the Gateway host node.
 - Every node that `routes.yaml` lists by ID has an entry command for its OS.
 - Every default executor is eligible, and every operation's list is a subset of its capability's list.
 - Secret files, the TLS key, and `agent.yaml` have safe permissions.
