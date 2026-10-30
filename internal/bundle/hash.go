@@ -1,4 +1,4 @@
-package registry
+package bundle
 
 import (
 	"crypto/sha256"
@@ -15,11 +15,11 @@ import (
 	herrors "github.com/achmadss/hanse/internal/errors"
 )
 
-// bundleFiles lists every regular file of a capability directory, sorted
-// by relative path with `/` as the separator, as agent-protocol.md
-// section 5.1 requires. It rejects symbolic links and anything that is
-// not a regular file; the bundle must contain no links.
-func bundleFiles(root string) ([]string, error) {
+// Files lists every regular file of a capability directory, sorted by
+// relative path with `/` as the separator, as agent-protocol.md section
+// 5.1 requires. It rejects symbolic links and anything that is not a
+// regular file; a bundle must contain no links.
+func Files(root string) ([]string, error) {
 	var files []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -49,10 +49,10 @@ func bundleFiles(root string) ([]string, error) {
 	return files, nil
 }
 
-// bundleHash computes the bundle hash of a capability directory exactly as
-// agent-protocol.md section 5.1 defines, for the paths bundleFiles listed.
-// On Windows every file counts as mode 644.
-func bundleHash(root string, files []string) (string, error) {
+// Hash computes the bundle hash of a capability directory exactly as
+// agent-protocol.md section 5.1 defines, for the paths Files listed. On
+// Windows every file counts as mode 644.
+func Hash(root string, files []string) (string, error) {
 	lines := sha256.New()
 	for _, rel := range files {
 		path := filepath.FromSlash(filepath.Join(root, rel))
@@ -70,6 +70,15 @@ func bundleHash(root string, files []string) (string, error) {
 		}
 	}
 	return "sha256:" + hex.EncodeToString(lines.Sum(nil)), nil
+}
+
+// HashDir lists and hashes one capability or cache directory.
+func HashDir(root string) (string, error) {
+	files, err := Files(root)
+	if err != nil {
+		return "", err
+	}
+	return Hash(root, files)
 }
 
 // hashFile feeds one file's content into h.
@@ -101,3 +110,6 @@ func fileMode(path string) (string, error) {
 	}
 	return "644", nil
 }
+
+// errPath renders a filesystem path for an error message.
+func errPath(p string) string { return fmt.Sprintf("%q", filepath.ToSlash(p)) }

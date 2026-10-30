@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/achmadss/hanse/internal/bundle"
 	herrors "github.com/achmadss/hanse/internal/errors"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"gopkg.in/yaml.v3"
@@ -280,7 +281,7 @@ func Load(opts Options) (*Registry, []Warning, error) {
 func loadCapability(dir string) (*Capability, error) {
 	manifestPath := filepath.Join(dir, manifestFile)
 
-	files, err := bundleFiles(dir)
+	files, err := bundle.Files(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +313,7 @@ func loadCapability(dir string) (*Capability, error) {
 		Operations:  map[string]*Operation{},
 		Routing:     map[string]OperationRouting{},
 	}
-	hash, err := bundleHash(dir, files)
+	hash, err := bundle.Hash(dir, files)
 	if err != nil {
 		return nil, err
 	}

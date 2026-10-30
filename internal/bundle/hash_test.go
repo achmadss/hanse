@@ -1,4 +1,4 @@
-package registry
+package bundle
 
 import (
 	"os"
@@ -34,14 +34,14 @@ func TestBundleHashMatchesHandComputedValue(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "data", "notes.txt"), []byte("notes\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	files, err := bundleFiles(root)
+	files, err := Files(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(files, ","); got != "data/notes.txt,handler.sh" {
 		t.Fatalf("files = %q", got)
 	}
-	got, err := bundleHash(root, files)
+	got, err := Hash(root, files)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,22 +56,22 @@ func TestBundleHashChangesWithContent(t *testing.T) {
 	if err := os.WriteFile(p, []byte("one\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	files, err := bundleFiles(root)
+	files, err := Files(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := bundleHash(root, files)
+	first, err := Hash(root, files)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(p, []byte("two\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	files, err = bundleFiles(root)
+	files, err = Files(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := bundleHash(root, files)
+	second, err := Hash(root, files)
 	if err != nil {
 		t.Fatal(err)
 	}
