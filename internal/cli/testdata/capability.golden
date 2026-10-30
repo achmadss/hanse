@@ -1,0 +1,31 @@
+{
+  "capability": {
+    "id": "pc",
+    "name": "PC power",
+    "description": "Wake, shut down, and check machines from another node",
+    "contract": "hanse.handler/v1",
+    "handler": {
+      "kind": "exec"
+    },
+    "operations": [
+      {
+        "id": "down",
+        "description": "Shut down a node over SSH and wait until it stops answering",
+        "mode": "async",
+        "privileged": false
+      },
+      {
+        "id": "status",
+        "description": "Report whether a node is up",
+        "mode": "sync",
+        "privileged": false
+      },
+      {
+        "id": "up",
+        "description": "Wake a node with Wake-on-LAN and wait until it answers",
+        "mode": "async",
+        "privileged": false
+      }
+    ]
+  }
+}
