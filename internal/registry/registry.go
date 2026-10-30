@@ -103,9 +103,14 @@ type Warning struct {
 	Message    string
 }
 
-// Registry is the set of loaded capabilities.
+// Registry is the set of loaded capabilities and the node registry built
+// from them. Nodes is nil only on a failed Load; every method on
+// NodeRegistry tolerates a nil receiver.
 type Registry struct {
 	capabilities map[string]*Capability
+	// Nodes holds every node from nodes.yaml with its current status
+	// and the capabilities it can execute.
+	Nodes *NodeRegistry
 }
 
 // Capability returns one capability by ID.
@@ -227,6 +232,16 @@ func Load(opts Options) (*Registry, []Warning, error) {
 			probs = append(probs, routeProbs...)
 		}
 		warnings = routeWarnings
+		nodes, err := NewNodeRegistry(opts.Input, reg.Capabilities())
+		if err != nil {
+			probs = append(probs, err)
+		}
+		// The registry is returned only when everything loaded, so the
+		// field is set for the success path and its error still fails
+		// the Load.
+		if len(probs) == 0 {
+			reg.Nodes = nodes
+		}
 	}
 	if len(probs) > 0 {
 		// A problem stops the Gateway from starting; the warnings of a
