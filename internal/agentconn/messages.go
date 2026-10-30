@@ -26,6 +26,7 @@ func (h *Hub) welcomeFor(nodeID string, hello *agentproto.Hello) (agentproto.Wel
 	var resends []*agentproto.Run
 	var systemLines []string
 	failures := map[*run]error{}
+	var forgotten []*run
 
 	h.mu.Lock()
 	for _, state := range hello.Runs {
@@ -45,6 +46,7 @@ func (h *Hub) welcomeFor(nodeID string, hello *agentproto.Hello) (agentproto.Wel
 			welcome.Runs = append(welcome.Runs, agentproto.WelcomeRun{
 				RunID: state.RunID, Action: agentproto.ActionAbandon,
 			})
+			forgotten = append(forgotten, r)
 		case r.option:
 			// Option calls are not resumed: the client request already
 			// failed.
@@ -52,6 +54,7 @@ func (h *Hub) welcomeFor(nodeID string, hello *agentproto.Hello) (agentproto.Wel
 			welcome.Runs = append(welcome.Runs, agentproto.WelcomeRun{
 				RunID: state.RunID, Action: agentproto.ActionAbandon,
 			})
+			forgotten = append(forgotten, r)
 		case state.State == agentproto.RunStateLost:
 			failures[r] = herrors.New(herrors.ExecutorConnectionLost,
 				"the agent restarted and lost the run's outcome",
@@ -60,10 +63,12 @@ func (h *Hub) welcomeFor(nodeID string, hello *agentproto.Hello) (agentproto.Wel
 				RunID: state.RunID, Action: agentproto.ActionAbandon,
 			})
 			systemLines = append(systemLines, r.id)
+			forgotten = append(forgotten, r)
 		case r.isFinished():
 			welcome.Runs = append(welcome.Runs, agentproto.WelcomeRun{
 				RunID: state.RunID, Action: agentproto.ActionAbandon,
 			})
+			forgotten = append(forgotten, r)
 		default:
 			acked := r.ackedSeq()
 			welcome.Runs = append(welcome.Runs, agentproto.WelcomeRun{
@@ -86,6 +91,11 @@ func (h *Hub) welcomeFor(nodeID string, hello *agentproto.Hello) (agentproto.Wel
 			continue
 		}
 		resends = append(resends, r.message)
+	}
+	// A run whose abandon answer is written in welcome is no longer
+	// needed, and neither is one whose failure is recorded here.
+	for _, r := range forgotten {
+		delete(h.runs, r.id)
 	}
 	h.mu.Unlock()
 

@@ -318,11 +318,23 @@ func (h *Hub) stop(r *run) {
 		// The client asked to stop the run, so a reconnect must not
 		// resume it even if the agent's result never arrives.
 		r.markAbandoned()
+		h.forgetAfter(r)
 		h.system(r.id, "the client cancelled the operation; a stop request was sent to the agent")
 		return
 	}
 	r.markAbandoned()
+	h.forgetAfter(r)
 	h.system(r.id, "the agent is disconnected: the operation is cancelled and the agent is told to abandon it after it reconnects")
+}
+
+// forgetAfter drops a cancelled or abandoned run once a reconnect can no
+// longer ask for its abandon answer. A reconnect inside the window gets
+// the answer from welcome and drops the run at once.
+func (h *Hub) forgetAfter(r *run) {
+	go func() {
+		<-h.after(h.cfg.ReconnectWindow)
+		h.remove(r)
+	}()
 }
 
 // runMessage builds the run message of one call.

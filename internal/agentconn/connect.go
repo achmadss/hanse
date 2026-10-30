@@ -37,9 +37,16 @@ const writeTimeout = 10 * time.Second
 // package allows one concurrent reader and one concurrent writer, and its
 // WriteControl may be called with both.
 type conn struct {
-	hub          *Hub
+	hub *Hub
+	// node is the ID the credential verified to, never one the agent
+	// names. credential is the authenticated value: the hub re-checks it
+	// on every heartbeat tick, because a revoke can run in another
+	// process and cannot reach this connection directly.
 	node         string
+	credential   string
 	agentVersion string
+	agentOS      string
+	agentArch    string
 	ws           *websocket.Conn
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -101,12 +108,13 @@ func (h *Hub) ServeConnect(w http.ResponseWriter, r *http.Request) {
 	ws.SetReadLimit(h.cfg.MaxMessageBytes)
 	ctx, cancel := context.WithCancel(r.Context())
 	c := &conn{
-		hub:    h,
-		node:   nodeID,
-		ws:     ws,
-		ctx:    ctx,
-		cancel: cancel,
-		out:    make(chan agentproto.Message, 64),
+		hub:        h,
+		node:       nodeID,
+		credential: credential,
+		ws:         ws,
+		ctx:        ctx,
+		cancel:     cancel,
+		out:        make(chan agentproto.Message, 64),
 	}
 	defer cancel()
 
@@ -118,6 +126,8 @@ func (h *Hub) ServeConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.agentVersion = hello.AgentVersion
+	c.agentOS = hello.OS
+	c.agentArch = hello.Arch
 	welcome, resends := h.welcomeFor(nodeID, hello)
 	h.register(c)
 	if err := c.writeNow(ctx, &welcome); err != nil {
@@ -317,6 +327,7 @@ func (h *Hub) expireWindow(nodeID string, cancel chan struct{}) {
 			"the node agent did not reconnect within the reconnect window",
 			map[string]any{"node": nodeID, "run_id": r.id})
 		r.abandon(runtime.Response{}, failure)
+		h.remove(r)
 		h.system(r.id, "the node agent did not reconnect in time: the operation failed with executor_connection_lost")
 	}
 }
@@ -380,6 +391,11 @@ func (h *Hub) runLoop(c *conn, events <-chan readEvent) {
 			lastSend = h.now()
 		case <-ticker:
 			now := h.now()
+			if code, reason := h.revalidate(c); code != 0 {
+				c.requestClose(code, reason)
+				ticker = h.after(interval)
+				continue
+			}
 			if now.Sub(lastRecv) >= timeout {
 				c.requestClose(websocket.CloseNormalClosure, "heartbeat timeout")
 				ticker = h.after(interval)
@@ -395,6 +411,31 @@ func (h *Hub) runLoop(c *conn, events <-chan readEvent) {
 			ticker = h.after(interval)
 		}
 	}
+}
+
+// revalidate re-checks the connection's credential and node entry on
+// every heartbeat tick. A revoke or a re-enrollment runs in another
+// process, so Hub.Disconnect cannot see it; the credential store and the
+// registry are the source of truth (docs/agent-protocol.md section 10).
+func (h *Hub) revalidate(c *conn) (int, string) {
+	nodeID, err := h.cfg.Verify(c.credential)
+	if err != nil || nodeID != c.node {
+		return closeRevoked, "the node credential is no longer valid"
+	}
+	if h.cfg.Registry == nil || h.cfg.Registry.Nodes == nil {
+		return closeNodeMismatch, "the node registry is not available"
+	}
+	view, ok := h.cfg.Registry.Nodes.Get(c.node)
+	if !ok {
+		return closeNodeMismatch, "the node is no longer in nodes.yaml"
+	}
+	if view.OS != c.agentOS || view.Arch != c.agentArch {
+		return closeNodeMismatch, "the node's OS or architecture changed in nodes.yaml"
+	}
+	if !view.Enabled {
+		return closeNodeDisabled, "the node is disabled in nodes.yaml"
+	}
+	return 0, ""
 }
 
 // finishConn writes the requested close frame, closes the socket, and

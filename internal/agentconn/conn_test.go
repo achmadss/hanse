@@ -85,6 +85,7 @@ type fixture struct {
 	server  *httptest.Server
 	logs    *recordingSink
 	wsURL   string
+	capsDir string
 }
 
 // newFixture builds a hub over two nodes: node-a (linux/arm64) and node-b
@@ -157,6 +158,7 @@ func newFixture(t *testing.T, configure func(*Config)) *fixture {
 		server:  server,
 		logs:    logs,
 		wsURL:   "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/agent/connect",
+		capsDir: capsDir,
 	}
 }
 
@@ -172,6 +174,50 @@ func (f *fixture) credential(t *testing.T, node string) string {
 		t.Fatalf("join node %s: %v", node, err)
 	}
 	return outcome.Credential
+}
+
+// replaceNodes swaps in a node registry with the same capability routes
+// but node-a disabled or enabled, the way a configuration reload changes
+// the entry a connection is checked against.
+func (f *fixture) replaceNodes(t *testing.T, nodeAEnabled bool) {
+	t.Helper()
+	alt, warnings, err := registry.Load(registry.Options{
+		Dirs: []string{f.capsDir},
+		Input: registry.Input{
+			Nodes: []registry.Node{
+				{ID: "node-a", OS: "linux", Arch: "arm64", Roles: []string{"server"}, Enabled: nodeAEnabled},
+				{ID: "node-b", OS: "windows", Arch: "amd64", Roles: []string{"server"}, Enabled: true},
+			},
+			Routes: registry.Routes{Capabilities: map[string]registry.CapabilityRoute{
+				"demo": {Executors: []string{"node-a"}, DefaultExecutor: "node-a"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("load replacement nodes: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %+v", warnings)
+	}
+	f.reg.Nodes = alt.Nodes
+}
+
+// waitRunForgotten waits until a run leaves the hub's map.
+func waitRunForgotten(t *testing.T, f *fixture, id string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		f.hub.mu.Lock()
+		_, active := f.hub.runs[id]
+		f.hub.mu.Unlock()
+		if !active {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run %q is still in the hub", id)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // dial opens one connection. A rejection returns the response with the
@@ -576,6 +622,7 @@ func TestCancelWhileDisconnectedAbandons(t *testing.T) {
 	if len(welcome.Runs) != 1 || welcome.Runs[0].Action != agentproto.ActionAbandon {
 		t.Fatalf("welcome runs %+v, want abandon", welcome.Runs)
 	}
+	waitRunForgotten(t, f, "op_cancel")
 }
 
 // TestReconnectResendsMissingRun sends a run again when hello does not
@@ -693,6 +740,110 @@ func TestUnknownMessageKeepsConnection(t *testing.T) {
 	}
 }
 
+// TestRevokedCredentialClosesConnection proves that a revoke made in
+// another process reaches the live connection: the hub re-checks the
+// credential on the heartbeat tick, because the operator command's
+// Disconnecter cannot see this process.
+func TestRevokedCredentialClosesConnection(t *testing.T) {
+	f := newFixture(t, func(cfg *Config) {
+		cfg.HeartbeatInterval = 20 * time.Millisecond
+		cfg.HeartbeatTimeout = 5 * time.Second
+	})
+	credential := f.credential(t, "node-a")
+	ws, _ := f.connect(t, credential, hello("node-a"))
+
+	// A second store handle with no Disconnecter is the separate
+	// `hanse-gateway node revoke` process.
+	other, err := enroll.Open(enroll.Options{Path: f.service.Path()})
+	if err != nil {
+		t.Fatalf("open second enrollment store: %v", err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+	if err := other.Revoke("node-a"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if code := readClose(t, ws); code != closeRevoked {
+		t.Errorf("close code %d, want %d", code, closeRevoked)
+	}
+	f.waitStatus(t, "node-a", registry.StatusOffline)
+}
+
+// TestDisabledNodeClosesConnection proves that the re-check closes a
+// connection whose node entry became disabled.
+func TestDisabledNodeClosesConnection(t *testing.T) {
+	ticks := make(chan time.Time, 4)
+	f := newFixture(t, func(cfg *Config) {
+		cfg.HeartbeatInterval = time.Hour
+		cfg.HeartbeatTimeout = time.Hour
+		cfg.After = func(time.Duration) <-chan time.Time { return ticks }
+	})
+	credential := f.credential(t, "node-a")
+	ws, _ := f.connect(t, credential, hello("node-a"))
+	f.replaceNodes(t, false)
+	ticks <- time.Now()
+	if code := readClose(t, ws); code != closeNodeDisabled {
+		t.Errorf("close code %d, want %d", code, closeNodeDisabled)
+	}
+	f.waitStatus(t, "node-a", registry.StatusOffline)
+}
+
+// TestCancelledRunIsForgottenAfterResult drops a cancelled run when the
+// agent sends the result it still owed.
+func TestCancelledRunIsForgottenAfterResult(t *testing.T) {
+	f := newFixture(t, nil)
+	credential := f.credential(t, "node-a")
+	ws, _ := f.connect(t, credential, hello("node-a"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan dispatchResult, 1)
+	go func() {
+		response, err := f.hub.Execute(ctx, testCall("op_cancel_result"))
+		done <- dispatchResult{response: response, err: err}
+	}()
+	if run := readMessage(t, ws); run.MessageType() != agentproto.TypeRun {
+		t.Fatalf("first message is %q, want run", run.MessageType())
+	}
+	cancel()
+	if msg := readMessage(t, ws); msg.MessageType() != agentproto.TypeCancel {
+		t.Fatalf("next message is %q, want cancel", msg.MessageType())
+	}
+	if result := <-done; !errors.Is(result.err, context.Canceled) {
+		t.Fatalf("execute error %v, want context.Canceled", result.err)
+	}
+	writeMessage(t, ws, resultMessage("op_cancel_result", 1))
+	if ack := readMessage(t, ws); ack.MessageType() != agentproto.TypeAck {
+		t.Fatalf("next message is %q, want ack", ack.MessageType())
+	}
+	waitRunForgotten(t, f, "op_cancel_result")
+}
+
+// TestCancelledRunIsForgottenAfterWindow drops a cancelled run whose agent
+// never answers once the reconnect window passes.
+func TestCancelledRunIsForgottenAfterWindow(t *testing.T) {
+	f := newFixture(t, func(cfg *Config) {
+		cfg.ReconnectWindow = 50 * time.Millisecond
+	})
+	credential := f.credential(t, "node-a")
+	ws, _ := f.connect(t, credential, hello("node-a"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan dispatchResult, 1)
+	go func() {
+		response, err := f.hub.Execute(ctx, testCall("op_cancel_window"))
+		done <- dispatchResult{response: response, err: err}
+	}()
+	if run := readMessage(t, ws); run.MessageType() != agentproto.TypeRun {
+		t.Fatalf("first message is %q, want run", run.MessageType())
+	}
+	cancel()
+	if msg := readMessage(t, ws); msg.MessageType() != agentproto.TypeCancel {
+		t.Fatalf("next message is %q, want cancel", msg.MessageType())
+	}
+	<-done
+	_ = ws.Close()
+	waitRunForgotten(t, f, "op_cancel_window")
+}
+
 // TestReconnectWindowUsesInjectedClock proves that the reconnect timer
 // reads the hub's injected clock, so tests need no real five-minute wait.
 func TestReconnectWindowUsesInjectedClock(t *testing.T) {
@@ -756,19 +907,7 @@ func TestFinishedRunIsForgotten(t *testing.T) {
 	if result := <-done; result.err != nil {
 		t.Fatalf("execute: %v", result.err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		f.hub.mu.Lock()
-		_, active := f.hub.runs["op_done"]
-		f.hub.mu.Unlock()
-		if !active {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the finished run is still in the hub")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitRunForgotten(t, f, "op_done")
 }
 
 // TestRejectedRunFails covers the rejected message mapping.
