@@ -1,0 +1,42 @@
+# Hanse nodes. See docs/configuration.md.
+version: 1
+
+nodes:
+  gateway:
+    name: Gateway host
+    os: linux
+    arch: amd64
+    roles: [server]
+    address: 192.0.2.10
+
+  node-a:
+    name: Always-on server
+    os: linux
+    arch: arm64
+    roles: [server]
+    address: 192.0.2.11
+
+  node-b:
+    name: Small board computer
+    os: linux
+    arch: arm64
+    roles: [server]
+    address: 192.0.2.12
+
+  # A target only. It runs no agent, and other nodes act on it.
+  node-c:
+    name: Workstation
+    os: windows
+    arch: amd64
+    roles: [pc]
+    address: 192.0.2.20
+    attributes:
+      mac: "00:00:5e:00:53:01"
+      broadcast: 192.0.2.255
+      ssh_user: hanse
+
+  node-d:
+    name: Old laptop
+    os: linux
+    arch: amd64
+    enabled: false

@@ -1,0 +1,14 @@
+# Hanse routing: which nodes may run each capability, and the defaults.
+# A node that is not listed here cannot run the capability. See docs/configuration.md.
+version: 1
+
+capabilities:
+  demo:
+    executors: "*"
+    default_executor: gateway
+
+  # node-a and node-b run the pc operations. The node they act on, such as
+  # node-c, is an argument of each request.
+  pc:
+    executors: [node-a, node-b]
+    default_executor: node-a

@@ -1,0 +1,29 @@
+# Hanse node agent configuration. See docs/configuration.md.
+# Only the node's administrator may be able to change this file.
+version: 1
+
+gateway_url: https://gateway.example.com
+# ca_file: /etc/hanse-node/ca.pem
+
+state_dir: /var/lib/hanse-node
+
+max_concurrent_runs: 16
+buffer_limit: 10MiB
+
+handlers:
+  env_allow: []
+
+elevation:
+  enabled: false
+  # Allow only these privileged operations. An empty list allows all of them.
+  operations: []
+  # Windows only: the administrator account whose password authorizes elevation.
+  # account: admin-user
+  lockout:
+    attempts: 5
+    window: 10m
+    duration: 10m
+
+log:
+  level: info
+  format: text

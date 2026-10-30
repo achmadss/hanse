@@ -1,0 +1,81 @@
+# A capability manifest. Each capability directory holds one manifest.yaml.
+# See docs/configuration.md.
+version: 1
+id: pc
+name: PC power
+description: Wake, shut down, and check machines from another node
+contract: hanse.handler/v1
+
+handler:
+  kind: exec
+  entry:
+    linux: [sh, handler.sh]
+    darwin: [sh, handler.sh]
+
+secrets:
+  ssh_key: Private key that can log in to target nodes and shut them down
+
+operations:
+  up:
+    description: Wake a node with Wake-on-LAN and wait until it answers
+    mode: async
+    timeout: 3m
+    concurrency:
+      limit: 1
+      key: [node]
+    node_filters:
+      node:
+        roles: [pc]
+        attributes: [mac, broadcast]
+    arguments:
+      type: object
+      required: [node]
+      additionalProperties: false
+      properties:
+        node:
+          type: string
+          format: hanse:node
+          description: The node to wake
+
+  down:
+    description: Shut down a node over SSH and wait until it stops answering
+    mode: async
+    timeout: 2m
+    secrets: [ssh_key]
+    concurrency:
+      limit: 1
+      key: [node]
+    node_filters:
+      node:
+        roles: [pc]
+        attributes: [ssh_user]
+    arguments:
+      type: object
+      required: [node]
+      additionalProperties: false
+      properties:
+        node:
+          type: string
+          format: hanse:node
+          description: The node to shut down
+
+  status:
+    description: Report whether a node is up
+    mode: sync
+    timeout: 15s
+    node_filters:
+      node:
+        roles: [pc]
+    arguments:
+      type: object
+      required: [node]
+      additionalProperties: false
+      properties:
+        node:
+          type: string
+          format: hanse:node
+        probe:
+          type: string
+          description: How to check the node
+    options:
+      probe: provider

@@ -156,13 +156,15 @@ Every accepted operation records the result of resolution:
 
 `executor_source` is `explicit` or `default`. New values can be added when explicit selection policies are introduced.
 
+`routes.yaml` is the single source of truth for eligible and default executors. See [Routing](configuration.md#9-routing-the-single-source-of-truth).
+
 ### Example
 
-The `pc` capability lists `node-a` and `node-b` as eligible executors for `pc.up`, and `node-a` is the default.
+The `pc` capability lists `node-a` and `node-b` as eligible executors, and `node-a` is the default. A request to wake `node-c` names `node-c` as its target argument.
 
-- A request with no executor runs on `node-a`.
+- A request with no executor runs on `node-a` and wakes `node-c`.
 - A request that names `node-b` runs on `node-b`.
-- A request that names `node-c` is rejected, because `node-c` is not eligible.
+- A request that names `gateway`, or any node that is not in the list, is rejected, because that node is not eligible. A node can run a capability only when `routes.yaml` lists it.
 - If `node-a` is offline, a request that relies on the default fails. It does not move to `node-b`.
 
 ## 6. Targets
@@ -383,6 +385,7 @@ Node agent endpoints, used only by `hanse-node`:
 |---|---|
 | `POST /v1/agent/join` | Exchange a join token for a node credential |
 | `GET /v1/agent/connect` | Open the agent's WebSocket connection |
+| `GET /v1/agent/bundles/{hash}` | Download a capability's handler files |
 
 The `describe` response lists the capability and operation IDs, the description, the argument schema, the required arguments, allowed values or references to option providers, the eligible executors, the default executor, whether an executor is required, and availability information when the Gateway has it.
 
@@ -401,18 +404,19 @@ Content-Type: application/json
   "capability": "pc",
   "operation": "up",
   "arguments": {
-    "node": "node-b"
+    "node": "node-c"
   }
 }
 ```
 
-A request for a [privileged operation](#85-privileged-operations) also carries the password:
+A request for a [privileged operation](#85-privileged-operations) also carries the password. In this example, `service.restart` is a privileged operation of a capability named `service`:
 
 ```json
 {
-  "capability": "pc",
-  "operation": "down",
-  "arguments": { "node": "node-b" },
+  "capability": "service",
+  "operation": "restart",
+  "arguments": { "name": "nginx" },
+  "executor": "node-a",
   "elevation": { "password": "<password>" }
 }
 ```
@@ -443,14 +447,15 @@ hanse nodes capabilities node-a
 hanse schema pc up
 hanse options pc up node
 hanse describe pc up
-hanse validate pc up --node node-b
+hanse validate pc up --node node-c
 
-hanse run pc up --node node-b
-hanse run pc up --node node-b --executor node-a --follow
-hanse run pc up --node node-b --detach
+hanse run pc up --node node-c
+hanse run pc up --node node-c --executor node-b --follow
+hanse run pc up --node node-c --detach
+hanse run pc down --node node-c
 
-hanse run pc down --node node-b
-hanse run pc down --node node-b --password '<password>'
+hanse run service restart --name nginx --executor node-a
+hanse run service restart --name nginx --executor node-a --password '<password>'
 
 hanse operations
 hanse operations show op_01J9Z3
@@ -538,6 +543,5 @@ Hanse v1 does not include:
 Possible future extensions, added only when a real need appears:
 
 - Round-robin or least-busy executor selection.
-- Node heartbeats and availability monitoring.
 - More transports, such as SSH.
 - Structured progress events from handlers, in addition to stderr log lines.

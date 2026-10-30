@@ -50,11 +50,11 @@ The Gateway sends one JSON object to the handler for each call. A call is either
   "capability": "pc",
   "operation": "up",
   "arguments": {
-    "node": "node-b"
+    "node": "node-c"
   },
   "nodes": {
-    "node-b": {
-      "id": "node-b",
+    "node-c": {
+      "id": "node-c",
       "name": "Workstation",
       "os": "windows",
       "arch": "amd64",
@@ -129,7 +129,7 @@ A successful run:
   "result": {
     "state": "online"
   },
-  "summary": "node-b is online"
+  "summary": "node-c is online"
 }
 ```
 
@@ -141,7 +141,7 @@ A failed run:
   "status": "error",
   "error": {
     "code": "target_unreachable",
-    "message": "node-b did not answer on port 22 within 120 seconds",
+    "message": "node-c did not answer on port 22 within 120 seconds",
     "details": {
       "waited_seconds": 120
     }
@@ -563,6 +563,7 @@ Both examples implement the same small `demo` capability:
 The capability's manifest, in short. The [configuration spec](configuration.md) has the full format.
 
 ```yaml
+version: 1
 id: demo
 name: Demo
 description: Example capability for the handler contract
