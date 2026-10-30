@@ -157,8 +157,11 @@ func Open(opts Options) (*Service, error) {
 // databaseDSN builds the driver DSN. The pragmas run on every new
 // connection: WAL for concurrent readers, a busy timeout so a writer waits,
 // and NORMAL synchronous mode, which is safe with WAL for this use.
+// _txlock=immediate makes every transaction take the write lock when it
+// begins, so two joins that read the same token cannot both upgrade a read
+// transaction and deadlock.
 func databaseDSN(path string) string {
-	return path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+	return path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_txlock=immediate"
 }
 
 // prepareFiles creates the store's directory and file with restrictive
@@ -222,11 +225,9 @@ func (s *Service) IssueJoinToken(nodeID string) (Token, error) {
 	}
 	now := s.now().UTC()
 	expires := now.Add(s.ttl)
-	// Drop this node's used and expired tokens, so the table does not grow
-	// with every enrollment.
-	if _, err := s.db.Exec(
-		`DELETE FROM join_tokens WHERE node = ? AND (used_at <> 0 OR expires_at <= ?)`,
-		nodeID, now.UnixNano()); err != nil {
+	// Only the latest printed token of a node works: drop every older
+	// token, used, expired, or still pending.
+	if _, err := s.db.Exec(`DELETE FROM join_tokens WHERE node = ?`, nodeID); err != nil {
 		return Token{}, storeError("cannot clean the join tokens", err)
 	}
 	if _, err := s.db.Exec(
@@ -248,7 +249,9 @@ type joinTokenRow struct {
 
 // Join exchanges a join token for a node credential. An unknown, used, or
 // expired token returns the JoinTokenInvalid code, HTTP 401, and all three
-// cases look the same (docs/agent-protocol.md §2.3). A successful join
+// cases look the same (docs/agent-protocol.md §2.3). A token works once,
+// even when two agents present it at the same time: the claim is one
+// conditional update, and the loser gets the same 401. A successful join
 // marks the token used and replaces any previous credential of the node.
 func (s *Service) Join(joinToken string, check Check) (Outcome, error) {
 	if joinToken == "" {
@@ -286,10 +289,21 @@ func (s *Service) Join(joinToken string, check Check) (Outcome, error) {
 			return Outcome{}, err
 		}
 	}
-	if _, err := tx.Exec(
-		`UPDATE join_tokens SET used_at = ? WHERE id = ?`,
-		now.UnixNano(), tokens[match].id); err != nil {
+	claimed, err := tx.Exec(
+		`UPDATE join_tokens SET used_at = ? WHERE id = ? AND used_at = 0`,
+		now.UnixNano(), tokens[match].id)
+	if err != nil {
 		return Outcome{}, storeError("cannot mark the join token used", err)
+	}
+	// The conditional update is the claim: when a concurrent join used the
+	// same token first, this request loses and answers the same 401 as an
+	// unknown token.
+	won, err := claimed.RowsAffected()
+	if err != nil {
+		return Outcome{}, storeError("cannot mark the join token used", err)
+	}
+	if won != 1 {
+		return Outcome{}, invalidJoinToken()
 	}
 	plain, credentialHash, err := generate(CredentialPrefix)
 	if err != nil {
@@ -356,10 +370,11 @@ func (s *Service) Verify(credential string) (string, error) {
 	return node, nil
 }
 
-// Revoke revokes nodeID's credential and closes its live connection. A
-// node without a credential is a no-op, so revoking twice is safe. The
-// next connection attempt of the node fails authentication until it
-// enrolls again.
+// Revoke revokes nodeID's credential and closes its live connection. Every
+// unused join token of the node is dropped too, so a token printed before
+// the revoke cannot enroll the node. A node without a credential is a
+// no-op, so revoking twice is safe. The next connection attempt of the
+// node fails authentication until it enrolls again.
 func (s *Service) Revoke(nodeID string) error {
 	if !config.ValidID(nodeID) {
 		return fmt.Errorf("node %q must be a valid node ID: lowercase letters, digits, \"_\" and \"-\", starting with a letter, at most 63 characters", nodeID)
@@ -368,6 +383,12 @@ func (s *Service) Revoke(nodeID string) error {
 		`UPDATE node_credentials SET revoked_at = ? WHERE node = ? AND revoked_at = 0`,
 		s.now().UTC().UnixNano(), nodeID); err != nil {
 		return storeError("cannot revoke the node credential", err)
+	}
+	// Every unused join token of the node dies with the credential, so a
+	// token printed before the revoke cannot enroll the node afterwards.
+	if _, err := s.db.Exec(
+		`DELETE FROM join_tokens WHERE node = ?`, nodeID); err != nil {
+		return storeError("cannot revoke the join tokens", err)
 	}
 	s.disconnectNode(nodeID)
 	return nil

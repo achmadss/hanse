@@ -291,6 +291,71 @@ func TestStoreKeepsOnlyHashes(t *testing.T) {
 	}
 }
 
+// TestConcurrentJoinsUseTokenOnce proves that one token enrolls one node
+// once, even when several agents present it at the same time: exactly one
+// join succeeds and every loser gets the documented 401.
+func TestConcurrentJoinsUseTokenOnce(t *testing.T) {
+	service, _ := open(t, enroll.Options{})
+	token := issue(t, service, "node-a")
+	const callers = 8
+	start := make(chan struct{})
+	outcomes := make(chan error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := service.Join(token.Plain, nil)
+			outcomes <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(outcomes)
+	successes := 0
+	for err := range outcomes {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, herrors.JoinTokenInvalid):
+		default:
+			t.Errorf("losing join error = %v, want join_token_invalid", err)
+		}
+	}
+	if successes != 1 {
+		t.Errorf("successful joins = %d, want exactly 1", successes)
+	}
+}
+
+// TestNewTokenInvalidatesOlderToken proves that only the latest printed
+// token works: issuing a token tears down the node's earlier ones.
+func TestNewTokenInvalidatesOlderToken(t *testing.T) {
+	service, _ := open(t, enroll.Options{})
+	older := issue(t, service, "node-a")
+	newer := issue(t, service, "node-a")
+	if _, err := service.Join(older.Plain, nil); !errors.Is(err, herrors.JoinTokenInvalid) {
+		t.Fatalf("join with the older token = %v, want join_token_invalid", err)
+	}
+	out := join(t, service, newer.Plain)
+	if out.Node != "node-a" {
+		t.Errorf("joined node = %q, want node-a", out.Node)
+	}
+}
+
+// TestRevokeDropsPendingJoinToken proves that a token printed before a
+// revoke cannot enroll the node afterwards.
+func TestRevokeDropsPendingJoinToken(t *testing.T) {
+	service, _ := open(t, enroll.Options{})
+	token := issue(t, service, "node-a")
+	if err := service.Revoke("node-a"); err != nil {
+		t.Fatalf("revoke node-a: %v", err)
+	}
+	if _, err := service.Join(token.Plain, nil); !errors.Is(err, herrors.JoinTokenInvalid) {
+		t.Errorf("join after revoke = %v, want join_token_invalid", err)
+	}
+}
+
 // TestInvalidNodeID proves that issue and revoke refuse an ID that
 // nodes.yaml could never hold.
 func TestInvalidNodeID(t *testing.T) {
