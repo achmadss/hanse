@@ -1,0 +1,18 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "node": {
+      "description": "The node to wake",
+      "format": "hanse:node",
+      "type": "string"
+    },
+    "wait": {
+      "description": "Wait until the node answers",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "node"
+  ],
+  "type": "object"
+}

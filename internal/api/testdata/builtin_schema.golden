@@ -1,0 +1,13 @@
+{
+  "properties": {
+    "message": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "message"
+  ],
+  "type": "object"
+}

@@ -84,11 +84,11 @@ func Register(handlers *runtime.Registry, capabilities *registry.Registry, opts 
 	if err := handlers.Register(CapabilityID, SleepOperation, sleepHandler(interval)); err != nil {
 		return err
 	}
-	say, err := sayOperation()
+	say, saySpec, err := sayOperation()
 	if err != nil {
 		return err
 	}
-	sleep, err := sleepOperation()
+	sleep, sleepSpec, err := sleepOperation()
 	if err != nil {
 		return err
 	}
@@ -97,10 +97,17 @@ func Register(handlers *runtime.Registry, capabilities *registry.Registry, opts 
 		Name:        "Echo",
 		Description: "Test capability for the Gateway pipeline, without real machines",
 		Manifest: &registry.Manifest{
-			Version: 1,
-			ID:      CapabilityID,
-			Name:    "Echo",
-			Handler: registry.HandlerSpec{Kind: registry.KindBuiltin},
+			Version:     1,
+			ID:          CapabilityID,
+			Name:        "Echo",
+			Description: "Test capability for the Gateway pipeline, without real machines",
+			Handler:     registry.HandlerSpec{Kind: registry.KindBuiltin},
+			// Discovery serves the manifest's raw argument schemas,
+			// so every builtin operation carries its OperationSpec.
+			Operations: map[string]*registry.OperationSpec{
+				SayOperation:   saySpec,
+				SleepOperation: sleepSpec,
+			},
 		},
 		Operations: map[string]*registry.Operation{
 			SayOperation:   say,
@@ -156,35 +163,47 @@ const sleepSchema = `{
 }`
 
 // sayOperation builds echo.say's registry entry: mode sync.
-func sayOperation() (*registry.Operation, error) {
-	return newOperation(SayOperation, registry.ModeSync, saySchema)
+func sayOperation() (*registry.Operation, *registry.OperationSpec, error) {
+	return newOperation(SayOperation, "Echo one message", registry.ModeSync, saySchema)
 }
 
 // sleepOperation builds echo.sleep's registry entry: mode async.
-func sleepOperation() (*registry.Operation, error) {
-	return newOperation(SleepOperation, registry.ModeAsync, sleepSchema)
+func sleepOperation() (*registry.Operation, *registry.OperationSpec, error) {
+	return newOperation(SleepOperation, "Log one line per second for the given number of seconds", registry.ModeAsync, sleepSchema)
 }
 
-// newOperation builds one echo operation with its compiled schema.
-func newOperation(id, mode, schemaText string) (*registry.Operation, error) {
-	op := &registry.Operation{ID: id, Mode: mode}
-	if err := compileInto(schemaText, op); err != nil {
-		return nil, fmt.Errorf("echotest: operation %s: %w", id, err)
+// newOperation builds one echo operation with its compiled schema and the
+// manifest operation spec that discovery serves.
+func newOperation(id, description, mode, schemaText string) (*registry.Operation, *registry.OperationSpec, error) {
+	op := &registry.Operation{ID: id, Description: description, Mode: mode}
+	raw, err := decodeSchema(schemaText)
+	if err != nil {
+		return nil, nil, fmt.Errorf("echotest: operation %s: %w", id, err)
 	}
-	return op, nil
+	if err := compileInto(raw, op); err != nil {
+		return nil, nil, fmt.Errorf("echotest: operation %s: %w", id, err)
+	}
+	spec := &registry.OperationSpec{
+		Description: description,
+		Mode:        mode,
+		Arguments:   raw,
+	}
+	return op, spec, nil
+}
+
+// decodeSchema parses one schema text into the value a manifest's
+// `arguments` field would hold, so discovery can serve it back as JSON.
+func decodeSchema(schemaText string) (any, error) {
+	return jsonschema.UnmarshalJSON(strings.NewReader(schemaText))
 }
 
 // compileInto compiles one self-contained draft 2020-12 argument schema
 // the same dialect manifest.yaml `arguments` values use, into op.Schema.
-func compileInto(schemaText string, op *registry.Operation) error {
-	doc, err := jsonschema.UnmarshalJSON(strings.NewReader(schemaText))
-	if err != nil {
-		return err
-	}
+func compileInto(raw any, op *registry.Operation) error {
 	c := jsonschema.NewCompiler()
 	c.DefaultDraft(jsonschema.Draft2020)
 	const location = "http://hanse.local/schemas/argument.json"
-	if err := c.AddResource(location, doc); err != nil {
+	if err := c.AddResource(location, raw); err != nil {
 		return err
 	}
 	schema, err := c.Compile(location)

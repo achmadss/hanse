@@ -1,0 +1,10 @@
+{
+  "gateway_version": "dev",
+  "api_version": "v1",
+  "handler_contracts": [
+    "hanse.handler/v1"
+  ],
+  "agent_protocols": [
+    "hanse.agent/v1"
+  ]
+}

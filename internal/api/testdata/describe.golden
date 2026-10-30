@@ -1,0 +1,54 @@
+{
+  "capability": "pc",
+  "operation": "up",
+  "description": "Wake a node with Wake-on-LAN and wait until it answers",
+  "mode": "async",
+  "privileged": false,
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "node": {
+        "description": "The node to wake",
+        "format": "hanse:node",
+        "type": "string"
+      },
+      "wait": {
+        "description": "Wait until the node answers",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "node"
+    ],
+    "type": "object"
+  },
+  "required": [
+    "node"
+  ],
+  "options": [],
+  "node_filters": {
+    "node": {
+      "roles": [
+        "pc"
+      ],
+      "attributes": [
+        "mac",
+        "broadcast"
+      ]
+    }
+  },
+  "executors": [
+    {
+      "id": "node-a",
+      "status": "offline",
+      "default": true
+    },
+    {
+      "id": "node-b",
+      "status": "offline",
+      "default": false
+    }
+  ],
+  "default_executor": "node-a",
+  "executor_required": false
+}
