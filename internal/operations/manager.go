@@ -184,7 +184,12 @@ func (m *Manager) Submit(req Request) (Record, error) {
 
 	m.mu.Lock()
 	if req.IdempotencyKey != "" {
-		if prior, ok := m.store.ByIdempotency(req.Requester, req.IdempotencyKey); ok {
+		prior, ok, err := m.store.ByIdempotency(req.Requester, req.IdempotencyKey)
+		if err != nil {
+			m.mu.Unlock()
+			return Record{}, readFailed("read the idempotency key", err)
+		}
+		if ok {
 			if prior.ArgumentFingerprint != fingerprint {
 				m.mu.Unlock()
 				return Record{}, herrors.New(herrors.InvalidArguments,
@@ -196,10 +201,15 @@ func (m *Manager) Submit(req Request) (Record, error) {
 			}
 			exec := m.live[prior.ID]
 			m.mu.Unlock()
-			return m.await(prior, exec, op.Mode == registry.ModeSync), nil
+			return m.await(prior, exec, op.Mode == registry.ModeSync)
 		}
 	}
-	if running, ok := m.conflict(req.Capability, op, key); ok {
+	running, conflicted, err := m.conflict(req.Capability, op, key)
+	if err != nil {
+		m.mu.Unlock()
+		return Record{}, err
+	}
+	if conflicted {
 		m.mu.Unlock()
 		return Record{}, herrors.New(herrors.OperationConflict,
 			fmt.Sprintf("operation %q is already running", running.ID),
@@ -241,7 +251,11 @@ func (m *Manager) Submit(req Request) (Record, error) {
 		return rec, nil
 	}
 	m.execute(exec, rec, op)
-	if done, ok := m.store.Get(rec.ID); ok {
+	done, ok, err := m.store.Get(rec.ID)
+	if err != nil {
+		return Record{}, readFailed("read operation "+rec.ID, err)
+	}
+	if ok {
 		return done, nil
 	}
 	return rec, nil
@@ -250,40 +264,43 @@ func (m *Manager) Submit(req Request) (Record, error) {
 // await waits for a duplicate idempotent request's original run when the
 // operation is synchronous, so the retry returns the result rather than a
 // queued record.
-func (m *Manager) await(rec Record, exec *execution, wait bool) Record {
+func (m *Manager) await(rec Record, exec *execution, wait bool) (Record, error) {
 	if !wait || rec.Status.Final() || exec == nil {
-		return rec
+		return rec, nil
 	}
 	<-exec.done
-	if done, ok := m.store.Get(rec.ID); ok {
-		return done
+	done, ok, err := m.store.Get(rec.ID)
+	if err != nil {
+		return Record{}, readFailed("read operation "+rec.ID, err)
 	}
-	return rec
+	if ok {
+		return done, nil
+	}
+	return rec, nil
 }
 
-// Get returns one operation.
+// Get returns one operation. A store read failure is the Internal code,
+// never the UnknownOperation code, so a broken database does not look like
+// a missing operation.
 func (m *Manager) Get(id string) (Record, error) {
-	rec, ok := m.store.Get(id)
+	rec, ok, err := m.store.Get(id)
+	if err != nil {
+		return Record{}, readFailed("read operation "+id, err)
+	}
 	if !ok {
 		return Record{}, unknownOperation(id)
 	}
 	return rec, nil
 }
 
-// List returns the operations that satisfy f, sorted by operation ID.
-func (m *Manager) List(f Filter) []Record {
-	return m.store.List(f)
-}
-
-// RecoverInterrupted fails every operation that a previous Gateway process
-// left queued or running. A store that does not survive a restart has
-// nothing to recover, so the call succeeds and reports zero.
-func (m *Manager) RecoverInterrupted() (int, error) {
-	recoverer, ok := m.store.(Recoverer)
-	if !ok {
-		return 0, nil
+// List returns the operations that satisfy f, sorted by operation ID. A
+// store read failure is an error, never an empty list.
+func (m *Manager) List(f Filter) ([]Record, error) {
+	records, err := m.store.List(f)
+	if err != nil {
+		return nil, readFailed("list operations", err)
 	}
-	return recoverer.RecoverInterrupted(m.now().UTC())
+	return records, nil
 }
 
 // PurgeOld removes the finished operations older than the configured
@@ -306,7 +323,11 @@ func (m *Manager) PurgeOld() (int64, error) {
 // cancel is safe.
 func (m *Manager) Cancel(id string) (Record, error) {
 	m.mu.Lock()
-	rec, ok := m.store.Get(id)
+	rec, ok, err := m.store.Get(id)
+	if err != nil {
+		m.mu.Unlock()
+		return Record{}, readFailed("read operation "+id, err)
+	}
 	if !ok {
 		m.mu.Unlock()
 		return Record{}, unknownOperation(id)
@@ -337,7 +358,11 @@ func (m *Manager) Cancel(id string) (Record, error) {
 		case <-exec.done:
 		case <-timer.C:
 		}
-		if done, ok := m.store.Get(id); ok {
+		done, ok, err := m.store.Get(id)
+		if err != nil {
+			return Record{}, readFailed("read operation "+id, err)
+		}
+		if ok {
 			return done, nil
 		}
 		return rec, nil
@@ -384,13 +409,19 @@ func (m *Manager) prepare(req Request) (*registry.Capability, *registry.Operatio
 // forbids running alongside a new one, docs/architecture.md section 9.4.
 // Runs are counted per concurrency key; a queued run counts too, because
 // it is about to run.
-func (m *Manager) conflict(capID string, op *registry.Operation, key string) (Record, bool) {
+func (m *Manager) conflict(capID string, op *registry.Operation, key string) (Record, bool, error) {
 	if op.Concurrency == nil || op.Concurrency.Limit <= 0 {
-		return Record{}, false
+		return Record{}, false, nil
+	}
+	// Only active records matter. Filtering in the store keeps finished
+	// history, with its results and arguments, out of the hot path.
+	records, err := m.store.List(Filter{Capability: capID, Operation: op.ID, Active: true})
+	if err != nil {
+		return Record{}, false, readFailed("list active operations", err)
 	}
 	running := 0
 	first := Record{}
-	for _, rec := range m.store.List(Filter{Capability: capID, Operation: op.ID}) {
+	for _, rec := range records {
 		if !rec.Status.active() || rec.ConcurrencyKey != key {
 			continue
 		}
@@ -400,9 +431,9 @@ func (m *Manager) conflict(capID string, op *registry.Operation, key string) (Re
 		running++
 	}
 	if running < op.Concurrency.Limit {
-		return Record{}, false
+		return Record{}, false, nil
 	}
-	return first, true
+	return first, true, nil
 }
 
 // execute runs one accepted operation. It moves the record to running,
@@ -422,9 +453,9 @@ func (m *Manager) execute(exec *execution, rec Record, op *registry.Operation) {
 	defer cancel()
 
 	m.mu.Lock()
-	current, ok := m.store.Get(rec.ID)
-	if !ok || current.Status != StateQueued {
-		// Cancelled while it waited to start.
+	current, ok, err := m.store.Get(rec.ID)
+	if err != nil || !ok || current.Status != StateQueued {
+		// A read failure or a cancellation while it waited to start.
 		m.mu.Unlock()
 		return
 	}
@@ -472,8 +503,8 @@ func (m *Manager) complete(ctx context.Context, id string, resp runtime.Response
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	rec, ok := m.store.Get(id)
-	if !ok || rec.Status.Final() {
+	rec, ok, err := m.store.Get(id)
+	if err != nil || !ok || rec.Status.Final() {
 		return
 	}
 	rec.Status = state
@@ -682,6 +713,13 @@ func concurrencyKey(c *registry.Concurrency, values map[string]any) string {
 		return ""
 	}
 	return string(encoded)
+}
+
+// readFailed wraps a store read failure in the Internal code. A read that
+// failed must never look like a missing record or a new idempotency key.
+func readFailed(action string, err error) error {
+	return herrors.New(herrors.Internal,
+		fmt.Sprintf("the operation store could not %s: %v", action, err), nil)
 }
 
 // unknownOperation is the error of an operation ID that is not stored. The

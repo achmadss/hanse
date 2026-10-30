@@ -60,9 +60,8 @@ type Store struct {
 }
 
 var (
-	_ operations.Store     = (*Store)(nil)
-	_ operations.Recoverer = (*Store)(nil)
-	_ operations.Pruner    = (*Store)(nil)
+	_ operations.Store  = (*Store)(nil)
+	_ operations.Pruner = (*Store)(nil)
 )
 
 // The record columns, in the order scanRecord expects.
@@ -101,6 +100,8 @@ var schema = []string{
 	WHERE idempotency_key <> ''`,
 	`CREATE INDEX IF NOT EXISTS operations_finished
 	ON operations (finished_at)`,
+	`CREATE INDEX IF NOT EXISTS operations_active
+	ON operations (capability, operation, status)`,
 }
 
 // Open opens or creates the database, recovers operations an earlier
@@ -261,7 +262,9 @@ func (s *Store) Insert(rec operations.Record) error {
 	if rec.ID == "" {
 		return herrors.New(herrors.Internal, "an operation record needs an ID", nil)
 	}
-	if _, ok := s.Get(rec.ID); ok {
+	if _, ok, err := s.Get(rec.ID); err != nil {
+		return err
+	} else if ok {
 		return herrors.New(herrors.Internal,
 			fmt.Sprintf("operation %q is stored twice", rec.ID), nil)
 	}
@@ -301,22 +304,23 @@ func (s *Store) Update(rec operations.Record) error {
 	return nil
 }
 
-// Get returns one record by operation ID.
-func (s *Store) Get(id string) (operations.Record, bool) {
+// Get returns one record by operation ID. A missing operation is the false
+// bool; a database failure is the error.
+func (s *Store) Get(id string) (operations.Record, bool, error) {
 	row := s.db.QueryRow(`SELECT `+recordColumns+` FROM operations WHERE id = ?`, id)
 	rec, err := scanRecord(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return operations.Record{}, false
+		return operations.Record{}, false, nil
 	}
 	if err != nil {
-		return operations.Record{}, false
+		return operations.Record{}, false, storeError("read operation "+id, err)
 	}
-	return rec, true
+	return rec, true, nil
 }
 
 // List returns the records that satisfy f, sorted by operation ID
 // (docs/architecture.md section 11.1: every list is sorted by ID).
-func (s *Store) List(f operations.Filter) []operations.Record {
+func (s *Store) List(f operations.Filter) ([]operations.Record, error) {
 	query := `SELECT ` + recordColumns + ` FROM operations`
 	var clauses []string
 	var args []any
@@ -332,45 +336,57 @@ func (s *Store) List(f operations.Filter) []operations.Record {
 	add("executor", f.Executor)
 	add("status", string(f.Status))
 	add("requester", f.Requester)
+	if f.Active {
+		clauses = append(clauses, "status IN (?, ?)")
+		args = append(args, string(operations.StateQueued), string(operations.StateRunning))
+	}
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
 	}
 	query += " ORDER BY id"
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
-		return []operations.Record{}
+		return nil, storeError("list operations", err)
 	}
 	defer func() { _ = rows.Close() }()
 	out := []operations.Record{}
 	for rows.Next() {
 		rec, err := scanRecord(rows)
 		if err != nil {
-			return out
+			return nil, storeError("read an operation row", err)
 		}
 		out = append(out, rec)
 	}
-	return out
+	if err := rows.Err(); err != nil {
+		return nil, storeError("list operations", err)
+	}
+	return out, nil
 }
 
 // ByIdempotency returns the operation of one requester and key. An empty
-// key never matches.
-func (s *Store) ByIdempotency(requester, key string) (operations.Record, bool) {
+// key never matches. A missing record is the false bool; a database failure
+// is the error, so a retry never looks like a new request.
+func (s *Store) ByIdempotency(requester, key string) (operations.Record, bool, error) {
 	if key == "" {
-		return operations.Record{}, false
+		return operations.Record{}, false, nil
 	}
 	row := s.db.QueryRow(`SELECT `+recordColumns+` FROM operations
 		WHERE requester = ? AND idempotency_key = ? LIMIT 1`, requester, key)
 	rec, err := scanRecord(row)
-	if errors.Is(err, sql.ErrNoRows) || err != nil {
-		return operations.Record{}, false
+	if errors.Is(err, sql.ErrNoRows) {
+		return operations.Record{}, false, nil
 	}
-	return rec, true
+	if err != nil {
+		return operations.Record{}, false, storeError("read the idempotency key", err)
+	}
+	return rec, true, nil
 }
 
 // RecoverInterrupted fails every operation that is still queued or running,
 // with the gateway_restart reason (docs/architecture.md section 9.6). It
-// returns how many records it changed. Open runs it on startup; a manager
-// may run it again, which then changes nothing.
+// returns how many records it changed. Open runs it exactly once, before
+// the Gateway can dispatch anything, because a later call would also fail
+// the runs this process is executing.
 func (s *Store) RecoverInterrupted(now time.Time) (int, error) {
 	code := herrors.GatewayRestart
 	result, err := s.db.Exec(`UPDATE operations
@@ -510,14 +526,19 @@ func scanRecord(row scanner) (operations.Record, error) {
 	return rec, nil
 }
 
-// formatTime encodes a timestamp as RFC 3339 with nanoseconds, in UTC. The
-// zero time is the empty string, which marks a timestamp that has not
-// happened (docs/architecture.md section 9.1).
+// timestampLayout is the stored timestamp format: UTC, fixed width, and
+// always nine fractional digits, so text order is time order. RFC 3339's
+// variable fraction would make "10:00:00Z" sort after "10:00:00.5Z".
+const timestampLayout = "2006-01-02T15:04:05.000000000Z"
+
+// formatTime encodes a timestamp in UTC with a fixed width. The zero time
+// is the empty string, which marks a timestamp that has not happened
+// (docs/architecture.md section 9.1).
 func formatTime(t time.Time) string {
 	if t.IsZero() {
 		return ""
 	}
-	return t.UTC().Format(time.RFC3339Nano)
+	return t.UTC().Format(timestampLayout)
 }
 
 // parseTime decodes a stored timestamp; an empty or malformed value is the

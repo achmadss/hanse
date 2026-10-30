@@ -93,7 +93,10 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 		operations.StateCompleted, operations.StateFailed, operations.StateCancelled,
 	} {
 		want := sample("op_"+string(status), status)
-		got, ok := second.Get(want.ID)
+		got, ok, err := second.Get(want.ID)
+		if err != nil {
+			t.Fatalf("get %s: %v", want.ID, err)
+		}
 		if !ok {
 			t.Fatalf("operation %s did not survive the reopen", want.ID)
 		}
@@ -125,7 +128,10 @@ func TestRestartRecovery(t *testing.T) {
 
 	reopened := open(t, history.Options{StateDir: dir})
 	for _, id := range []string{"op_queued", "op_running"} {
-		rec, ok := reopened.Get(id)
+		rec, ok, err := reopened.Get(id)
+		if err != nil {
+			t.Fatalf("get %s: %v", id, err)
+		}
 		if !ok {
 			t.Fatalf("operation %s is missing after the reopen", id)
 		}
@@ -139,7 +145,10 @@ func TestRestartRecovery(t *testing.T) {
 			t.Errorf("operation %s finished at %v, want %v", id, rec.FinishedAt, fixedNow)
 		}
 	}
-	finished, _ := reopened.Get("op_done")
+	finished, found, err := reopened.Get("op_done")
+	if err != nil || !found {
+		t.Fatalf("get op_done: %v, found %v", err, found)
+	}
 	if !reflect.DeepEqual(finished, done) {
 		t.Errorf("a final record changed: %+v, want %+v", finished, done)
 	}
@@ -178,14 +187,21 @@ func TestRetentionStartup(t *testing.T) {
 	}
 
 	second := open(t, history.Options{StateDir: dir, Retention: 24 * time.Hour})
-	if _, ok := second.Get("op_old_done"); ok {
+	if _, ok, err := second.Get("op_old_done"); err != nil {
+		t.Fatalf("get op_old_done: %v", err)
+	} else if ok {
 		t.Error("the old finished operation survived the startup cleanup")
 	}
-	if _, ok := second.Get("op_recent_done"); !ok {
+	if _, ok, err := second.Get("op_recent_done"); err != nil {
+		t.Fatalf("get op_recent_done: %v", err)
+	} else if !ok {
 		t.Error("the recent finished operation was removed")
 	}
 	// Open also recovers the active record, so it fails but stays stored.
-	active, ok := second.Get("op_old_active")
+	active, ok, err := second.Get("op_old_active")
+	if err != nil {
+		t.Fatalf("get op_old_active: %v", err)
+	}
 	if !ok {
 		t.Fatal("the active operation was removed by retention")
 	}
@@ -210,7 +226,9 @@ func TestRetentionPeriodic(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, ok := store.Get(rec.ID); !ok {
+		if _, ok, err := store.Get(rec.ID); err != nil {
+			t.Fatalf("get %s: %v", rec.ID, err)
+		} else if !ok {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -232,14 +250,21 @@ func TestIdempotencyAfterReopen(t *testing.T) {
 	}
 
 	second := open(t, history.Options{StateDir: dir})
-	got, ok := second.ByIdempotency("tester", "key-op_key")
+	got, ok, err := second.ByIdempotency("tester", "key-op_key")
+	if err != nil {
+		t.Fatalf("idempotency lookup: %v", err)
+	}
 	if !ok || got.ID != rec.ID {
 		t.Fatalf("idempotency lookup = %+v, %v, want %s", got, ok, rec.ID)
 	}
-	if _, ok := second.ByIdempotency("other", "key-op_key"); ok {
+	if _, ok, err := second.ByIdempotency("other", "key-op_key"); err != nil {
+		t.Fatalf("idempotency lookup for another requester: %v", err)
+	} else if ok {
 		t.Error("another requester resolved the idempotency key")
 	}
-	if _, ok := second.ByIdempotency("tester", ""); ok {
+	if _, ok, err := second.ByIdempotency("tester", ""); err != nil {
+		t.Fatalf("empty idempotency lookup: %v", err)
+	} else if ok {
 		t.Error("an empty idempotency key matched")
 	}
 }
@@ -265,11 +290,17 @@ func TestConcurrentUse(t *testing.T) {
 					errs <- err
 					return
 				}
-				if _, ok := store.Get(id); !ok {
+				if _, ok, err := store.Get(id); err != nil {
+					errs <- err
+					return
+				} else if !ok {
 					t.Errorf("operation %s is missing after insert", id)
 					return
 				}
-				if _, ok := store.ByIdempotency(rec.Requester, rec.IdempotencyKey); !ok {
+				if _, ok, err := store.ByIdempotency(rec.Requester, rec.IdempotencyKey); err != nil {
+					errs <- err
+					return
+				} else if !ok {
 					t.Errorf("idempotency key of %s is missing", id)
 					return
 				}
@@ -279,7 +310,12 @@ func TestConcurrentUse(t *testing.T) {
 					errs <- err
 					return
 				}
-				if got := store.List(operations.Filter{Requester: rec.Requester}); len(got) == 0 {
+				got, err := store.List(operations.Filter{Requester: rec.Requester})
+				if err != nil {
+					errs <- err
+					return
+				}
+				if len(got) == 0 {
 					t.Error("the list is empty while records exist")
 					return
 				}
@@ -314,5 +350,75 @@ func TestFilePermissions(t *testing.T) {
 	}
 	if mode := fileInfo.Mode().Perm(); mode != 0o600 {
 		t.Errorf("database mode %o, want 600", mode)
+	}
+}
+
+// TestActiveFilterExcludesFinished proves the concurrency check can load
+// only queued and running records, never finished history.
+func TestActiveFilterExcludesFinished(t *testing.T) {
+	store := open(t, history.Options{})
+	finished := sample("op_finished", operations.StateCompleted)
+	queued := sample("op_queued", operations.StateQueued)
+	queued.StartedAt = time.Time{}
+	running := sample("op_running", operations.StateRunning)
+	running.FinishedAt = time.Time{}
+	for _, rec := range []operations.Record{finished, queued, running} {
+		if err := store.Insert(rec); err != nil {
+			t.Fatalf("insert %s: %v", rec.ID, err)
+		}
+	}
+
+	active, err := store.List(operations.Filter{Capability: "demo", Operation: "run", Active: true})
+	if err != nil {
+		t.Fatalf("list active: %v", err)
+	}
+	ids := make(map[string]bool, len(active))
+	for _, rec := range active {
+		ids[rec.ID] = true
+	}
+	if ids[finished.ID] {
+		t.Error("the active filter returned a finished record")
+	}
+	if !ids[queued.ID] || !ids[running.ID] {
+		t.Errorf("active filter returned %v, want the queued and running records", ids)
+	}
+}
+
+// TestTimestampOrdering checks that a whole-second timestamp and a
+// fractional one sort by time, so retention deletes the older record.
+func TestTimestampOrdering(t *testing.T) {
+	start := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	cutoff := start.Add(-2 * time.Hour)
+	store := open(t, history.Options{
+		Retention: 2 * time.Hour,
+		Now:       func() time.Time { return start },
+	})
+
+	older := sample("op_older", operations.StateCompleted)
+	older.FinishedAt = cutoff.Add(-time.Second) // whole second, before the cutoff
+	newer := sample("op_newer", operations.StateCompleted)
+	newer.FinishedAt = cutoff.Add(500 * time.Millisecond) // fractional, after the cutoff
+	for _, rec := range []operations.Record{older, newer} {
+		if err := store.Insert(rec); err != nil {
+			t.Fatalf("insert %s: %v", rec.ID, err)
+		}
+	}
+
+	removed, err := store.PurgeOld(start)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if removed != 1 {
+		t.Errorf("purge removed %d records, want 1", removed)
+	}
+	if _, ok, err := store.Get(older.ID); err != nil {
+		t.Fatalf("get older: %v", err)
+	} else if ok {
+		t.Error("the record before the cutoff survived")
+	}
+	if _, ok, err := store.Get(newer.ID); err != nil {
+		t.Fatalf("get newer: %v", err)
+	} else if !ok {
+		t.Error("the record after the cutoff was removed")
 	}
 }

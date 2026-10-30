@@ -179,7 +179,10 @@ func TestValidateEndpoint(t *testing.T) {
 	if validated.Mode != "sync" {
 		t.Errorf("validate mode %q, want sync", validated.Mode)
 	}
-	records := fixture.manager.List(operations.Filter{})
+	records, err := fixture.manager.List(operations.Filter{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
 	if len(records) != 0 {
 		t.Errorf("validate created %d operations, want none", len(records))
 	}
@@ -261,7 +264,9 @@ func TestIdempotencyKey(t *testing.T) {
 	if !bytes.Equal(retry.Result, first.Result) {
 		t.Errorf("retry result %s, want %s", retry.Result, first.Result)
 	}
-	if records := fixture.manager.List(operations.Filter{}); len(records) != 1 {
+	if records, err := fixture.manager.List(operations.Filter{}); err != nil {
+		t.Fatalf("list: %v", err)
+	} else if len(records) != 1 {
 		t.Errorf("the retry stored %d operations, want 1", len(records))
 	}
 
@@ -473,7 +478,9 @@ func TestMalformedRequestBodies(t *testing.T) {
 			}
 		})
 	}
-	if records := fixture.manager.List(operations.Filter{}); len(records) != 0 {
+	if records, err := fixture.manager.List(operations.Filter{}); err != nil {
+		t.Fatalf("list: %v", err)
+	} else if len(records) != 0 {
 		t.Errorf("malformed requests created %d operations, want none", len(records))
 	}
 }

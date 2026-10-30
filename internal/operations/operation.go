@@ -168,12 +168,16 @@ type Check struct {
 }
 
 // Filter narrows a list of operations. An empty field matches everything.
+// Active selects only the states that still count against concurrency
+// (`queued` and `running`), so a concurrency check never loads finished
+// history.
 type Filter struct {
 	Capability string
 	Operation  string
 	Executor   string
 	Status     State
 	Requester  string
+	Active     bool
 }
 
 // matches reports whether rec satisfies every filter field.
@@ -182,5 +186,6 @@ func (f Filter) matches(rec Record) bool {
 		(f.Operation == "" || rec.Operation == f.Operation) &&
 		(f.Executor == "" || rec.Executor == f.Executor) &&
 		(f.Status == "" || rec.Status == f.Status) &&
-		(f.Requester == "" || rec.Requester == f.Requester)
+		(f.Requester == "" || rec.Requester == f.Requester) &&
+		(!f.Active || rec.Status.active())
 }
