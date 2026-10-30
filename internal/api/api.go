@@ -31,6 +31,7 @@ func New(reg *registry.Registry, ops *operations.Manager, enr *enroll.Service) h
 	mux.HandleFunc("GET /v1/version", s.getVersion)
 	mux.HandleFunc("GET /v1/capabilities", s.listCapabilities)
 	mux.HandleFunc("GET /v1/capabilities/{id}", s.getCapability)
+	mux.HandleFunc("POST /v1/capabilities/reload", s.reloadCapabilities)
 	mux.HandleFunc("GET /v1/nodes", s.listNodes)
 	mux.HandleFunc("GET /v1/nodes/{id}", s.getNode)
 	mux.HandleFunc("GET /v1/nodes/{id}/capabilities", s.getNodeCapabilities)
