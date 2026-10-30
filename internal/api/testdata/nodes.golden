@@ -1,0 +1,80 @@
+{
+  "nodes": [
+    {
+      "id": "gateway",
+      "os": "linux",
+      "arch": "amd64",
+      "roles": [
+        "server"
+      ],
+      "attributes": {},
+      "enabled": true,
+      "status": "online"
+    },
+    {
+      "id": "node-a",
+      "os": "linux",
+      "arch": "arm64",
+      "roles": [
+        "server"
+      ],
+      "attributes": {},
+      "enabled": true,
+      "status": "offline"
+    },
+    {
+      "id": "node-b",
+      "os": "linux",
+      "arch": "arm64",
+      "roles": [
+        "server"
+      ],
+      "attributes": {},
+      "enabled": true,
+      "status": "offline"
+    },
+    {
+      "id": "node-c",
+      "os": "windows",
+      "arch": "amd64",
+      "roles": [
+        "pc"
+      ],
+      "attributes": {
+        "broadcast": "192.0.2.255",
+        "mac": "00:00:5e:00:53:01",
+        "ssh_user": "hanse"
+      },
+      "enabled": true,
+      "status": "offline"
+    },
+    {
+      "id": "node-d",
+      "os": "linux",
+      "arch": "amd64",
+      "roles": [
+        "pc"
+      ],
+      "attributes": {
+        "broadcast": "192.0.2.255",
+        "mac": "00:00:5e:00:53:02",
+        "ssh_user": "hanse"
+      },
+      "enabled": false,
+      "status": "offline"
+    },
+    {
+      "id": "node-e",
+      "os": "linux",
+      "arch": "amd64",
+      "roles": [
+        "pc"
+      ],
+      "attributes": {
+        "mac": "00:00:5e:00:53:03"
+      },
+      "enabled": true,
+      "status": "offline"
+    }
+  ]
+}

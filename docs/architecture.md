@@ -391,6 +391,30 @@ The `describe` response lists the capability and operation IDs, the description,
 
 All JSON responses are deterministic, with keys in a stable order, so that scripts and AI agents can parse and compare them.
 
+### 11.1 Response shapes
+
+Every discovery response is JSON. Object keys keep a fixed order, and every list is sorted by ID, so two identical requests return identical bytes.
+
+| Endpoint | Body |
+|---|---|
+| `GET /v1/version` | `gateway_version`, `api_version`, `handler_contracts`, `agent_protocols` |
+| `GET /v1/capabilities` | `capabilities`: a list of capability objects |
+| `GET /v1/capabilities/{id}` | `capability`: one capability object |
+| `GET /v1/nodes` | `nodes`: a list of node objects |
+| `GET /v1/nodes/{id}` | `node`: one node object |
+| `GET /v1/nodes/{id}/capabilities` | `node`, and `capabilities`: a list of `{id, operations}` |
+| `GET /v1/operations/{capability}/{operation}/schema` | The argument schema itself, without an envelope |
+| `GET /v1/operations/{capability}/{operation}/describe` | `capability`, `operation`, `description`, `mode`, `privileged`, `schema`, `required`, `options`, `node_filters`, `executors`, `default_executor`, `executor_required` |
+| `GET /v1/operations/{capability}/{operation}/options/{field}` | `options`: a list of `{value, label, description}` |
+
+A capability object holds `id`, `name`, `description`, `contract`, `handler`, and `operations`, where each operation holds `id`, `description`, `mode`, and `privileged`.
+
+A node object holds `id`, `os`, `arch`, `roles`, `attributes`, `enabled`, and `status`.
+
+In `describe`, `required` lists the schema's required arguments, `options` lists the arguments with an option provider as `{field, provider}`, `node_filters` maps each `hanse:node` argument to its filter, and `executors` lists `{id, status, default}`. `executor_required` is `true` when no default executor is configured, so the request must name one.
+
+The error object keeps the shape of section 14: `{code, message, details}`, with `details` omitted when empty.
+
 ### Example request
 
 ```http
