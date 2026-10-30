@@ -419,8 +419,17 @@ func (h *Hub) runLoop(c *conn, events <-chan readEvent) {
 // registry are the source of truth (docs/agent-protocol.md section 10).
 func (h *Hub) revalidate(c *conn) (int, string) {
 	nodeID, err := h.cfg.Verify(c.credential)
-	if err != nil || nodeID != c.node {
-		return closeRevoked, "the node credential is no longer valid"
+	if err != nil {
+		if errors.Is(err, herrors.AuthenticationFailed) {
+			return closeRevoked, "the node credential is no longer valid"
+		}
+		// A transient store failure must not count as a revoke: 4001
+		// makes the agent wait an hour. A protocol error reconnects with
+		// backoff, and the connect-time check decides the credential.
+		return closeProtocolError, "the node credential could not be checked"
+	}
+	if nodeID != c.node {
+		return closeRevoked, "the node credential belongs to another node"
 	}
 	if h.cfg.Registry == nil || h.cfg.Registry.Nodes == nil {
 		return closeNodeMismatch, "the node registry is not available"

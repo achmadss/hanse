@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -766,6 +767,30 @@ func TestRevokedCredentialClosesConnection(t *testing.T) {
 		t.Errorf("close code %d, want %d", code, closeRevoked)
 	}
 	f.waitStatus(t, "node-a", registry.StatusOffline)
+}
+
+// TestVerifyStoreFailureDoesNotLookRevoked keeps a transient enroll
+// store failure recoverable: the agent gets 4000 and reconnects with
+// backoff, not 4001 and an hour of silence.
+func TestVerifyStoreFailureDoesNotLookRevoked(t *testing.T) {
+	var failing atomic.Bool
+	f := newFixture(t, func(cfg *Config) {
+		cfg.HeartbeatInterval = 20 * time.Millisecond
+		cfg.HeartbeatTimeout = 5 * time.Second
+		base := cfg.Verify
+		cfg.Verify = func(credential string) (string, error) {
+			if failing.Load() {
+				return "", herrors.New(herrors.Internal, "the enrollment store is unavailable", nil)
+			}
+			return base(credential)
+		}
+	})
+	credential := f.credential(t, "node-a")
+	ws, _ := f.connect(t, credential, hello("node-a"))
+	failing.Store(true)
+	if code := readClose(t, ws); code != closeProtocolError {
+		t.Errorf("close code %d, want %d", code, closeProtocolError)
+	}
 }
 
 // TestDisabledNodeClosesConnection proves that the re-check closes a
