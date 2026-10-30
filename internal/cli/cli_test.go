@@ -671,6 +671,44 @@ func TestVersionCommand(t *testing.T) {
 	}
 }
 
+// TestParseArgs covers flags between positionals and the "--" terminator.
+func TestParseArgs(t *testing.T) {
+	fs := newFlagSet("test")
+	formatValue := formatFlag(fs)
+	positional, err := parseArgs(fs, []string{"pc", "--format", "json", "up"})
+	if err != nil {
+		t.Fatalf("parseArgs: %v", err)
+	}
+	if *formatValue != "json" {
+		t.Errorf("format %q, want json", *formatValue)
+	}
+	if strings.Join(positional, ",") != "pc,up" {
+		t.Errorf("positional %v, want [pc up]", positional)
+	}
+
+	fs = newFlagSet("test")
+	formatValue = formatFlag(fs)
+	positional, err = parseArgs(fs, []string{"pc", "--", "-weird", "--format", "json"})
+	if err != nil {
+		t.Fatalf("parseArgs after --: %v", err)
+	}
+	if *formatValue != "text" {
+		t.Errorf("format after -- %q, want the default", *formatValue)
+	}
+	if strings.Join(positional, ",") != "pc,-weird,--format,json" {
+		t.Errorf("positional after -- %v, want every later argument", positional)
+	}
+}
+
+// TestOneLineStripsControls requires table cells to carry no control bytes.
+func TestOneLineStripsControls(t *testing.T) {
+	got := oneLine("a\x1b[31mb\nc\td\x00")
+	want := "a[31mb c d"
+	if got != want {
+		t.Errorf("oneLine() = %q, want %q", got, want)
+	}
+}
+
 // checkMode requires a file or directory mode.
 func checkMode(t *testing.T, path string, want os.FileMode) {
 	t.Helper()

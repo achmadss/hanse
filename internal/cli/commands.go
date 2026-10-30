@@ -115,9 +115,13 @@ func (a *app) readToken(flagValue string) (string, error) {
 	if a.stdinIsTerminal() {
 		return "", usagef("the token must come from --token or standard input")
 	}
-	data, err := io.ReadAll(io.LimitReader(a.opts.Stdin, 1<<20))
+	const maxTokenBytes = 1 << 20
+	data, err := io.ReadAll(io.LimitReader(a.opts.Stdin, maxTokenBytes+1))
 	if err != nil {
 		return "", herrors.New(herrors.Internal, "cannot read the token from standard input: "+err.Error(), nil)
+	}
+	if len(data) > maxTokenBytes {
+		return "", usagef("the token is longer than %d bytes", maxTokenBytes)
 	}
 	token := strings.TrimSpace(string(data))
 	if token == "" {
@@ -136,10 +140,14 @@ func (a *app) stdinIsTerminal() bool {
 		return false
 	}
 	info, err := f.Stat()
-	if err != nil {
+	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
 		return false
 	}
-	return info.Mode()&os.ModeCharDevice != 0
+	// /dev/null is a character device but not an interactive terminal.
+	if nullInfo, err := os.Stat(os.DevNull); err == nil && os.SameFile(info, nullInfo) {
+		return false
+	}
+	return true
 }
 
 // open loads the configuration, builds a client, and checks the Gateway's

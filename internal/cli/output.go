@@ -56,11 +56,19 @@ func newTable(w io.Writer) *tabwriter.Writer {
 }
 
 // oneLine flattens a value for a table cell: text from the Gateway must not
-// break the table or inject terminal control characters.
+// break the table or inject terminal control characters, including escape
+// sequences.
 func oneLine(s string) string {
-	s = strings.ReplaceAll(s, "\r", " ")
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.ReplaceAll(s, "\t", " ")
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t' || r == '\n' || r == '\r':
+			return ' '
+		case r < 0x20 || r == 0x7f:
+			return -1
+		default:
+			return r
+		}
+	}, s)
 	return strings.TrimSpace(s)
 }
 

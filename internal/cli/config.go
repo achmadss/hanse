@@ -6,7 +6,6 @@ package cli
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,8 +68,10 @@ func saveConfig(path string, cfg config) error {
 	if err := os.MkdirAll(dir, dirMode); err != nil {
 		return fmt.Errorf("cannot create the configuration directory %s: %w", dir, err)
 	}
-	// MkdirAll leaves an existing directory alone; tighten only ours.
-	if err := os.Chmod(dir, dirMode); err != nil && !errors.Is(err, os.ErrPermission) {
+	// MkdirAll leaves an existing directory alone; tighten only ours. A
+	// failure must stop the login: a private file inside a readable
+	// directory still exposes the token.
+	if err := os.Chmod(dir, dirMode); err != nil {
 		return fmt.Errorf("cannot set the permissions of %s: %w", dir, err)
 	}
 
@@ -95,6 +96,10 @@ func saveConfig(path string, cfg config) error {
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("cannot write %s: %w", tmpName, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("cannot flush %s: %w", tmpName, err)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("cannot close %s: %w", tmpName, err)

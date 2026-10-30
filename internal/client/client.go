@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -60,6 +61,9 @@ func New(cfg Config) (*Client, error) {
 	if u.Host == "" {
 		return nil, fmt.Errorf("the Gateway URL %q has no host", raw)
 	}
+	if u.User != nil {
+		return nil, fmt.Errorf("the Gateway URL must not contain a user name or password")
+	}
 	u.Path = strings.TrimRight(u.Path, "/")
 	u.RawPath = ""
 	u.RawQuery = ""
@@ -86,6 +90,9 @@ func (c *Client) Capabilities(ctx context.Context) (Capabilities, error) {
 	var out Capabilities
 	err := c.get(ctx, &out, "v1", "capabilities")
 	normalize(&out.Capabilities)
+	for i := range out.Capabilities {
+		normalizeCapability(&out.Capabilities[i])
+	}
 	return out, err
 }
 
@@ -93,7 +100,7 @@ func (c *Client) Capabilities(ctx context.Context) (Capabilities, error) {
 func (c *Client) Capability(ctx context.Context, id string) (Capability, error) {
 	var out CapabilityEnvelope
 	err := c.get(ctx, &out, "v1", "capabilities", id)
-	normalize(&out.Capability.Operations)
+	normalizeCapability(&out.Capability)
 	return out.Capability, err
 }
 
@@ -102,6 +109,9 @@ func (c *Client) Nodes(ctx context.Context) (Nodes, error) {
 	var out Nodes
 	err := c.get(ctx, &out, "v1", "nodes")
 	normalize(&out.Nodes)
+	for i := range out.Nodes {
+		normalizeNode(&out.Nodes[i])
+	}
 	return out, err
 }
 
@@ -109,7 +119,7 @@ func (c *Client) Nodes(ctx context.Context) (Nodes, error) {
 func (c *Client) Node(ctx context.Context, id string) (Node, error) {
 	var out NodeEnvelope
 	err := c.get(ctx, &out, "v1", "nodes", id)
-	normalize(&out.Node.Roles)
+	normalizeNode(&out.Node)
 	return out.Node, err
 }
 
@@ -145,8 +155,11 @@ func (c *Client) Options(ctx context.Context, capability, operation, field strin
 
 // get performs one GET request and decodes its JSON body into out.
 func (c *Client) get(ctx context.Context, out any, segments ...string) error {
-	endpoint := c.baseURL.JoinPath(segments...)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	endpoint, err := c.endpoint(segments)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return herrors.New(herrors.Internal, "the request could not be built: "+err.Error(), nil)
 	}
@@ -163,11 +176,11 @@ func (c *Client) get(ctx context.Context, out any, segments ...string) error {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return herrors.New(herrors.Internal,
-			fmt.Sprintf("the response from %s could not be read: %v", endpoint.Redacted(), err), nil)
+			fmt.Sprintf("the response from %s could not be read: %v", c.baseURL.Redacted(), err), nil)
 	}
 	if len(body) > maxResponseBytes {
 		return herrors.New(herrors.Internal,
-			fmt.Sprintf("the response from %s is larger than %d bytes", endpoint.Redacted(), maxResponseBytes), nil)
+			fmt.Sprintf("the response from %s is larger than %d bytes", c.baseURL.Redacted(), maxResponseBytes), nil)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return errorFromResponse(resp.StatusCode, body)
@@ -179,7 +192,41 @@ func (c *Client) get(ctx context.Context, out any, segments ...string) error {
 		return herrors.New(herrors.Internal,
 			fmt.Sprintf("the Gateway at %s returned an invalid JSON response: %v", c.baseURL.Redacted(), err), nil)
 	}
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return herrors.New(herrors.Internal,
+			fmt.Sprintf("the Gateway at %s returned an invalid JSON response: trailing data", c.baseURL.Redacted()), nil)
+	}
 	return nil
+}
+
+// endpoint builds the request URL. Each path segment is escaped and
+// validated, so an ID such as "../version" cannot reach another endpoint.
+func (c *Client) endpoint(segments []string) (string, error) {
+	escaped := make([]string, len(segments))
+	for i, segment := range segments {
+		if !validSegment(segment) {
+			return "", herrors.New(herrors.InvalidArguments,
+				fmt.Sprintf("%q is not a valid identifier", segment), map[string]any{"value": segment})
+		}
+		escaped[i] = url.PathEscape(segment)
+	}
+	u := *c.baseURL
+	basePath := strings.TrimRight(u.Path, "/")
+	baseEscaped := strings.TrimRight(c.baseURL.EscapedPath(), "/")
+	u.Path = basePath + "/" + strings.Join(segments, "/")
+	u.RawPath = baseEscaped + "/" + strings.Join(escaped, "/")
+	return u.String(), nil
+}
+
+// validSegment reports whether a path segment is a plain identifier. IDs
+// match ^[a-z][a-z0-9_-]*$ (docs/configuration.md section 2); this check
+// also accepts the literal "v1" and rejects separators and dot segments.
+func validSegment(segment string) bool {
+	if segment == "" || segment == "." || segment == ".." {
+		return false
+	}
+	return !strings.ContainsAny(segment, "/\\")
 }
 
 // wireError is the Gateway error object of docs/architecture.md section 14.
@@ -238,5 +285,18 @@ var codesByWire = func() map[string]*herrors.Code {
 func normalize[T any](items *[]T) {
 	if *items == nil {
 		*items = []T{}
+	}
+}
+
+// normalizeCapability normalizes the list fields of one capability.
+func normalizeCapability(c *Capability) {
+	normalize(&c.Operations)
+}
+
+// normalizeNode normalizes the list and map fields of one node.
+func normalizeNode(n *Node) {
+	normalize(&n.Roles)
+	if n.Attributes == nil {
+		n.Attributes = map[string]string{}
 	}
 }

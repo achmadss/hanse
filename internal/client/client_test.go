@@ -335,13 +335,69 @@ func TestSchemaKeepsNumbers(t *testing.T) {
 
 // TestNewRejectsBadURLs covers the URL validation.
 func TestNewRejectsBadURLs(t *testing.T) {
-	cases := []string{"", "not a url", "ftp://hanse.example", "http:///v1"}
+	cases := []string{"", "not a url", "ftp://hanse.example", "http:///v1", "https://user:secret@hanse.example"}
 	for _, raw := range cases {
 		t.Run(raw, func(t *testing.T) {
 			if _, err := New(Config{BaseURL: raw}); err == nil {
 				t.Errorf("New(%q): got no error", raw)
 			}
 		})
+	}
+}
+
+// TestInvalidSegmentsRejected requires a hostile identifier to fail before
+// any request, so it cannot reach another endpoint.
+func TestInvalidSegmentsRejected(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fixtureVersion))
+	}))
+	t.Cleanup(srv.Close)
+	c := newTestClient(t, srv)
+
+	for _, id := range []string{"../version", "a/b", "..", "", "a\\b"} {
+		_, err := c.Capability(context.Background(), id)
+		if !errors.Is(err, herrors.InvalidArguments) {
+			t.Errorf("Capability(%q): error %v, want InvalidArguments", id, err)
+		}
+	}
+	if requests != 0 {
+		t.Errorf("sent %d requests with a hostile identifier, want 0", requests)
+	}
+}
+
+// TestTrailingDataRejected requires the whole body to be one JSON value.
+func TestTrailingDataRejected(t *testing.T) {
+	srv := newTestServer(t, map[string]http.HandlerFunc{
+		"/v1/version": jsonRoute(`{"api_version":"v1"}{}`),
+	})
+	c := newTestClient(t, srv)
+	_, err := c.Version(context.Background())
+	if !errors.Is(err, herrors.Internal) {
+		t.Fatalf("version: error %v, want the Internal code", err)
+	}
+	if !strings.Contains(err.Error(), "trailing data") {
+		t.Errorf("version: error %v, want a trailing data message", err)
+	}
+}
+
+// TestNodeAttributesBecomeEmpty requires a stable JSON type for nodes.
+func TestNodeAttributesBecomeEmpty(t *testing.T) {
+	srv := newTestServer(t, map[string]http.HandlerFunc{
+		"/v1/nodes": jsonRoute(`{"nodes":[{"id":"node-a","os":"linux","arch":"amd64","roles":null,"attributes":null,"enabled":true,"status":"online"}]}`),
+	})
+	c := newTestClient(t, srv)
+	nodes, err := c.Nodes(context.Background())
+	if err != nil {
+		t.Fatalf("nodes: %v", err)
+	}
+	if nodes.Nodes[0].Roles == nil {
+		t.Error("nodes: roles are nil, want an empty slice")
+	}
+	if nodes.Nodes[0].Attributes == nil {
+		t.Error("nodes: attributes are nil, want an empty map")
 	}
 }
 

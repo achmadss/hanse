@@ -143,10 +143,14 @@ func newFlagSet(name string) *flag.FlagSet {
 // parseArgs parses flags that may appear before, between, or after
 // positional arguments, and returns the positional arguments. The flag
 // package stops at the first non-flag argument, so the loop resumes after
-// each one.
+// each one. A "--" terminator keeps every later argument positional, as
+// the flag package's own parsing does.
 func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 	var positional []string
 	for {
+		if len(args) > 0 && args[0] == "--" {
+			return append(positional, args[1:]...), nil
+		}
 		if err := fs.Parse(args); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return nil, usagef("usage requested")
