@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coder/websocket"
+	"github.com/gorilla/websocket"
 
 	"github.com/achmadss/hanse/internal/agentconn"
 	"github.com/achmadss/hanse/internal/agentproto"
@@ -135,16 +135,14 @@ func (f *dispatchFixture) connect(t *testing.T) *websocket.Conn {
 	if err != nil {
 		t.Fatalf("join: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	ws, _, err := websocket.Dial(ctx, f.wsURL, &websocket.DialOptions{
-		HTTPHeader:   http.Header{"Authorization": []string{"Bearer " + outcome.Credential}},
-		Subprotocols: []string{agentproto.SubprotocolV1},
-	})
+	dialer := *websocket.DefaultDialer
+	dialer.Subprotocols = []string{agentproto.SubprotocolV1}
+	header := http.Header{"Authorization": []string{"Bearer " + outcome.Credential}}
+	ws, _, err := dialer.Dial(f.wsURL, header)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	t.Cleanup(func() { _ = ws.CloseNow() })
+	t.Cleanup(func() { _ = ws.Close() })
 	writeDispatchMessage(t, ws, &agentproto.Hello{
 		Type: agentproto.TypeHello, Protocol: agentproto.ProtocolV1, AgentVersion: "1.0.0",
 		OS: "linux", Arch: "arm64", Contracts: []string{"hanse.handler/v1"},
@@ -354,9 +352,8 @@ func writeDispatchMessage(t *testing.T, ws *websocket.Conn, msg agentproto.Messa
 	if err != nil {
 		t.Fatalf("encode %q: %v", msg.MessageType(), err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := ws.Write(ctx, websocket.MessageText, data); err != nil {
+	_ = ws.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	if err := ws.WriteMessage(websocket.TextMessage, data); err != nil {
 		t.Fatalf("write %q: %v", msg.MessageType(), err)
 	}
 }
@@ -364,9 +361,8 @@ func writeDispatchMessage(t *testing.T, ws *websocket.Conn, msg agentproto.Messa
 // readDispatchMessage reads one protocol message.
 func readDispatchMessage(t *testing.T, ws *websocket.Conn) agentproto.Message {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_, data, err := ws.Read(ctx)
+	_ = ws.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, data, err := ws.ReadMessage()
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}

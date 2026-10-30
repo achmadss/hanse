@@ -3,7 +3,6 @@ package api
 import (
 	"archive/tar"
 	"compress/gzip"
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coder/websocket"
+	"github.com/gorilla/websocket"
 
 	"github.com/achmadss/hanse/internal/agentconn"
 	"github.com/achmadss/hanse/internal/agentproto"
@@ -102,15 +101,13 @@ func helloFor(node string) *agentproto.Hello {
 // dialAgent opens a WebSocket to the connect route.
 func (f *agentFixture) dialAgent(t *testing.T, credential string) (*websocket.Conn, *http.Response, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
 	url := "ws" + strings.TrimPrefix(f.server.URL, "http") + "/v1/agent/connect"
-	ws, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{
-		HTTPHeader:   http.Header{"Authorization": []string{"Bearer " + credential}},
-		Subprotocols: []string{agentproto.SubprotocolV1},
-	})
+	dialer := *websocket.DefaultDialer
+	dialer.Subprotocols = []string{agentproto.SubprotocolV1}
+	header := http.Header{"Authorization": []string{"Bearer " + credential}}
+	ws, resp, err := dialer.Dial(url, header)
 	if err == nil {
-		t.Cleanup(func() { _ = ws.CloseNow() })
+		t.Cleanup(func() { _ = ws.Close() })
 	}
 	return ws, resp, err
 }
@@ -132,15 +129,12 @@ func TestAgentConnectRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode hello: %v", err)
 	}
-	writeCtx, writeCancel := context.WithTimeout(context.Background(), 3*time.Second)
-	if err := ws.Write(writeCtx, websocket.MessageText, data); err != nil {
-		writeCancel()
+	_ = ws.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	if err := ws.WriteMessage(websocket.TextMessage, data); err != nil {
 		t.Fatalf("write hello: %v", err)
 	}
-	writeCancel()
-	readCtx, readCancel := context.WithTimeout(context.Background(), 3*time.Second)
-	_, welcomeData, err := ws.Read(readCtx)
-	readCancel()
+	_ = ws.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, welcomeData, err := ws.ReadMessage()
 	if err != nil {
 		t.Fatalf("read welcome: %v", err)
 	}

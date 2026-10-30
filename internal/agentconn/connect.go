@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coder/websocket"
+	"github.com/gorilla/websocket"
 
 	"github.com/achmadss/hanse/internal/agentproto"
 	herrors "github.com/achmadss/hanse/internal/errors"
@@ -20,12 +20,12 @@ import (
 // WebSocket close codes of the agent protocol (docs/agent-protocol.md
 // section 10). Codes 4001 to 4005 are sent by the Gateway.
 const (
-	closeProtocolError       = websocket.StatusCode(4000)
-	closeRevoked             = websocket.StatusCode(4001)
-	closeReplaced            = websocket.StatusCode(4002)
-	closeUnsupportedProtocol = websocket.StatusCode(4003)
-	closeNodeMismatch        = websocket.StatusCode(4004)
-	closeNodeDisabled        = websocket.StatusCode(4005)
+	closeProtocolError       = 4000
+	closeRevoked             = 4001
+	closeReplaced            = 4002
+	closeUnsupportedProtocol = 4003
+	closeNodeMismatch        = 4004
+	closeNodeDisabled        = 4005
 )
 
 // writeTimeout bounds one WebSocket write, so a stalled peer cannot block
@@ -33,10 +33,9 @@ const (
 const writeTimeout = 10 * time.Second
 
 // conn is one live agent connection. Only the connection loop writes to
-// the socket, and it is the only reader after the hello exchange; hub
-// goroutines hand it messages through out. The websocket library allows a
-// concurrent Close with one read and one write, which is how a revoke or a
-// replacement interrupts the loop.
+// the socket, and one reader goroutine reads it; the gorilla/websocket
+// package allows one concurrent reader and one concurrent writer, and its
+// WriteControl may be called with both.
 type conn struct {
 	hub          *Hub
 	node         string
@@ -47,7 +46,7 @@ type conn struct {
 	out          chan agentproto.Message
 
 	mu          sync.Mutex
-	closeCode   websocket.StatusCode
+	closeCode   int
 	closeReason string
 	closing     bool
 }
@@ -85,16 +84,18 @@ func (h *Hub) ServeConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the agent protocol version is not supported", http.StatusUpgradeRequired)
 		return
 	}
-	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		Subprotocols: []string{agentproto.SubprotocolV1},
-	})
+	upgrader := websocket.Upgrader{
+		Subprotocols:    []string{agentproto.SubprotocolV1},
+		ReadBufferSize:  4096,
+		WriteBufferSize: 4096,
+	}
+	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		// Accept has already written its own error.
+		// Upgrade has already written its own error.
 		return
 	}
 	if got := ws.Subprotocol(); got != agentproto.SubprotocolV1 {
-		// The client offered a version the Gateway does not speak.
-		_ = ws.Close(closeUnsupportedProtocol, "the agent protocol version is not supported")
+		_ = writeClose(ws, closeUnsupportedProtocol, "the agent protocol version is not supported")
 		return
 	}
 	ws.SetReadLimit(h.cfg.MaxMessageBytes)
@@ -110,11 +111,10 @@ func (h *Hub) ServeConnect(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	events := make(chan readEvent, 8)
-	go readMessages(ctx, ws, events)
+	go readMessages(ctx, c, events)
 	hello, ok := h.exchangeHello(ctx, c, events)
 	if !ok {
-		code, reason := c.closeInfo()
-		_ = ws.Close(code, reason)
+		h.finishConn(c)
 		return
 	}
 	c.agentVersion = hello.AgentVersion
@@ -122,13 +122,13 @@ func (h *Hub) ServeConnect(w http.ResponseWriter, r *http.Request) {
 	h.register(c)
 	if err := c.writeNow(ctx, &welcome); err != nil {
 		h.unregister(c)
-		_ = ws.Close(websocket.StatusAbnormalClosure, "")
+		_ = ws.Close()
 		return
 	}
 	for _, msg := range resends {
 		if !c.enqueue(msg) {
 			h.unregister(c)
-			_ = ws.Close(websocket.StatusAbnormalClosure, "")
+			_ = ws.Close()
 			return
 		}
 	}
@@ -190,7 +190,7 @@ func (h *Hub) exchangeHello(ctx context.Context, c *conn, events <-chan readEven
 // checkHello compares the hello with nodes.yaml. The hello never decides
 // which node this is: the node ID comes from the credential, and the hello
 // must match that node's entry (docs/agent-protocol.md section 4.1).
-func (h *Hub) checkHello(nodeID string, hello *agentproto.Hello) (websocket.StatusCode, string) {
+func (h *Hub) checkHello(nodeID string, hello *agentproto.Hello) (int, string) {
 	if h.cfg.Registry == nil || h.cfg.Registry.Nodes == nil {
 		return closeNodeMismatch, "the node registry is not available"
 	}
@@ -381,7 +381,7 @@ func (h *Hub) runLoop(c *conn, events <-chan readEvent) {
 		case <-ticker:
 			now := h.now()
 			if now.Sub(lastRecv) >= timeout {
-				c.requestClose(websocket.StatusNormalClosure, "heartbeat timeout")
+				c.requestClose(websocket.CloseNormalClosure, "heartbeat timeout")
 				ticker = h.after(interval)
 				continue
 			}
@@ -397,12 +397,22 @@ func (h *Hub) runLoop(c *conn, events <-chan readEvent) {
 	}
 }
 
-// finishConn closes the socket with the requested close code and records
-// the node offline.
+// finishConn writes the requested close frame, closes the socket, and
+// records the node offline. The close frame is written before the socket
+// closes, so the agent gets the protocol's close code.
 func (h *Hub) finishConn(c *conn) {
 	code, reason := c.closeInfo()
-	_ = c.ws.Close(code, reason)
+	_ = writeClose(c.ws, code, reason)
+	_ = c.ws.Close()
 	h.unregister(c)
+}
+
+// writeClose sends one close frame and ignores a peer that already went
+// away. It never blocks longer than one second.
+func writeClose(ws *websocket.Conn, code int, reason string) error {
+	deadline := time.Now().Add(time.Second)
+	return ws.WriteControl(websocket.CloseMessage,
+		websocket.FormatCloseMessage(code, normalizeReason(reason)), deadline)
 }
 
 // isTransportError reports whether a read failure ended the connection
@@ -415,9 +425,13 @@ func isTransportError(err error) bool {
 
 // readMessages reads and decodes messages until the connection fails. The
 // channel must have room for at least one event.
-func readMessages(ctx context.Context, ws *websocket.Conn, events chan<- readEvent) {
+func readMessages(ctx context.Context, c *conn, events chan<- readEvent) {
 	for {
-		_, data, err := ws.Read(context.Background())
+		// The read deadline uses real time: it must interrupt a blocked
+		// socket read, and the heartbeat loop above also checks the
+		// injected clock.
+		_ = c.ws.SetReadDeadline(time.Now().Add(c.hub.cfg.HeartbeatTimeout))
+		_, data, err := c.ws.ReadMessage()
 		if err != nil {
 			select {
 			case events <- readEvent{err: err}:
@@ -450,14 +464,16 @@ func (c *conn) writeNow(ctx context.Context, msg agentproto.Message) error {
 	if err != nil {
 		return err
 	}
-	writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
-	defer cancel()
-	return c.ws.Write(writeCtx, websocket.MessageText, data)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_ = c.ws.SetWriteDeadline(time.Now().Add(writeTimeout))
+	return c.ws.WriteMessage(websocket.TextMessage, data)
 }
 
 // requestClose asks the connection loop to close the socket with a code
 // and a reason.
-func (c *conn) requestClose(code websocket.StatusCode, reason string) {
+func (c *conn) requestClose(code int, reason string) {
 	c.mu.Lock()
 	if !c.closing {
 		c.closing = true
@@ -469,17 +485,17 @@ func (c *conn) requestClose(code websocket.StatusCode, reason string) {
 }
 
 // closeInfo returns the close code and reason of a closing connection.
-func (c *conn) closeInfo() (websocket.StatusCode, string) {
+func (c *conn) closeInfo() (int, string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.closing {
-		return websocket.StatusNormalClosure, ""
+		return websocket.CloseNormalClosure, ""
 	}
 	return c.closeCode, c.closeReason
 }
 
 // close implements enroll.Disconnecter's per-node close.
-func (c *conn) close(code websocket.StatusCode, reason string) {
+func (c *conn) close(code int, reason string) {
 	c.requestClose(code, reason)
 }
 

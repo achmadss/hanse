@@ -3,7 +3,7 @@ module github.com/achmadss/hanse
 go 1.27.3
 
 require (
-	github.com/coder/websocket v1.8.15
+	github.com/gorilla/websocket v1.5.3
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	golang.org/x/term v0.47.0
 	gopkg.in/yaml.v3 v3.0.1

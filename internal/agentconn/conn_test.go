@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coder/websocket"
+	"github.com/gorilla/websocket"
 
 	"github.com/achmadss/hanse/internal/agentproto"
 	"github.com/achmadss/hanse/internal/enroll"
@@ -178,14 +178,12 @@ func (f *fixture) credential(t *testing.T, node string) string {
 // error so the test can check its status.
 func (f *fixture) dial(t *testing.T, credential string) (*websocket.Conn, *http.Response, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	ws, resp, err := websocket.Dial(ctx, f.wsURL, &websocket.DialOptions{
-		HTTPHeader:   http.Header{"Authorization": []string{"Bearer " + credential}},
-		Subprotocols: []string{agentproto.SubprotocolV1},
-	})
+	dialer := *websocket.DefaultDialer
+	dialer.Subprotocols = []string{agentproto.SubprotocolV1}
+	header := http.Header{"Authorization": []string{"Bearer " + credential}}
+	ws, resp, err := dialer.Dial(f.wsURL, header)
 	if err == nil {
-		t.Cleanup(func() { _ = ws.CloseNow() })
+		t.Cleanup(func() { _ = ws.Close() })
 	}
 	return ws, resp, err
 }
@@ -230,9 +228,8 @@ func writeMessage(t *testing.T, ws *websocket.Conn, msg agentproto.Message) {
 	if err != nil {
 		t.Fatalf("encode %q: %v", msg.MessageType(), err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := ws.Write(ctx, websocket.MessageText, data); err != nil {
+	_ = ws.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	if err := ws.WriteMessage(websocket.TextMessage, data); err != nil {
 		t.Fatalf("write %q: %v", msg.MessageType(), err)
 	}
 }
@@ -250,9 +247,8 @@ func readMessage(t *testing.T, ws *websocket.Conn) agentproto.Message {
 // readMessageMaybe reads one message and returns any error.
 func readMessageMaybe(t *testing.T, ws *websocket.Conn) (agentproto.Message, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_, data, err := ws.Read(ctx)
+	_ = ws.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, data, err := ws.ReadMessage()
 	if err != nil {
 		return nil, err
 	}
@@ -271,14 +267,30 @@ func readWelcome(t *testing.T, ws *websocket.Conn) *agentproto.Welcome {
 }
 
 // readClose reads until the connection closes and returns its close code.
-func readClose(t *testing.T, ws *websocket.Conn) websocket.StatusCode {
+func readClose(t *testing.T, ws *websocket.Conn) int {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	return readCloseNoFail(ws)
+}
+
+// readCloseAsync reads a closing connection in the background, so the
+// fake agent reads while the Gateway closes, as a real agent does.
+func readCloseAsync(ws *websocket.Conn) <-chan int {
+	code := make(chan int, 1)
+	go func() { code <- readCloseNoFail(ws) }()
+	return code
+}
+
+// readCloseNoFail reads until the connection closes and returns its close
+// code without failing the test, so it can run in a goroutine.
+func readCloseNoFail(ws *websocket.Conn) int {
+	_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second))
 	for {
-		_, _, err := ws.Read(ctx)
-		if err != nil {
-			return websocket.CloseStatus(err)
+		if _, _, err := ws.ReadMessage(); err != nil {
+			var closeErr *websocket.CloseError
+			if errors.As(err, &closeErr) {
+				return closeErr.Code
+			}
+			return -1
 		}
 	}
 }
@@ -353,7 +365,7 @@ func TestConnectAndPresence(t *testing.T) {
 	if !f.hub.Online("node-a") {
 		t.Error("the hub reports node-a offline while it is connected")
 	}
-	_ = ws.CloseNow()
+	_ = ws.Close()
 	f.waitStatus(t, "node-a", registry.StatusOffline)
 }
 
@@ -436,14 +448,15 @@ func TestReplaceConnection(t *testing.T) {
 	f := newFixture(t, nil)
 	credential := f.credential(t, "node-a")
 	first, _ := f.connect(t, credential, hello("node-a"))
+	closed := readCloseAsync(first)
 	second, _ := f.connect(t, credential, hello("node-a"))
-	if code := readClose(t, first); code != closeReplaced {
+	if code := <-closed; code != closeReplaced {
 		t.Errorf("first connection close code %d, want %d", code, closeReplaced)
 	}
 	if !f.hub.Online("node-a") {
 		t.Error("the node went offline after a replacement")
 	}
-	_ = second.CloseNow()
+	_ = second.Close()
 	f.waitStatus(t, "node-a", registry.StatusOffline)
 }
 
@@ -455,8 +468,8 @@ func TestHeartbeatTimeout(t *testing.T) {
 	})
 	credential := f.credential(t, "node-a")
 	ws, _ := f.connect(t, credential, hello("node-a"))
-	if code := readClose(t, ws); code != websocket.StatusNormalClosure {
-		t.Errorf("close code %d, want %d", code, websocket.StatusNormalClosure)
+	if code := readClose(t, ws); code != websocket.CloseNormalClosure {
+		t.Errorf("close code %d, want %d", code, websocket.CloseNormalClosure)
 	}
 	f.waitStatus(t, "node-a", registry.StatusOffline)
 }
@@ -467,10 +480,11 @@ func TestRevokeClosesConnection(t *testing.T) {
 	f := newFixture(t, nil)
 	credential := f.credential(t, "node-a")
 	ws, _ := f.connect(t, credential, hello("node-a"))
+	closed := readCloseAsync(ws)
 	if err := f.service.Revoke("node-a"); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
-	if code := readClose(t, ws); code != closeRevoked {
+	if code := <-closed; code != closeRevoked {
 		t.Errorf("close code %d, want %d", code, closeRevoked)
 	}
 	f.waitStatus(t, "node-a", registry.StatusOffline)
@@ -493,7 +507,7 @@ func TestReconnectResumesRun(t *testing.T) {
 	if _, ok := run.(*agentproto.Run); !ok {
 		t.Fatalf("first message is %T, want run", run)
 	}
-	_ = ws.CloseNow()
+	_ = ws.Close()
 	f.waitStatus(t, "node-a", registry.StatusOffline)
 
 	reconnect := hello("node-a")
@@ -548,7 +562,7 @@ func TestCancelWhileDisconnectedAbandons(t *testing.T) {
 	if _, ok := run.(*agentproto.Run); !ok {
 		t.Fatalf("first message is %T, want run", run)
 	}
-	_ = ws.CloseNow()
+	_ = ws.Close()
 	f.waitStatus(t, "node-a", registry.StatusOffline)
 	cancel()
 	result := <-done
@@ -581,7 +595,7 @@ func TestReconnectResendsMissingRun(t *testing.T) {
 	if !ok {
 		t.Fatalf("first message is %T, want run", first)
 	}
-	_ = ws.CloseNow()
+	_ = ws.Close()
 	f.waitStatus(t, "node-a", registry.StatusOffline)
 
 	ws2, welcome := f.connect(t, credential, hello("node-a"))
@@ -625,7 +639,7 @@ func TestReconnectWindowExpires(t *testing.T) {
 	if _, ok := run.(*agentproto.Run); !ok {
 		t.Fatalf("first message is %T, want run", run)
 	}
-	_ = ws.CloseNow()
+	_ = ws.Close()
 
 	select {
 	case result := <-done:
@@ -653,9 +667,8 @@ func TestUnknownMessageKeepsConnection(t *testing.T) {
 	f := newFixture(t, nil)
 	credential := f.credential(t, "node-a")
 	ws, _ := f.connect(t, credential, hello("node-a"))
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := ws.Write(ctx, websocket.MessageText, []byte(`{"type":"progress"}`)); err != nil {
+	_ = ws.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	if err := ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"progress"}`)); err != nil {
 		t.Fatalf("write unknown message: %v", err)
 	}
 	msg := readMessage(t, ws)
@@ -699,7 +712,7 @@ func TestReconnectWindowUsesInjectedClock(t *testing.T) {
 	if msg := readMessage(t, ws); msg.MessageType() != agentproto.TypeRun {
 		t.Fatalf("first message is %q, want run", msg.MessageType())
 	}
-	_ = ws.CloseNow()
+	_ = ws.Close()
 	f.waitStatus(t, "node-a", registry.StatusOffline)
 
 	select {

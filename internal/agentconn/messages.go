@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/coder/websocket"
-
 	"github.com/achmadss/hanse/internal/agentproto"
 	herrors "github.com/achmadss/hanse/internal/errors"
 	"github.com/achmadss/hanse/internal/runtime"
@@ -103,7 +101,7 @@ func (h *Hub) welcomeFor(nodeID string, hello *agentproto.Hello) (agentproto.Wel
 // handle processes one agent message. A non-zero close code means the
 // connection loop writes reply, when it is not nil, and closes with that
 // code (docs/agent-protocol.md section 10).
-func (h *Hub) handle(c *conn, msg agentproto.Message) (reply agentproto.Message, code websocket.StatusCode, reason string) {
+func (h *Hub) handle(c *conn, msg agentproto.Message) (reply agentproto.Message, code int, reason string) {
 	switch m := msg.(type) {
 	case *agentproto.Heartbeat:
 		return nil, 0, ""
