@@ -72,15 +72,14 @@ func compileArgumentSchema(manifestPath, field string, raw any) (*jsonschema.Sch
 }
 
 // schemaIsObject reports whether the compiled schema has exactly the
-// "object" type, the rule of section 10.
+// "object" type, the rule of section 10: `type: [object, "null"]` is not
+// accepted.
 func schemaIsObject(sch *jsonschema.Schema) bool {
-	if sch == nil {
+	if sch == nil || sch.Bool != nil || sch.Types == nil {
 		return false
 	}
-	if sch.Bool != nil {
-		return false
-	}
-	return typesContain(sch.Types, "object")
+	got := sch.Types.ToStrings()
+	return len(got) == 1 && got[0] == "object"
 }
 
 // typesContain reports whether a compiled schema's Types value includes

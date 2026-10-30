@@ -342,7 +342,8 @@ func TestLoadMissingOSEntryCommand(t *testing.T) {
 	}
 	_, _, err := Load(Options{Dirs: []string{root}, Input: input})
 	if err == nil || !strings.Contains(err.Error(), "node-c") ||
-		!strings.Contains(err.Error(), "windows") {
+		!strings.Contains(err.Error(), "windows") ||
+		!strings.Contains(err.Error(), "routes.yaml: capabilities.pc.executors") {
 		t.Fatalf("err = %v, want missing windows entry command for node-c", err)
 	}
 }
@@ -528,6 +529,98 @@ func TestLoadPrivilegedOnHTTPFails(t *testing.T) {
 	_, _, err := Load(Options{Dirs: []string{root}, Input: baseInput()})
 	if err == nil || !strings.Contains(err.Error(), "privileged") {
 		t.Fatalf("err = %v, want privileged-on-http error", err)
+	}
+}
+
+func TestLoadReportsEveryProblem(t *testing.T) {
+	root := t.TempDir()
+	// An unknown field in the first package and a missing description in
+	// the second: both must be reported, not only the first.
+	writeCapability(t, root, "one", strings.Replace(pcManifest,
+		"handler:\n  kind: exec", "handler:\n  kind: exec\n  typo_field: 1", 1))
+	writeCapability(t, root, "two", strings.Replace(pcManifest,
+		"description: Wake, shut down, and check machines from another node\n", "", 1))
+	_, _, err := Load(Options{Dirs: []string{root}, Input: baseInput()})
+	if err == nil {
+		t.Fatal("want problems, got nil")
+	}
+	if !strings.Contains(err.Error(), "field typo_field not found") {
+		t.Fatalf("err does not name the first package's problem: %v", err)
+	}
+	if !strings.Contains(err.Error(), "description is required") {
+		t.Fatalf("err does not name the second package's problem: %v", err)
+	}
+}
+
+func TestLoadCollectsEveryRouteProblem(t *testing.T) {
+	root := t.TempDir()
+	writeCapability(t, root, "pc", pcManifest)
+	input := baseInput()
+	input.Routes.Capabilities["pc"] = CapabilityRoute{
+		Executors:       []string{"node-c", "ghost"},
+		DefaultExecutor: "gateway",
+	}
+	_, _, err := Load(Options{Dirs: []string{root}, Input: input})
+	if err == nil {
+		t.Fatal("want problems, got nil")
+	}
+	// The windows node has no entry command and the unknown node, too.
+	if !strings.Contains(err.Error(), "\"node-c\"") {
+		t.Fatalf("err does not name the node-c problem: %v", err)
+	}
+	if !strings.Contains(err.Error(), "\"ghost\"") {
+		t.Fatalf("err does not name the ghost problem: %v", err)
+	}
+	if !strings.Contains(err.Error(), "routes.yaml: capabilities.pc.executors") {
+		t.Fatalf("err does not use the routes.yaml field path: %v", err)
+	}
+}
+
+func TestLoadRouteDefaultFieldsNameRoutesYAML(t *testing.T) {
+	root := t.TempDir()
+	writeCapability(t, root, "pc", pcManifest)
+	input := baseInput()
+	input.Routes.Capabilities["pc"] = CapabilityRoute{
+		Wildcard:        true,
+		DefaultExecutor: "gateway",
+		Operations: map[string]OperationRoute{
+			"down": {Executors: []string{"node-a"}, ExecutorsSet: true},
+		},
+	}
+	_, _, err := Load(Options{Dirs: []string{root}, Input: input})
+	if err == nil || !strings.Contains(err.Error(),
+		"routes.yaml: capabilities.pc.operations.down.default_executor") {
+		t.Fatalf("err = %v, want operations.down.default_executor field path", err)
+	}
+}
+
+func TestLoadHTTPExplicitEmptyListGrantsNothing(t *testing.T) {
+	root := t.TempDir()
+	writeCapability(t, root, "weather", httpManifest)
+	input := baseInput()
+	input.Routes.Capabilities["weather"] = CapabilityRoute{Executors: []string{}}
+	reg, warnings, err := Load(Options{Dirs: []string{root}, Input: input})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	c, _ := reg.Capability("weather")
+	routing, ok := c.RoutingOf("current")
+	if !ok || len(routing.Executors) != 0 || routing.DefaultExecutor != "" {
+		t.Fatalf("routing %+v, want no executors and no default for an empty list", routing)
+	}
+}
+
+func TestLoadTopLevelSchemaUnionTypeFails(t *testing.T) {
+	root := t.TempDir()
+	writeCapability(t, root, "pc", strings.Replace(pcManifest,
+		"arguments:\n      type: object\n      required: [node]\n      additionalProperties: false\n      properties:\n        node:\n          type: string\n          format: hanse:node\n          description: The node to wake\n",
+		"arguments:\n      type: [object, \"null\"]\n", 1))
+	_, _, err := Load(Options{Dirs: []string{root}, Input: baseInput()})
+	if err == nil || !strings.Contains(err.Error(), "type: object") {
+		t.Fatalf("err = %v, want top level must be exactly type: object", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package registry
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -162,23 +163,29 @@ func (c *Capability) RoutingOf(id string) (OperationRouting, bool) {
 
 // Load scans the capability directories in opts.Dirs, validates every
 // manifest, compiles every argument schema, and joins the manifests with
-// the routing from opts.Input. Any invalid capability package makes Load
-// fail, per docs/configuration.md section 10; the returned error names the
-// package and the manifest field. Warnings report non-fatal problems.
+// the routing from opts.Input. It collects every problem it finds — an
+// invalid package never stops the scan — and reports them together, per
+// docs/configuration.md section 10: any problem still makes Load fail.
+// Warnings report non-fatal problems.
 func Load(opts Options) (*Registry, []Warning, error) {
-	if err := opts.Input.validate(); err != nil {
-		return nil, nil, err
+	var probs []error
+	inputValid := true
+	if verr := opts.Input.validate(); verr != nil {
+		probs = append(probs, verr)
+		inputValid = false
 	}
 	reg := &Registry{capabilities: map[string]*Capability{}}
 	for _, dir := range opts.Dirs {
 		dir = strings.TrimRight(dir, string(filepath.Separator))
 		if err := checkCapabilityRoot(dir); err != nil {
-			return nil, nil, err
+			probs = append(probs, err)
+			continue
 		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			return nil, nil, herrors.New(herrors.Internal,
-				fmt.Sprintf("capability directory %s: %s", errPath(dir), err), nil)
+			probs = append(probs, herrors.New(herrors.Internal,
+				fmt.Sprintf("capability directory %s: %s", errPath(dir), err), nil))
+			continue
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		for _, entry := range entries {
@@ -188,10 +195,10 @@ func Load(opts Options) (*Registry, []Warning, error) {
 				// package; a symlink deeper inside a package makes the
 				// bundle walk below report it with the package path.
 				if _, statErr := os.Stat(filepath.Join(pkgDir, manifestFile)); statErr == nil {
-					return nil, nil, herrors.New(herrors.Internal,
-						fmt.Sprintf("capability package %s is a symbolic link", errPath(pkgDir)), nil)
+					probs = append(probs, herrors.New(herrors.Internal,
+						fmt.Sprintf("capability package %s is a symbolic link", errPath(pkgDir)), nil))
+					continue
 				}
-				continue
 			}
 			if !entry.IsDir() {
 				continue
@@ -201,19 +208,30 @@ func Load(opts Options) (*Registry, []Warning, error) {
 			}
 			pkg, err := loadCapability(pkgDir)
 			if err != nil {
-				return nil, nil, err
+				probs = append(probs, err)
+				continue
 			}
-			if other, dup := reg.capabilities[pkg.ID]; dup {
-				return nil, nil, herrors.New(herrors.Internal,
+			if _, dup := reg.capabilities[pkg.ID]; dup {
+				probs = append(probs, herrors.New(herrors.Internal,
 					fmt.Sprintf("capability %q is declared twice: in %s and in %s",
-						pkg.ID, errPath(other.Dir), errPath(pkg.Dir)), nil)
+						pkg.ID, errPath(reg.capabilities[pkg.ID].Dir), errPath(pkg.Dir)), nil))
+				continue
 			}
 			reg.capabilities[pkg.ID] = pkg
 		}
 	}
-	warnings, err := joinRoutes(reg, opts.Input)
-	if err != nil {
-		return nil, nil, err
+	var warnings []Warning
+	if inputValid {
+		routeWarnings, routeProbs := joinRoutes(reg, opts.Input)
+		if len(routeProbs) > 0 {
+			probs = append(probs, routeProbs...)
+		}
+		warnings = routeWarnings
+	}
+	if len(probs) > 0 {
+		// A problem stops the Gateway from starting; the warnings of a
+		// failed start are not interesting.
+		return nil, nil, errors.Join(probs...)
 	}
 	return reg, warnings, nil
 }

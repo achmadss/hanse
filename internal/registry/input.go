@@ -1,6 +1,11 @@
 package registry
 
-import herrors "github.com/achmadss/hanse/internal/errors"
+import (
+	"errors"
+	"strconv"
+
+	herrors "github.com/achmadss/hanse/internal/errors"
+)
 
 // Input is what the registry needs from the other configuration files. It
 // mirrors the parts of nodes.yaml and routes.yaml this package uses, with
@@ -68,64 +73,71 @@ type OperationRoute struct {
 // validate checks the invariants the registry relies on: node IDs are
 // valid and unique, the Gateway host is a known node, capability route IDs
 // are valid, and route node IDs are valid. It does not validate
-// nodes.yaml or routes.yaml semantics; that stays with issue #8.
+// nodes.yaml or routes.yaml semantics; that stays with issue #8. It
+// collects every problem it finds.
 func (in Input) validate() error {
+	var probs []error
 	seen := map[string]bool{}
 	for i := range in.Nodes {
 		n := &in.Nodes[i]
 		if !validID(n.ID) {
-			return herrors.New(herrors.Internal, "invalid node ID "+quote(n.ID), nil)
+			probs = append(probs, herrors.New(herrors.Internal,
+				"nodes: invalid node ID "+quote(n.ID), nil))
 		}
 		if seen[n.ID] {
-			return herrors.New(herrors.Internal, "duplicate node ID "+quote(n.ID), nil)
+			probs = append(probs, herrors.New(herrors.Internal,
+				"nodes: duplicate node ID "+quote(n.ID), nil))
 		}
 		seen[n.ID] = true
 	}
 	if in.GatewayHost != "" {
 		if !validID(in.GatewayHost) {
-			return herrors.New(herrors.Internal, "invalid Gateway host node ID "+quote(in.GatewayHost), nil)
-		}
-		if _, ok := in.node(in.GatewayHost); !ok {
-			return herrors.New(herrors.Internal,
-				"Gateway host node "+quote(in.GatewayHost)+" is not in nodes.yaml", nil)
+			probs = append(probs, herrors.New(herrors.Internal,
+				"gateway.yaml: node: invalid node ID "+quote(in.GatewayHost), nil))
+		} else if _, ok := in.node(in.GatewayHost); !ok {
+			probs = append(probs, herrors.New(herrors.Internal,
+				"gateway.yaml: node: Gateway host node "+quote(in.GatewayHost)+" is not in nodes.yaml", nil))
 		}
 	}
 	for capID, route := range in.Routes.Capabilities {
+		capField := "routes.yaml: capabilities." + capID
 		if !validID(capID) {
-			return herrors.New(herrors.Internal, "invalid capability ID "+quote(capID)+" in routes", nil)
+			probs = append(probs, herrors.New(herrors.Internal,
+				"routes.yaml: capabilities."+quote(capID)+": invalid capability ID", nil))
 		}
 		if !route.Wildcard {
-			for _, id := range route.Executors {
+			for i, id := range route.Executors {
 				if !validID(id) {
-					return herrors.New(herrors.Internal,
-						"invalid node ID "+quote(id)+" in routing for capability "+quote(capID), nil)
+					probs = append(probs, herrors.New(herrors.Internal,
+						capField+".executors["+strconv.Itoa(i)+"]: invalid node ID "+quote(id), nil))
 				}
 			}
 		}
 		if route.DefaultExecutor != "" && !validID(route.DefaultExecutor) {
-			return herrors.New(herrors.Internal,
-				"invalid default_executor "+quote(route.DefaultExecutor)+" for capability "+quote(capID), nil)
+			probs = append(probs, herrors.New(herrors.Internal,
+				capField+".default_executor: invalid node ID "+quote(route.DefaultExecutor), nil))
 		}
 		for opID, op := range route.Operations {
+			opField := capField + ".operations." + opID
 			if !validID(opID) {
-				return herrors.New(herrors.Internal,
-					"invalid operation ID "+quote(opID)+" in routing for capability "+quote(capID), nil)
+				probs = append(probs, herrors.New(herrors.Internal,
+					capField+".operations."+quote(opID)+": invalid operation ID", nil))
 			}
 			if !op.Wildcard {
-				for _, id := range op.Executors {
+				for i, id := range op.Executors {
 					if !validID(id) {
-						return herrors.New(herrors.Internal,
-							"invalid node ID "+quote(id)+" in routing for "+quote(capID+"."+opID), nil)
+						probs = append(probs, herrors.New(herrors.Internal,
+							opField+".executors["+strconv.Itoa(i)+"]: invalid node ID "+quote(id), nil))
 					}
 				}
 			}
 			if op.DefaultExecutor != "" && !validID(op.DefaultExecutor) {
-				return herrors.New(herrors.Internal,
-					"invalid default_executor "+quote(op.DefaultExecutor)+" for "+quote(capID+"."+opID), nil)
+				probs = append(probs, herrors.New(herrors.Internal,
+					opField+".default_executor: invalid node ID "+quote(op.DefaultExecutor), nil))
 			}
 		}
 	}
-	return nil
+	return errors.Join(probs...)
 }
 
 // node returns the node with the given ID.

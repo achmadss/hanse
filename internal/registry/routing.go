@@ -7,9 +7,29 @@ import (
 	herrors "github.com/achmadss/hanse/internal/errors"
 )
 
+// routeErr builds an error that names routes.yaml and the field path of
+// the problem, such as routes.yaml: capabilities.pc.operations.down.
+// default_executor.
+func routeErr(field, format string, args ...any) error {
+	return herrors.New(herrors.Internal,
+		fmt.Sprintf("routes.yaml: %s: %s", field, fmt.Sprintf(format, args...)), nil)
+}
+
+// opRouteFields names the routes.yaml fields of one operation.
+type opRouteFields struct {
+	executors, def string
+}
+
+func opRouteFieldsOf(capID, opID string) opRouteFields {
+	return opRouteFields{
+		executors: "capabilities." + capID + ".operations." + opID + ".executors",
+		def:       "capabilities." + capID + ".operations." + opID + ".default_executor",
+	}
+}
+
 // joinRoutes produces the effective routing of every operation by joining
 // the manifests with routes.yaml (docs/configuration.md sections 5, 9 and
-// 10). It rejects:
+// 10). It rejects, collecting every problem it finds:
 //   - routing that names an operation the manifest does not define,
 //   - a default executor that is not in the eligible list of its level,
 //   - an operation list that is not a subset of the capability's list,
@@ -20,8 +40,9 @@ import (
 //
 // A capability that routes.yaml does not mention warns; it has no
 // eligible executors.
-func joinRoutes(reg *Registry, in Input) ([]Warning, error) {
+func joinRoutes(reg *Registry, in Input) ([]Warning, []error) {
 	var warnings []Warning
+	var probs []error
 	for _, c := range reg.Capabilities() {
 		route, routed := in.Routes.Capabilities[c.ID]
 		if !routed {
@@ -31,24 +52,29 @@ func joinRoutes(reg *Registry, in Input) ([]Warning, error) {
 			})
 			continue
 		}
+		capField := "capabilities." + c.ID
 		for _, opID := range opIDsSorted(route) {
 			if _, ok := c.Operations[opID]; !ok {
-				return nil, herrors.New(herrors.Internal,
-					fmt.Sprintf("routes.yaml names operation %q for capability %q, which the manifest does not define",
-						opID, c.ID), nil)
+				probs = append(probs, routeErr(capField+".operations."+opID,
+					"the manifest does not define this operation"))
 			}
 		}
-		eligible, err := capabilityExecutors(c.ID, c, route, in)
-		if err != nil {
-			return nil, err
+		eligible, execErrs := capabilityExecutors(c.ID, c, route, in)
+		probs = append(probs, execErrs...)
+		if defaultErr := checkCapabilityDefault(c.ID, route, eligible); defaultErr != nil {
+			probs = append(probs, defaultErr)
 		}
-		if err := checkCapabilityDefault(c.ID, route, eligible); err != nil {
-			return nil, err
+		// Without a capability-level executor list the operation-level
+		// subset and default checks would only repeat the capability
+		// error, so they are skipped for this capability.
+		if len(execErrs) > 0 {
+			continue
 		}
 		for _, opID := range c.OperationIDs() {
 			executors, def, err := operationRouting(c.ID, opID, eligible, route)
 			if err != nil {
-				return nil, err
+				probs = append(probs, err)
+				continue
 			}
 			c.Routing[opID] = OperationRouting{
 				Executors:       executors,
@@ -56,11 +82,14 @@ func joinRoutes(reg *Registry, in Input) ([]Warning, error) {
 			}
 		}
 	}
-	return warnings, nil
+	// Every operation of every capability keeps an (empty) routing entry
+	// from loading; when problems remain, the Gateway will not start and
+	// the registry is not returned.
+	return warnings, probs
 }
 
-// opIDsSorted returns the operation IDs of one route, sorted so that the
-// error for an unknown operation is deterministic.
+// opIDsSorted returns the operation IDs of one route, sorted so that
+// error collection order is deterministic.
 func opIDsSorted(r CapabilityRoute) []string {
 	ids := make([]string, 0, len(r.Operations))
 	for id := range r.Operations {
@@ -70,26 +99,31 @@ func opIDsSorted(r CapabilityRoute) []string {
 	return ids
 }
 
-// capabilityExecutors expands the capability-level executor list.
-func capabilityExecutors(capID string, c *Capability, route CapabilityRoute, in Input) ([]string, error) {
+// capabilityExecutors expands the capability-level executor list. A nil
+// list with an error marks the expansion as failed; an empty list without
+// an error simply means no executor is eligible.
+func capabilityExecutors(capID string, c *Capability, route CapabilityRoute, in Input) ([]string, []error) {
 	if c.Manifest.Handler.Kind == KindHTTP {
 		// The Gateway makes http handler calls itself, section 5.2: only
-		// the Gateway host node may run them.
-		gateway := in.GatewayHost
-		if gateway == "" {
-			return nil, herrors.New(herrors.Internal,
-				fmt.Sprintf("capability %q is an http capability but the Gateway host node is not configured", capID), nil)
+		// the Gateway host node may run them. An explicit empty list
+		// grants nothing, exactly as for exec capabilities.
+		if in.GatewayHost == "" {
+			return nil, []error{routeErr(capField(capID, "executors"),
+				"capability %q is an http capability but the Gateway host node is not configured", capID)}
 		}
-		if !route.Wildcard {
-			for _, id := range route.Executors {
-				if id != gateway {
-					return nil, herrors.New(herrors.Internal,
-						fmt.Sprintf("capability %q is an http capability: executor %q is not the Gateway host node %q",
-							capID, id, gateway), nil)
-				}
+		if route.Wildcard {
+			return []string{in.GatewayHost}, nil
+		}
+		executors := make([]string, 0, len(route.Executors))
+		for _, id := range route.Executors {
+			if id != in.GatewayHost {
+				return nil, []error{routeErr(capField(capID, "executors"),
+					"capability %q is an http capability: executor %q is not the Gateway host node %q",
+					capID, id, in.GatewayHost)}
 			}
+			executors = append(executors, id)
 		}
-		return []string{gateway}, nil
+		return executors, nil
 	}
 	entry := c.Manifest.Handler.Entry
 	if route.Wildcard {
@@ -102,21 +136,30 @@ func capabilityExecutors(capID string, c *Capability, route CapabilityRoute, in 
 		}
 		return out, nil
 	}
-	out := make([]string, 0, len(route.Executors))
+	executors := make([]string, 0, len(route.Executors))
+	var probs []error
 	for _, id := range route.Executors {
 		node, ok := in.node(id)
 		if !ok {
-			return nil, herrors.New(herrors.Internal,
-				fmt.Sprintf("capability %q routes executor %q, which nodes.yaml does not define", capID, id), nil)
+			probs = append(probs, routeErr(capField(capID, "executors"),
+				"executor %q is not a node in nodes.yaml", id))
+			continue
 		}
 		if !hasEntryCommand(entry, node.OS) {
-			return nil, herrors.New(herrors.Internal,
-				fmt.Sprintf("capability %q routes executor %q, whose OS %q has no entry command in the manifest",
-					capID, id, node.OS), nil)
+			probs = append(probs, routeErr(capField(capID, "executors"),
+				"executor %q has OS %q, which has no entry command in the manifest for capability %q",
+				id, node.OS, capID))
+			continue
 		}
-		out = append(out, id)
+		executors = append(executors, id)
 	}
-	return out, nil
+	return executors, probs
+}
+
+// capField renders a capability-level routes.yaml field path. executors
+// is the field that carries routing problems in every case today.
+func capField(capID, field string) string {
+	return "capabilities." + capID + "." + field
 }
 
 // hasEntryCommand reports whether an entry map has a command for the OS.
@@ -130,6 +173,7 @@ func hasEntryCommand(entry map[string][]string, osname string) bool {
 // subset of the capability's, and its default must be in its own list.
 func operationRouting(capID, opID string, capEligible []string, route CapabilityRoute) ([]string, string, error) {
 	executors := capEligible
+	fields := opRouteFieldsOf(capID, opID)
 	opRoute, hasOp := route.Operations[opID]
 	if hasOp && !opRoute.Wildcard && opRoute.ExecutorsSet {
 		byID := make(map[string]bool, len(capEligible))
@@ -139,9 +183,8 @@ func operationRouting(capID, opID string, capEligible []string, route Capability
 		narrowed := make([]string, 0, len(opRoute.Executors))
 		for _, id := range opRoute.Executors {
 			if !byID[id] {
-				return nil, "", herrors.New(herrors.Internal,
-					fmt.Sprintf("operation %q of capability %q routes executor %q, which is not in the capability's executor list",
-						opID, capID, id), nil)
+				return nil, "", routeErr(fields.executors,
+					"executor %q is not in the executor list of capability %q", id, capID)
 			}
 			narrowed = append(narrowed, id)
 		}
@@ -152,9 +195,9 @@ func operationRouting(capID, opID string, capEligible []string, route Capability
 		def = opRoute.DefaultExecutor
 	}
 	if def != "" && !containsID(executors, def) {
-		return nil, "", herrors.New(herrors.Internal,
-			fmt.Sprintf("default executor %q of operation %q of capability %q is not in the operation's executor list",
-				def, opID, capID), nil)
+		return nil, "", routeErr(fields.def,
+			"default executor %q is not in the executor list of operation %q of capability %q",
+			def, opID, capID)
 	}
 	return executors, def, nil
 }
@@ -163,9 +206,9 @@ func operationRouting(capID, opID string, capEligible []string, route Capability
 // default executor belongs to the capability's eligible list.
 func checkCapabilityDefault(capID string, route CapabilityRoute, eligible []string) error {
 	if route.DefaultExecutor != "" && !containsID(eligible, route.DefaultExecutor) {
-		return herrors.New(herrors.Internal,
-			fmt.Sprintf("default executor %q of capability %q is not in the capability's executor list",
-				route.DefaultExecutor, capID), nil)
+		return routeErr(capField(capID, "default_executor"),
+			"default executor %q is not in the executor list of capability %q",
+			route.DefaultExecutor, capID)
 	}
 	return nil
 }
