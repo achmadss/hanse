@@ -416,7 +416,8 @@ func TestNodeOptions(t *testing.T) {
 			}
 			values := make([]string, 0, len(got.Options))
 			for _, option := range got.Options {
-				values = append(values, option.Value)
+				value, _ := option.Value.(string)
+				values = append(values, value)
 			}
 			if !equalStrings(values, tc.want) {
 				t.Errorf("GET %s: options %v, want %v", tc.path, values, tc.want)

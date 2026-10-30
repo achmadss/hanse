@@ -40,7 +40,7 @@ func newImmediateLogDispatcher(lines int) *logDispatcher {
 func (d *logDispatcher) Execute(_ context.Context, call *operations.Call) (runtime.Response, error) {
 	for i := 1; i <= d.lines; i++ {
 		if call.Log != nil {
-			call.Log(fmt.Sprintf("line %d", i))
+			call.Log(operations.StreamSystem, fmt.Sprintf("line %d", i))
 		}
 		if i == 1 && d.proceed != nil {
 			close(d.first)
@@ -228,7 +228,7 @@ type lineDispatcher struct{ lines []string }
 func (d lineDispatcher) Execute(_ context.Context, call *operations.Call) (runtime.Response, error) {
 	for _, line := range d.lines {
 		if call.Log != nil {
-			call.Log(line)
+			call.Log(operations.StreamSystem, line)
 		}
 	}
 	return runtime.OK(map[string]any{"lines": len(d.lines)}, "logged")

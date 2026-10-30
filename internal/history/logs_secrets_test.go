@@ -21,8 +21,8 @@ type logLeakDispatcher struct{}
 
 // Execute logs its lines and returns a successful response.
 func (logLeakDispatcher) Execute(_ context.Context, call *operations.Call) (runtime.Response, error) {
-	call.Log("token " + secretToken + " key " + secretKey)
-	call.Log("elevation password " + secretPassword)
+	call.Log(operations.StreamSystem, "token "+secretToken+" key "+secretKey)
+	call.Log(operations.StreamSystem, "elevation password "+secretPassword)
 	return runtime.OK(map[string]any{"state": "online"}, "finished")
 }
 
@@ -102,7 +102,7 @@ type lineLeakDispatcher struct{ line string }
 
 // Execute logs its line and returns a successful response.
 func (d lineLeakDispatcher) Execute(_ context.Context, call *operations.Call) (runtime.Response, error) {
-	call.Log(d.line)
+	call.Log(operations.StreamSystem, d.line)
 	return runtime.OK(map[string]any{"state": "online"}, "finished")
 }
 

@@ -34,6 +34,14 @@ func New(reg *registry.Registry, ops *operations.Manager, enr *enroll.Service, o
 	return newServer(reg, ops, enr, DefaultSSEKeepAlive, options...)
 }
 
+// NewWithOptionProviders is New with the handler-backed option providers of
+// the Gateway. The exec provider runs through the embedded agent and the
+// HTTP provider through the HTTP dispatcher (docs/handler-contract.md
+// section 8).
+func NewWithOptionProviders(reg *registry.Registry, ops *operations.Manager, enr *enroll.Service, providers OptionProviders) http.Handler {
+	return newServer(reg, ops, enr, DefaultSSEKeepAlive, WithOptionProviders(providers))
+}
+
 // newServer builds the routes of a server with the given keepalive interval.
 // Tests lower the interval to see a keepalive comment on a short stream.
 func newServer(reg *registry.Registry, ops *operations.Manager, enr *enroll.Service, keepAlive time.Duration, options ...Option) http.Handler {
@@ -81,6 +89,12 @@ func WithAgentHub(hub *agentconn.Hub) Option {
 	return func(s *server) { s.agents = hub }
 }
 
+// WithOptionProviders sets the handler-backed option providers of the
+// capabilities the Gateway loaded, handler contract section 8.
+func WithOptionProviders(providers OptionProviders) Option {
+	return func(s *server) { s.optionProviders = providers }
+}
+
 // server is the shared state of the API handlers.
 type server struct {
 	reg *registry.Registry
@@ -91,6 +105,9 @@ type server struct {
 	keepAlive time.Duration
 	agents    *agentconn.Hub
 	bundles   BundleSource
+	// optionProviders are the handler-backed option providers of the
+	// capabilities this Gateway loaded.
+	optionProviders OptionProviders
 }
 
 // connectAgent answers GET /v1/agent/connect: the hub authenticates the

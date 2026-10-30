@@ -1,0 +1,40 @@
+version: 1
+id: echo
+name: Echo
+description: Echo a message or log a countdown on the executor
+contract: hanse.handler/v1
+
+handler:
+  kind: exec
+  entry:
+    linux: [sh, handler.sh]
+    darwin: [sh, handler.sh]
+    windows: [python, handler.py]
+
+operations:
+  say:
+    description: Echo one message
+    mode: sync
+    arguments:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          minLength: 1
+          maxLength: 4096
+
+  sleep:
+    description: Log one line per second for the given number of seconds
+    mode: async
+    timeout: 15m
+    arguments:
+      type: object
+      required: [seconds]
+      properties:
+        seconds:
+          type: integer
+          minimum: 1
+          maximum: 600
+    options:
+      seconds: provider
