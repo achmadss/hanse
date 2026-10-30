@@ -1,0 +1,14 @@
+# Build output
+bin/
+
+# Coverage
+*.out
+coverage.txt
+coverage.html
+
+# Editor junk
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
