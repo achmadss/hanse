@@ -181,12 +181,24 @@ func (c *Cache) download(ctx context.Context, hash, hex string) (string, error) 
 	return target, nil
 }
 
-// client returns the HTTP client for downloads.
+// client returns the HTTP client for downloads. It refuses every redirect:
+// the bundle request carries the node credential, and a same-host redirect
+// would keep the Authorization header, including across an https to http
+// downgrade. The Gateway never redirects this route, so a redirect is a
+// failed download (docs/agent-protocol.md section 5.2).
 func (c *Cache) client() *http.Client {
-	if c.Client != nil {
-		return c.Client
+	refuseRedirects := func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
-	return &http.Client{Timeout: 30 * time.Second}
+	if c.Client != nil {
+		copied := *c.Client
+		copied.CheckRedirect = refuseRedirects
+		return &copied
+	}
+	return &http.Client{
+		Timeout:       30 * time.Second,
+		CheckRedirect: refuseRedirects,
+	}
 }
 
 // maxBytes returns the unpacked size limit.

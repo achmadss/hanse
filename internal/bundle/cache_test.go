@@ -172,3 +172,40 @@ func TestCacheReportsUnavailable(t *testing.T) {
 		t.Fatalf("error %v, want bundle_unavailable", err)
 	}
 }
+
+// TestCacheRefusesRedirects proves the node credential is never resent to
+// a redirect target, with the default client and with an injected one.
+func TestCacheRefusesRedirects(t *testing.T) {
+	cases := map[string]*http.Client{
+		"default client":  nil,
+		"injected client": {},
+	}
+	for name, injected := range cases {
+		t.Run(name, func(t *testing.T) {
+			var reached atomic.Int64
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached.Add(1)
+				_, _ = w.Write([]byte("the credential must not reach this server"))
+			}))
+			defer target.Close()
+			redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, target.URL+"/bundle", http.StatusTemporaryRedirect)
+			}))
+			defer redirect.Close()
+			cache := &Cache{
+				Dir:        filepath.Join(t.TempDir(), "cache"),
+				GatewayURL: redirect.URL,
+				Credential: "hnc_test-credential",
+				Client:     injected,
+			}
+			hash := "sha256:" + fmt.Sprintf("%064x", 2)
+			_, err := cache.Ensure(context.Background(), hash)
+			if !errors.Is(err, herrors.BundleUnavailable) {
+				t.Fatalf("error %v, want bundle_unavailable", err)
+			}
+			if got := reached.Load(); got != 0 {
+				t.Fatalf("the redirect target received %d requests, want 0", got)
+			}
+		})
+	}
+}
