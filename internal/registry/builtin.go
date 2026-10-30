@@ -81,6 +81,8 @@ func (r *Registry) RegisterBuiltin(c *Capability) error {
 				fmt.Sprintf("builtin capability %q: operation %q has no raw argument schema in Manifest.Operations", c.ID, id), nil)
 		}
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.capabilities == nil {
 		r.capabilities = map[string]*Capability{}
 	}

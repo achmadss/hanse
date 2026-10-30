@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	herrors "github.com/achmadss/hanse/internal/errors"
@@ -106,11 +107,23 @@ type Warning struct {
 // Registry is the set of loaded capabilities and the node registry built
 // from them. Nodes is nil only on a failed Load; every method on
 // NodeRegistry tolerates a nil receiver.
+//
+// A Registry is also the stable handle that Reload updates in place: every
+// pointer to it keeps working, and a capability already looked up stays
+// valid for the rest of that operation. The capability map is guarded by
+// mu so a reload and the readers that share the handle never race.
 type Registry struct {
+	mu           sync.RWMutex
 	capabilities map[string]*Capability
 	// Nodes holds every node from nodes.yaml with its current status
 	// and the capabilities it can execute.
 	Nodes *NodeRegistry
+	// opts are the Load options Reload reuses to scan the same
+	// directories with the same nodes and routes.
+	opts Options
+	// reloadMu serializes reloads, so two concurrent requests cannot
+	// interleave their scans.
+	reloadMu sync.Mutex
 }
 
 // Capability returns one capability by ID.
@@ -118,6 +131,8 @@ func (r *Registry) Capability(id string) (*Capability, bool) {
 	if r == nil {
 		return nil, false
 	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	c, ok := r.capabilities[id]
 	return c, ok
 }
@@ -127,10 +142,12 @@ func (r *Registry) Capabilities() []*Capability {
 	if r == nil {
 		return nil
 	}
+	r.mu.RLock()
 	out := make([]*Capability, 0, len(r.capabilities))
 	for _, c := range r.capabilities {
 		out = append(out, c)
 	}
+	r.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
@@ -179,7 +196,13 @@ func Load(opts Options) (*Registry, []Warning, error) {
 		probs = append(probs, verr)
 		inputValid = false
 	}
-	reg := &Registry{capabilities: map[string]*Capability{}}
+	reg := &Registry{
+		capabilities: map[string]*Capability{},
+		opts: Options{
+			Dirs:  append([]string(nil), opts.Dirs...),
+			Input: opts.Input,
+		},
+	}
 	for _, dir := range opts.Dirs {
 		dir = strings.TrimRight(dir, string(filepath.Separator))
 		if err := checkCapabilityRoot(dir); err != nil {

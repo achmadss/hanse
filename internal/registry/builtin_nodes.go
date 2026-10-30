@@ -19,6 +19,17 @@ func (n *NodeRegistry) addBuiltinCapability(c *Capability) error {
 	if n == nil || c == nil {
 		return nil
 	}
+	n.capsMu.Lock()
+	defer n.capsMu.Unlock()
+	return n.addBuiltinCapabilityLocked(c)
+}
+
+// addBuiltinCapabilityLocked is addBuiltinCapability with capsMu held. A
+// registry reload calls it while it replaces the mapping.
+func (n *NodeRegistry) addBuiltinCapabilityLocked(c *Capability) error {
+	if n == nil || c == nil {
+		return nil
+	}
 	// nodeOps keeps the same shape nodeCapabilitiesSorted expects,
 	// pre-merged over everything the node already has.
 	nodeOps := map[string]map[string]map[string]bool{}
