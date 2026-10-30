@@ -20,9 +20,13 @@ jobs:
       - run: go vet ./...
       - name: golangci-lint
         if: runner.os == 'Linux'
-        uses: golangci/golangci-lint-action@v8
-        with:
-          version: v2.1
+        # Built from source with the repository's toolchain, because the
+        # golangci-lint release binaries trail the newest Go release: a
+        # v2.15.0 binary built with Go 1.26 refuses to lint a Go 1.27.3
+        # module ("the Go language version used to build golangci-lint is
+        # lower than the targeted Go version"). go run compiles v2.15.0
+        # with the setup-go toolchain instead.
+        run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...
       - run: go test ./...
 
   cross:
