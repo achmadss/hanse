@@ -164,15 +164,37 @@ func (c *Client) Options(ctx context.Context, capability, operation, field strin
 
 // get performs one GET request and decodes its JSON body into out.
 func (c *Client) get(ctx context.Context, out any, segments ...string) error {
+	return c.do(ctx, http.MethodGet, out, nil, nil, segments...)
+}
+
+// do performs one request and decodes its JSON body into out. query values
+// are appended to the endpoint, and a non-nil body is sent as JSON. The
+// endpoint validates every path segment, so an ID such as "../version"
+// cannot reach another endpoint.
+func (c *Client) do(ctx context.Context, method string, out any, query url.Values, body any, segments ...string) error {
 	endpoint, err := c.endpoint(segments)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if len(query) > 0 {
+		endpoint += "?" + query.Encode()
+	}
+	var payload io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return herrors.New(herrors.Internal, "the request could not be encoded: "+err.Error(), nil)
+		}
+		payload = bytes.NewReader(encoded)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, payload)
 	if err != nil {
 		return herrors.New(herrors.Internal, "the request could not be built: "+err.Error(), nil)
 	}
 	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 
 	resp, err := c.http.Do(req)
@@ -182,20 +204,20 @@ func (c *Client) get(ctx context.Context, out any, segments ...string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return herrors.New(herrors.Internal,
 			fmt.Sprintf("the response from %s could not be read: %v", c.baseURL.Redacted(), err), nil)
 	}
-	if len(body) > maxResponseBytes {
+	if len(responseBody) > maxResponseBytes {
 		return herrors.New(herrors.Internal,
 			fmt.Sprintf("the response from %s is larger than %d bytes", c.baseURL.Redacted(), maxResponseBytes), nil)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return errorFromResponse(resp.StatusCode, body)
+		return errorFromResponse(resp.StatusCode, responseBody)
 	}
 
-	dec := json.NewDecoder(bytes.NewReader(body))
+	dec := json.NewDecoder(bytes.NewReader(responseBody))
 	dec.UseNumber()
 	if err := dec.Decode(out); err != nil {
 		return herrors.New(herrors.Internal,

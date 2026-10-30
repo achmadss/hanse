@@ -1,15 +1,9 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
 	"net/http"
-
-	herrors "github.com/achmadss/hanse/internal/errors"
 )
 
 // The types in this file mirror the describe response shape of
@@ -105,56 +99,9 @@ func (c *Client) Validate(ctx context.Context, req ValidateRequest) (ValidateRes
 }
 
 // postJSON performs one POST request with a JSON body and decodes its JSON
-// response into out. It mirrors get in client.go, which sends GET only.
+// response into out.
 func (c *Client) postJSON(ctx context.Context, out any, body any, segments ...string) error {
-	endpoint, err := c.endpoint(segments)
-	if err != nil {
-		return err
-	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return herrors.New(herrors.Internal, "the request could not be encoded: "+err.Error(), nil)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return herrors.New(herrors.Internal, "the request could not be built: "+err.Error(), nil)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.token)
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return herrors.New(herrors.Internal,
-			fmt.Sprintf("cannot reach the Gateway at %s: %v", c.baseURL.Redacted(), err), nil)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-	if err != nil {
-		return herrors.New(herrors.Internal,
-			fmt.Sprintf("the response from %s could not be read: %v", c.baseURL.Redacted(), err), nil)
-	}
-	if len(responseBody) > maxResponseBytes {
-		return herrors.New(herrors.Internal,
-			fmt.Sprintf("the response from %s is larger than %d bytes", c.baseURL.Redacted(), maxResponseBytes), nil)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return errorFromResponse(resp.StatusCode, responseBody)
-	}
-
-	dec := json.NewDecoder(bytes.NewReader(responseBody))
-	dec.UseNumber()
-	if err := dec.Decode(out); err != nil {
-		return herrors.New(herrors.Internal,
-			fmt.Sprintf("the Gateway at %s returned an invalid JSON response: %v", c.baseURL.Redacted(), err), nil)
-	}
-	var trailing any
-	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return herrors.New(herrors.Internal,
-			fmt.Sprintf("the Gateway at %s returned an invalid JSON response: trailing data", c.baseURL.Redacted()), nil)
-	}
-	return nil
+	return c.do(ctx, http.MethodPost, out, nil, body, segments...)
 }
 
 // normalizeDescribe replaces a nil list or map with an empty one, so a

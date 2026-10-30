@@ -1,0 +1,34 @@
+{
+  "operations": [
+    {
+      "id": "op_01J9Z3",
+      "capability": "pc",
+      "operation": "up",
+      "requester": "alice",
+      "executor": "node-a",
+      "executor_source": "route",
+      "status": "running",
+      "mode": "async",
+      "created_at": "2026-10-30T08:00:00Z",
+      "started_at": "2026-10-30T08:00:01Z",
+      "summary": "waking node-c"
+    },
+    {
+      "id": "op_01J9Z4",
+      "capability": "demo",
+      "operation": "clean",
+      "requester": "bob",
+      "executor": "node-b",
+      "executor_source": "default",
+      "status": "completed",
+      "mode": "sync",
+      "created_at": "2026-10-30T07:00:00Z",
+      "started_at": "2026-10-30T07:00:01Z",
+      "finished_at": "2026-10-30T07:00:02Z",
+      "result": {
+        "removed": 2
+      },
+      "summary": "removed 2 files"
+    }
+  ]
+}
