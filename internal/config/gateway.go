@@ -281,7 +281,7 @@ func checkPublicURL(g *GatewayConfig, file string, problems *Problems) {
 	}
 	// The scheme must be https, or http on a loopback host
 	// (docs/configuration.md §3.2).
-	if u.Scheme == "https" || u.Scheme == "http" && isLoopbackHost(u.Hostname()) {
+	if u.Scheme == "https" || u.Scheme == "http" && IsLoopbackHost(u.Hostname()) {
 		return
 	}
 	*problems = append(*problems, Problem{file, field,
@@ -304,7 +304,7 @@ func checkListen(g *GatewayConfig, file string, problems *Problems) {
 	if g.AllowInsecureHTTP || g.TLS != nil && g.TLS.CertFile != "" && g.TLS.KeyFile != "" {
 		return
 	}
-	if !isLoopbackHost(host) {
+	if !IsLoopbackHost(host) {
 		p := Problem{file, field,
 			"must be a loopback address, because there is no TLS: set tls.cert_file and tls.key_file, or set allow_insecure_http"}
 		*problems = append(*problems, p)
@@ -338,9 +338,10 @@ func splitHostPort(s string) (host, port string, err error) {
 	return s[:i], s[i+1:], nil
 }
 
-// isLoopbackHost reports whether host is a loopback address: 127.0.0.0/8,
-// ::1, or the name localhost.
-func isLoopbackHost(host string) bool {
+// IsLoopbackHost reports whether host is a loopback address: 127.0.0.0/8,
+// ::1, or the name localhost. It backs every loopback rule the Gateway
+// applies, including the API's transport gate (architecture.md §15).
+func IsLoopbackHost(host string) bool {
 	if host == "localhost" {
 		return true
 	}
