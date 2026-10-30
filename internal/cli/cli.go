@@ -91,6 +91,10 @@ func (a *app) run(ctx context.Context, args []string) error {
 		return a.schemaCommand(ctx, args[1:])
 	case "options":
 		return a.optionsCommand(ctx, args[1:])
+	case "describe":
+		return a.describeCommand(ctx, args[1:])
+	case "validate":
+		return a.validateCommand(ctx, args[1:])
 	default:
 		return usagef("unknown command %q", args[0])
 	}
@@ -130,6 +134,8 @@ Commands:
   nodes capabilities <id>                   List the capabilities of a node.
   schema <capability> <operation>           Show an operation's argument schema.
   options <capability> <operation> <field>  Show the valid values for an argument.
+  describe <capability> <operation>         Show everything needed to build a request.
+  validate <capability> <operation>         Validate a request without running it.
   version                                   Print the CLI version.
 
 Every command accepts --format text|json. The default is text.
