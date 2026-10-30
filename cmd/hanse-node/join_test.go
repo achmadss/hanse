@@ -205,3 +205,56 @@ func TestRunVersion(t *testing.T) {
 		t.Errorf("stdout = %q, want the version line", stdout.String())
 	}
 }
+
+// TestJoinWritesGatewayURL proves that join stores gateway_url in the
+// agent.yaml named by --config and keeps every other value.
+func TestJoinWritesGatewayURL(t *testing.T) {
+	server := joinServer(t)
+	defer server.Close()
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	configPath := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(configPath, []byte("version: 1\nstate_dir: /var/lib/hanse-node\nmax_concurrent_runs: 8\n"), 0o600); err != nil {
+		t.Fatalf("write agent.yaml: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"join", server.URL, testJoinToken, "--state-dir", stateDir, "--config", configPath}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("exit code %d, stderr %s", code, stderr.String())
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read agent.yaml: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "gateway_url: "+server.URL) {
+		t.Errorf("agent.yaml does not name the Gateway URL:\n%s", text)
+	}
+	if !strings.Contains(text, "max_concurrent_runs: 8") {
+		t.Errorf("join dropped another setting:\n%s", text)
+	}
+	if strings.Contains(stdout.String(), testCredential) || strings.Contains(stderr.String(), testCredential) {
+		t.Error("the credential reached the output")
+	}
+}
+
+// TestJoinCreatesMissingConfigFile proves that a join with --config and no
+// file creates one the loader accepts.
+func TestJoinCreatesMissingConfigFile(t *testing.T) {
+	server := joinServer(t)
+	defer server.Close()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "nested", "agent.yaml")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"join", server.URL, testJoinToken, "--state-dir", filepath.Join(dir, "state"), "--config", configPath}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("exit code %d, stderr %s", code, stderr.String())
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read agent.yaml: %v", err)
+	}
+	if !strings.Contains(string(data), "version: 1") || !strings.Contains(string(data), "gateway_url: "+server.URL) {
+		t.Errorf("new agent.yaml is incomplete:\n%s", data)
+	}
+}
