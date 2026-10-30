@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -45,6 +46,11 @@ type Runner struct {
 type Spec struct {
 	// Request is the call's envelope. The runner does not modify it.
 	Request *runtime.Request
+	// Raw is the request envelope body to write to stdin, when the caller
+	// already holds the Gateway's bytes. Empty means the runner encodes
+	// Request; a non-empty Raw is written unchanged
+	// (docs/agent-protocol.md section 4.3).
+	Raw []byte
 	// Entry is the manifest entry command for the executor's OS. It is
 	// an argument list and is never passed through a shell.
 	Entry []string
@@ -53,6 +59,34 @@ type Spec struct {
 	// Log receives every stderr line as the line ends. A nil Log discards
 	// the lines.
 	Log func(line string)
+	// Started, when not nil, runs once the handler process exists and its
+	// stdin has a writer, before the runner waits for it to exit.
+	Started func()
+	// Outcome, when not nil, receives how the process ended: its raw
+	// stdout, exit status, duration, and stop reason. It exists for a
+	// caller that must report the process status itself, such as the node
+	// agent's result message.
+	Outcome *Outcome
+}
+
+// Outcome is how one handler process ended. Every field except Started is
+// zero when the process never started.
+type Outcome struct {
+	// Started reports that the process existed.
+	Started bool
+	// Stdout is the process's stdout, up to the response limit.
+	Stdout []byte
+	// ExitCode is the process's exit code, or nil when a signal ended it.
+	ExitCode *int
+	// Signal is the signal name that ended the process, empty when the
+	// process exited by itself or on Windows.
+	Signal string
+	// Duration is the time from process start to process end.
+	Duration time.Duration
+	// StopReason is "", "cancel", "deadline", or "output_too_large".
+	StopReason string
+	// OutputError is "", "missing", "invalid", or "too_large".
+	OutputError string
 }
 
 // stopReason is why the runner stopped a handler.
@@ -116,9 +150,13 @@ func (r *Runner) Run(ctx context.Context, spec Spec) (runtime.Response, error) {
 	if r != nil {
 		envAllow = r.EnvAllow
 	}
-	payload, err := encodeRequest(spec.Request)
-	if err != nil {
-		return runtime.Response{}, err
+	payload := spec.Raw
+	if len(payload) == 0 {
+		encoded, err := encodeRequest(spec.Request)
+		if err != nil {
+			return runtime.Response{}, err
+		}
+		payload = encoded
 	}
 	workDir, err := os.MkdirTemp(workRoot, "hanse-call-")
 	if err != nil {
@@ -152,6 +190,8 @@ func (r *Runner) Run(ctx context.Context, spec Spec) (runtime.Response, error) {
 	cmd.Stderr = stderrW
 	configureProcess(cmd)
 
+	started := time.Now()
+
 	tree, err := newProcessTree()
 	if err != nil {
 		closeFiles(stdinR, stdinW, stdoutR, stdoutW, stderrR, stderrW)
@@ -176,6 +216,9 @@ func (r *Runner) Run(ctx context.Context, spec Spec) (runtime.Response, error) {
 	}
 
 	go writeRequest(stdinW, payload)
+	if spec.Started != nil {
+		spec.Started()
+	}
 
 	stdoutDone := make(chan stdoutResult, 1)
 	oversized := make(chan struct{}, 1)
@@ -211,7 +254,42 @@ func (r *Runner) Run(ctx context.Context, spec Spec) (runtime.Response, error) {
 			err = invalidOutput("the handler returned an invalid options result: " + problem)
 		}
 	}
+	if spec.Outcome != nil {
+		*spec.Outcome = outcomeDetails(reason, started, out, exitCode, signalName, valid)
+	}
 	return outcome(reason, resp, valid, exitCode, signalName, limit, out.err)
+}
+
+// outcomeDetails describes one finished process for a caller that reports
+// the process status itself, docs/agent-protocol.md section 4.7.
+func outcomeDetails(reason stopReason, started time.Time, out stdoutResult, exitCode int, signal string, valid bool) Outcome {
+	details := Outcome{
+		Started:  true,
+		Stdout:   out.data,
+		Signal:   signal,
+		Duration: time.Since(started),
+	}
+	if signal == "" && exitCode >= 0 {
+		code := exitCode
+		details.ExitCode = &code
+	}
+	switch reason {
+	case stopTimeout:
+		details.StopReason = "deadline"
+	case stopCancelled:
+		details.StopReason = "cancel"
+	case stopOversized:
+		details.StopReason = "output_too_large"
+	}
+	switch {
+	case out.oversized:
+		details.OutputError = "too_large"
+	case !valid && len(bytes.TrimSpace(out.data)) == 0:
+		details.OutputError = "missing"
+	case !valid:
+		details.OutputError = "invalid"
+	}
+	return details
 }
 
 // waitForExit waits for the process to exit or for a stop condition. It
