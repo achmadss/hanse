@@ -473,9 +473,14 @@ func stopProcess(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
-	if goruntime.GOOS != "windows" {
-		_ = cmd.Process.Signal(os.Interrupt)
+	if goruntime.GOOS == "windows" {
+		// Windows has no signal that stops a console process cleanly, and
+		// the agent's job objects kill its handlers when it ends.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return
 	}
+	_ = cmd.Process.Signal(os.Interrupt)
 	waited := make(chan struct{})
 	go func() {
 		_ = cmd.Wait()
