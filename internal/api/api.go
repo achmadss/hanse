@@ -41,6 +41,7 @@ func New(reg *registry.Registry, ops *operations.Manager, enr *enroll.Service) h
 	mux.HandleFunc("POST /v1/operations/validate", s.validateOperation)
 	mux.HandleFunc("GET /v1/operations", s.listOperations)
 	mux.HandleFunc("GET /v1/operations/{id}", s.getOperation)
+	mux.HandleFunc("GET /v1/operations/{id}/logs", s.getOperationLogs)
 	mux.HandleFunc("POST /v1/operations/{id}/cancel", s.cancelOperation)
 	mux.HandleFunc("POST /v1/agent/join", s.joinAgent)
 	return mux
