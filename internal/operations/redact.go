@@ -3,6 +3,7 @@ package operations
 import (
 	"bytes"
 	"encoding/json"
+	"sort"
 	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -190,4 +191,116 @@ func passwordOf(elevation *Elevation) string {
 		return ""
 	}
 	return elevation.Password
+}
+
+// logRedactions returns the values to remove from the log lines of one run:
+// every secret argument value and the elevation password
+// (docs/architecture.md sections 10 and 15). The longest value comes first,
+// so a secret that contains another secret leaves no fragment behind.
+func logRedactions(op *registry.Operation, raw json.RawMessage, password string) []string {
+	values := secretValues(op, raw)
+	if password != "" {
+		values = append(values, password)
+	}
+	return redactionTerms(values)
+}
+
+// secretValues returns the string values of the arguments the operation or
+// its schema marks secret. A value the schema describes as writeOnly is a
+// secret wherever it appears; a name in the operation's secret list makes
+// the argument of that name a secret.
+func secretValues(op *registry.Operation, raw json.RawMessage) []string {
+	trimmed := bytes.TrimSpace(raw)
+	if op == nil || len(trimmed) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+	var value any
+	if err := dec.Decode(&value); err != nil {
+		return nil
+	}
+	names := map[string]bool{}
+	for _, name := range op.Secrets {
+		names[name] = true
+	}
+	var out []string
+	collectSecretValues(value, op.Schema, names, &out)
+	return out
+}
+
+// collectSecretValues walks one decoded JSON value and appends the strings
+// that the schema or the operation's secret list marks.
+func collectSecretValues(value any, schema *jsonschema.Schema, secretNames map[string]bool, out *[]string) {
+	if schema != nil && schema.WriteOnly {
+		*out = append(*out, stringsIn(value)...)
+		return
+	}
+	switch v := value.(type) {
+	case map[string]any:
+		for key, item := range v {
+			if secretNames[key] {
+				*out = append(*out, stringsIn(item)...)
+			}
+			collectSecretValues(item, propertySchema(schema, key), secretNames, out)
+		}
+	case []any:
+		for i, item := range v {
+			collectSecretValues(item, itemSchema(schema, i), secretNames, out)
+		}
+	}
+}
+
+// stringsIn returns every string inside a decoded JSON value.
+func stringsIn(value any) []string {
+	switch v := value.(type) {
+	case string:
+		return []string{v}
+	case map[string]any:
+		var out []string
+		for _, item := range v {
+			out = append(out, stringsIn(item)...)
+		}
+		return out
+	case []any:
+		var out []string
+		for _, item := range v {
+			out = append(out, stringsIn(item)...)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// redactionTerms returns the distinct non-empty terms, longest first.
+func redactionTerms(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if len(out[i]) != len(out[j]) {
+			return len(out[i]) > len(out[j])
+		}
+		return out[i] < out[j]
+	})
+	return out
+}
+
+// redactLine replaces every redaction term in one log line. Empty terms and
+// empty lines pass through unchanged.
+func redactLine(line string, terms []string) string {
+	for _, term := range terms {
+		if term == "" {
+			continue
+		}
+		line = strings.ReplaceAll(line, term, redactedPlaceholder)
+	}
+	return line
 }

@@ -32,6 +32,16 @@ type Config struct {
 	// Store keeps the records; nil means NewMemoryStore. Issue #17 passes
 	// the SQLite store here.
 	Store Store
+	// LogStore keeps the operation logs; nil means NewMemoryLogStore.
+	LogStore LogStore
+	// LogLimit is limits.log_total: the most log data stored for one
+	// operation, in bytes (docs/configuration.md section 3). Zero takes
+	// DefaultLogLimit.
+	LogLimit int
+	// LogLineLimit is limits.log_line: the longest log line before the
+	// sink splits it, in bytes (docs/configuration.md section 3). Zero
+	// takes DefaultLogLineLimit.
+	LogLineLimit int
 }
 
 // Manager accepts operation requests, validates them, records them,
@@ -43,6 +53,7 @@ type Manager struct {
 	dispatcher Dispatcher
 	timeouts   config.Timeouts
 	store      Store
+	logs       *LogSink
 	now        func() time.Time
 	newID      func() string
 	// mu serializes the state transitions: idempotency lookup,
@@ -86,6 +97,7 @@ func New(cfg Config) (*Manager, error) {
 		dispatcher: cfg.Dispatcher,
 		timeouts:   timeouts,
 		store:      store,
+		logs:       NewLogSink(cfg.LogStore, cfg.LogLimit, cfg.LogLineLimit),
 		now:        time.Now,
 		newID:      newOperationID,
 		live:       map[string]*execution{},
@@ -342,6 +354,8 @@ func (m *Manager) Cancel(id string) (Record, error) {
 			return Record{}, err
 		}
 		if exec != nil {
+			m.logs.Open(rec.ID, logRedactions(m.operation(rec), exec.args, "")...)
+			m.logs.Append(rec.ID, StreamSystem, "cancelled: the run had not started")
 			exec.finish()
 			delete(m.live, id)
 		}
@@ -468,6 +482,14 @@ func (m *Manager) execute(exec *execution, rec Record, op *registry.Operation) {
 	}
 	m.mu.Unlock()
 
+	// The log terms are registered before the first line, so no secret
+	// argument value or elevation password can reach the stored log
+	// (docs/architecture.md section 15).
+	password := passwordOf(exec.elevation)
+	m.logs.Open(current.ID, logRedactions(op, exec.args, password)...)
+	write := func(stream, line string) { m.logs.Append(current.ID, stream, line) }
+	write(StreamSystem, "executor resolved: "+current.Executor+" ("+current.ExecutorSource+")")
+
 	// A cancel that landed after the running update still stops the
 	// handler through the registered cancel function.
 	if exec.cancellationRequested() {
@@ -480,9 +502,15 @@ func (m *Manager) execute(exec *execution, rec Record, op *registry.Operation) {
 	// failure cannot echo it (docs/architecture.md section 8.5).
 	elevation := exec.elevation
 	exec.elevation = nil
-	password := passwordOf(elevation)
-	resp, err := m.dispatcher.Execute(ctx, &Call{Request: envelope, Elevation: elevation})
-	m.complete(ctx, current.ID, resp, err, exec.cancellationRequested(), password)
+	write(StreamSystem, "handler started")
+	resp, err := m.dispatcher.Execute(ctx, &Call{
+		Request:   envelope,
+		Elevation: elevation,
+		// Builtin handlers have no stderr; the contract maps their
+		// lines to `system` entries.
+		Log: func(line string) { write(StreamSystem, line) },
+	})
+	m.complete(ctx, current.ID, resp, err, exec.cancellationRequested(), password, write)
 }
 
 // release closes the run's done channel and drops its in-memory state.
@@ -492,13 +520,16 @@ func (m *Manager) release(exec *execution, id string) {
 		delete(m.live, id)
 	}
 	m.mu.Unlock()
+	m.logs.Release(id)
 	exec.finish()
 }
 
 // complete stores the final state of one run. A record that already
 // reached a final state keeps it: only a queued operation is finalized
-// outside the run.
-func (m *Manager) complete(ctx context.Context, id string, resp runtime.Response, err error, cancelRequested bool, password string) {
+// outside the run. The last log line describes why the run ended, and it is
+// written before the record's done channel closes, so a follower sees it
+// before the stream's final status event.
+func (m *Manager) complete(ctx context.Context, id string, resp runtime.Response, err error, cancelRequested bool, password string, write func(stream, line string)) {
 	state, failure := classify(ctx, resp, err, cancelRequested)
 
 	m.mu.Lock()
@@ -507,6 +538,7 @@ func (m *Manager) complete(ctx context.Context, id string, resp runtime.Response
 	if err != nil || !ok || rec.Status.Final() {
 		return
 	}
+	write(StreamSystem, exitLine(state, failure))
 	rec.Status = state
 	rec.FinishedAt = m.now().UTC()
 	if state == StateCompleted || state == StateCancelled {
@@ -515,6 +547,21 @@ func (m *Manager) complete(ctx context.Context, id string, resp runtime.Response
 	}
 	rec.Failure = redactFailure(failure, password)
 	_ = m.store.Update(rec)
+}
+
+// exitLine is the one system entry that names how the run ended
+// (docs/architecture.md section 10).
+func exitLine(state State, failure *Failure) string {
+	switch {
+	case state == StateCancelled:
+		return "cancelled: stop requested by client"
+	case failure != nil && failure.Code == herrors.Timeout.Name():
+		return "timeout: " + failure.Message
+	case failure != nil:
+		return fmt.Sprintf("handler exited: %s (%s)", state, failure.Code)
+	default:
+		return "handler exited: " + string(state)
+	}
 }
 
 // classify turns one dispatch result into the operation's final state and
@@ -647,8 +694,10 @@ func runtimeNode(view registry.NodeView) runtime.Node {
 	}
 	return runtime.Node{
 		ID:         view.ID,
+		Name:       view.Name,
 		OS:         view.OS,
 		Arch:       view.Arch,
+		Address:    view.Address,
 		Attributes: attributes,
 	}
 }
@@ -667,6 +716,20 @@ func (m *Manager) gracePeriod(rec Record) time.Duration {
 		Timeout:     op.Timeout,
 		GracePeriod: op.GracePeriod,
 	}).GracePeriod
+}
+
+// operation returns the registered operation of a record, or nil when the
+// registry no longer holds it.
+func (m *Manager) operation(rec Record) *registry.Operation {
+	c, ok := m.registry.Capability(rec.Capability)
+	if !ok {
+		return nil
+	}
+	op, ok := c.Operation(rec.Operation)
+	if !ok {
+		return nil
+	}
+	return op
 }
 
 // canonicalArguments decodes the argument object and returns its canonical

@@ -179,6 +179,11 @@ func Open(opts Options) (*Store, error) {
 				fmt.Sprintf("cannot prepare the history database %s: %v", path, err), nil)
 		}
 	}
+	if err := prepareLogSchema(db); err != nil {
+		_ = db.Close()
+		return nil, herrors.New(herrors.Internal,
+			fmt.Sprintf("cannot prepare the history database %s: %v", path, err), nil)
+	}
 
 	s := &Store{db: db, path: path, retention: opts.Retention, now: now}
 	if _, err := s.RecoverInterrupted(now().UTC()); err != nil {
@@ -404,14 +409,17 @@ func (s *Store) RecoverInterrupted(now time.Time) (int, error) {
 	return int(affected), nil
 }
 
-// PurgeOld deletes the finished records older than the retention period.
-// A zero retention keeps everything. An active record has no finish time,
-// so it is never deleted.
+// PurgeOld deletes the finished records older than the retention period,
+// and the logs of those operations with them. A zero retention keeps
+// everything. An active record has no finish time, so it is never deleted.
 func (s *Store) PurgeOld(now time.Time) (int64, error) {
 	if s.retention <= 0 {
 		return 0, nil
 	}
 	cutoff := formatTime(now.Add(-s.retention))
+	if err := s.purgeLogs(cutoff); err != nil {
+		return 0, err
+	}
 	result, err := s.db.Exec(`DELETE FROM operations
 		WHERE finished_at <> '' AND finished_at < ?`, cutoff)
 	if err != nil {

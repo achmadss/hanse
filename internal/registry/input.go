@@ -26,10 +26,16 @@ type Input struct {
 // Node is the non-secret part of one node from nodes.yaml.
 type Node struct {
 	ID string
+	// Name is the human-readable name from nodes.yaml; it defaults to the
+	// node ID, as config.finalizeNodes fills it.
+	Name string
 	// OS is "linux", "darwin", or "windows".
 	OS string
 	// Arch is "amd64" or "arm64".
-	Arch       string
+	Arch string
+	// Address is the host name or IP address other nodes use to reach
+	// this node; empty when nodes.yaml sets none.
+	Address    string
 	Roles      []string
 	Attributes map[string]string
 	Enabled    bool

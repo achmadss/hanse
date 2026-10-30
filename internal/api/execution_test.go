@@ -30,6 +30,13 @@ type executionFixture struct {
 // API handler exactly as the server does.
 func newExecutionFixture(t *testing.T) *executionFixture {
 	t.Helper()
+	return newExecutionFixtureWithKeepAlive(t, 0)
+}
+
+// newExecutionFixtureWithKeepAlive builds the same Gateway with a custom
+// keepalive interval for the followed log; zero takes the default.
+func newExecutionFixtureWithKeepAlive(t *testing.T, keepAlive time.Duration) *executionFixture {
+	t.Helper()
 	reg := newFixture(t)
 	handlers := runtime.NewRegistry()
 	if err := echotest.Register(handlers, reg, echotest.Options{
@@ -61,8 +68,12 @@ func newExecutionFixture(t *testing.T) *executionFixture {
 	if err != nil {
 		t.Fatalf("add limited token: %v", err)
 	}
+	handler := New(reg, manager, nil)
+	if keepAlive > 0 {
+		handler = newServer(reg, manager, nil, keepAlive)
+	}
 	return &executionFixture{
-		handler: store.Middleware(New(reg, manager, nil)),
+		handler: store.Middleware(handler),
 		manager: manager,
 		token:   token,
 		limited: limited,

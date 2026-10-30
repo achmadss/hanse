@@ -14,6 +14,11 @@ import (
 type Call struct {
 	Request   *runtime.Request
 	Elevation *Elevation
+	// Log appends one line to the operation's log. The manager supplies
+	// it, and the log sink applies the run's redaction terms, so a
+	// dispatcher passes the line through unchanged. A nil Log discards
+	// the lines.
+	Log func(line string)
 }
 
 // Dispatcher runs one validated call on its executor. The builtin runtime
@@ -39,7 +44,9 @@ func NewBuiltinDispatcher(handlers *runtime.Registry) *BuiltinDispatcher {
 
 // Execute runs one call with the builtin runtime. The elevation input is
 // accepted and ignored: builtin handlers are core Gateway operations and
-// none of them is privileged, so there is nothing to elevate.
+// none of them is privileged, so there is nothing to elevate. The call's
+// log writer receives the handler's lines as `system` entries
+// (docs/handler-contract.md section 4.4).
 func (d *BuiltinDispatcher) Execute(ctx context.Context, call *Call) (runtime.Response, error) {
 	if call == nil || call.Request == nil {
 		return runtime.Response{}, herrors.New(herrors.Internal,
@@ -49,6 +56,5 @@ func (d *BuiltinDispatcher) Execute(ctx context.Context, call *Call) (runtime.Re
 		return runtime.Response{}, herrors.New(herrors.Internal,
 			"the builtin handler registry is not available", nil)
 	}
-	// Operation logs are issue #19; until then the lines are discarded.
-	return d.handlers.Run(ctx, call.Request, nil)
+	return d.handlers.Run(ctx, call.Request, call.Log)
 }
