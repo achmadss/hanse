@@ -15,7 +15,14 @@ func nodeRegistryInput() Input {
 	return Input{
 		Nodes: []Node{
 			{ID: "gateway", OS: "linux", Arch: "amd64", Roles: []string{"server"}, Enabled: true},
-			{ID: "node-a", OS: "linux", Arch: "arm64", Roles: []string{"server"}, Enabled: true},
+			{
+				ID:         "node-a",
+				OS:         "linux",
+				Arch:       "arm64",
+				Roles:      []string{"server"},
+				Attributes: map[string]string{"mac": "00:00:5e:00:53:01", "broadcast": "192.0.2.255"},
+				Enabled:    true,
+			},
 			{ID: "node-b", OS: "linux", Arch: "arm64", Roles: []string{"server"}, Enabled: true},
 			{ID: "node-c", OS: "windows", Arch: "amd64", Roles: []string{"pc"}, Enabled: true},
 			{ID: "node-d", OS: "linux", Arch: "amd64", Roles: []string{"pc"}, Enabled: false},
@@ -177,6 +184,54 @@ func TestNodeRegistryCapabilities(t *testing.T) {
 	}
 }
 
+func TestNodeRegistryReturnedValuesAreCopies(t *testing.T) {
+	reg, err := NewNodeRegistry(nodeRegistryInput(), nodeRegistryCapabilities())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Get: mutating the returned roles and attributes must not reach the
+	// registry state.
+	view, _ := reg.Get("node-a")
+	view.Roles[0] = "mutated"
+	view.Attributes["mac"] = "00:00:5e:00:53:99"
+	view.Attributes["extra"] = "x"
+	fresh, _ := reg.Get("node-a")
+	if fmt.Sprint(fresh.Roles) != "[server]" {
+		t.Errorf("roles after mutation = %v, want [server]", fresh.Roles)
+	}
+	if fresh.Attributes["mac"] != "00:00:5e:00:53:01" || len(fresh.Attributes) != 2 {
+		t.Errorf("attributes after mutation = %v, want the two configured values", fresh.Attributes)
+	}
+	// List: the same for the whole list. entry 0 is the Gateway host
+	// with no attributes, entry 1 is node-a with both fields.
+	list := reg.List()
+	list[0].Roles[0] = "mutated"
+	list[1].Roles[0] = "mutated"
+	list[1].Attributes["extra"] = "x"
+	list[len(list)-1].ID = "mutated"
+	if _, got := reg.Get("gateway"); !got {
+		t.Error("Get(gateway) is not found after a List mutation")
+	}
+	fresh, _ = reg.Get("node-a")
+	if fresh.Roles[0] != "server" || len(fresh.Attributes) != 2 {
+		t.Errorf("node-a after a List mutation = %v %v, want the stored values", fresh.Roles, fresh.Attributes)
+	}
+	// Capabilities: the same for the returned list and its slices.
+	caps, _ := reg.Capabilities("node-a")
+	caps[0].Operations[0] = "mutated"
+	caps[0].Operations = append(caps[0].Operations, "mutated2")
+	caps[0].Capability = "mutated"
+	caps = append(caps, NodeCapability{Capability: "mutated"})
+	if len(caps) != 2 {
+		t.Fatalf("appended capabilities list has %d entries, want 2", len(caps))
+	}
+	freshCaps, _ := reg.Capabilities("node-a")
+	wantCaps := []NodeCapability{{Capability: "pc", Operations: []string{"down", "up"}}}
+	if fmt.Sprint(freshCaps) != fmt.Sprint(wantCaps) {
+		t.Errorf("Capabilities after mutation = %v, want %v", freshCaps, wantCaps)
+	}
+}
+
 func TestNewNodeRegistryRejectsBadNodes(t *testing.T) {
 	in := nodeRegistryInput()
 	in.Nodes = append(in.Nodes, Node{ID: "node-a", OS: "linux", Arch: "amd64", Enabled: true})
@@ -312,8 +367,9 @@ func TestNodeRegistryNilReceiver(t *testing.T) {
 	if nodes := reg.List(); nodes != nil {
 		t.Errorf("List on a nil registry = %v, want nil", nodes)
 	}
-	if reg.SetStatus("gateway", StatusOnline) != nil {
-		t.Error("SetStatus on a nil registry returns an error")
+	// A nil registry is unwired: the status update must not vanish.
+	if err := reg.SetStatus("gateway", StatusOnline); !errors.Is(err, herrors.Internal) {
+		t.Errorf("SetStatus on a nil registry error = %v, want an internal error", err)
 	}
 	if _, ok := reg.Capabilities("gateway"); ok {
 		t.Error("Capabilities succeeds on a nil registry")

@@ -24,8 +24,9 @@ const (
 func (s NodeStatus) valid() bool { return s == StatusOnline || s == StatusOffline }
 
 // NodeView is one node's configured values from nodes.yaml together with
-// its current status. The Node values never change after construction; a
-// copy carries the Status, so callers cannot mutate registry state.
+// its current status. The Node values never change after construction;
+// Get and List return a deep copy of the node, so callers cannot mutate
+// registry state through the slice and map fields.
 type NodeView struct {
 	Node
 	Status NodeStatus
@@ -132,7 +133,8 @@ func nodeCapabilitiesSorted(ops map[string]map[string]bool) []NodeCapability {
 	return out
 }
 
-// Get returns one node by ID with its current status.
+// Get returns one node by ID with its current status. The Node's slice
+// and map fields are copied, so a caller cannot mutate registry state.
 func (n *NodeRegistry) Get(id string) (NodeView, bool) {
 	if n == nil {
 		return NodeView{}, false
@@ -142,12 +144,14 @@ func (n *NodeRegistry) Get(id string) (NodeView, bool) {
 		return NodeView{}, false
 	}
 	state.mu.RLock()
-	view := NodeView{Node: state.node, Status: state.status}
+	view := NodeView{Node: copyNode(state.node), Status: state.status}
 	state.mu.RUnlock()
 	return view, true
 }
 
 // List returns every node with its current status, sorted by node ID.
+// Every Node's slice and map fields are copied, so a caller cannot
+// mutate registry state.
 func (n *NodeRegistry) List() []NodeView {
 	if n == nil {
 		return nil
@@ -161,7 +165,7 @@ func (n *NodeRegistry) List() []NodeView {
 	for _, id := range ids {
 		state := n.states[id]
 		state.mu.RLock()
-		out = append(out, NodeView{Node: state.node, Status: state.status})
+		out = append(out, NodeView{Node: copyNode(state.node), Status: state.status})
 		state.mu.RUnlock()
 	}
 	return out
@@ -210,7 +214,8 @@ func (n *NodeRegistry) GatewayHost() string {
 // the Gateway host node, whose embedded agent keeps it online.
 func (n *NodeRegistry) SetStatus(id string, status NodeStatus) error {
 	if n == nil {
-		return nil
+		return herrors.New(herrors.Internal,
+			"nodes: the node registry is not available", nil)
 	}
 	if !status.valid() {
 		return herrors.New(herrors.Internal,
@@ -231,7 +236,8 @@ func (n *NodeRegistry) SetStatus(id string, status NodeStatus) error {
 }
 
 // Capabilities returns the capabilities the node can execute, sorted by
-// capability ID, with each capability's operation IDs sorted. A node that
+// capability ID, with each capability's operation IDs sorted. The result
+// is a deep copy, so a caller cannot mutate registry state. A node that
 // runs nothing, such as a target without an agent, returns an empty slice.
 func (n *NodeRegistry) Capabilities(id string) ([]NodeCapability, bool) {
 	if n == nil {
@@ -245,5 +251,30 @@ func (n *NodeRegistry) Capabilities(id string) ([]NodeCapability, bool) {
 		// A known node can execute nothing.
 		return []NodeCapability{}, true
 	}
-	return caps, true
+	return copyCapabilities(caps), true
+}
+
+// copyNode deep-copies one node's slice and map fields.
+func copyNode(n Node) Node {
+	out := n
+	out.Roles = append([]string(nil), n.Roles...)
+	if n.Attributes != nil {
+		out.Attributes = make(map[string]string, len(n.Attributes))
+		for k, v := range n.Attributes {
+			out.Attributes[k] = v
+		}
+	}
+	return out
+}
+
+// copyCapabilities deep-copies one node's capability list.
+func copyCapabilities(caps []NodeCapability) []NodeCapability {
+	out := make([]NodeCapability, len(caps))
+	for i, c := range caps {
+		out[i] = NodeCapability{
+			Capability: c.Capability,
+			Operations: append([]string(nil), c.Operations...),
+		}
+	}
+	return out
 }
