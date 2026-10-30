@@ -9,11 +9,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+	"time"
 
+	"github.com/achmadss/hanse/internal/config"
 	herrors "github.com/achmadss/hanse/internal/errors"
 	"github.com/achmadss/hanse/internal/runtime"
 )
@@ -69,13 +72,20 @@ type Runtime struct {
 	// ResponseLimit is the most bytes of a response body that the
 	// runtime reads; zero or less means DefaultResponseLimit.
 	ResponseLimit int64
+	// OptionsTimeout is the timeout of an option provider call whose
+	// envelope carries no deadline; zero or less means the documented
+	// default of 10 seconds, docs/configuration.md section 3.1.
+	OptionsTimeout time.Duration
 }
 
 // Run performs one http handler call: it posts the request envelope and
 // parses the response envelope, docs/handler-contract.md section 9. The
-// context carries the call's cancellation, and an envelope deadline
-// shortens it. Both operation runs and option provider calls use the same
-// path.
+// context carries the call's cancellation. The envelope deadline bounds
+// the call; an option provider call without one gets the documented
+// default timeout, and an operation call without one is refused.
+//
+// The endpoint must use https unless its host is a loopback address,
+// because the Gateway always verifies the server's certificate.
 //
 // A returned response with status error is the handler's own error. A Go
 // error means the call produced no protocol response: an unreachable
@@ -94,6 +104,9 @@ func (r *Runtime) Run(ctx context.Context, handler Handler, req *runtime.Request
 		return runtime.Response{}, herrors.New(herrors.Internal,
 			"the http handler call has no URL", nil)
 	}
+	if err := checkEndpoint(endpoint); err != nil {
+		return runtime.Response{}, err
+	}
 	credential, err := r.credential(req.Capability, handler.Auth)
 	if err != nil {
 		return runtime.Response{}, err
@@ -111,11 +124,11 @@ func (r *Runtime) Run(ctx context.Context, handler Handler, req *runtime.Request
 			return http.ErrUseLastResponse
 		},
 	}
-	if !req.Deadline.IsZero() {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithDeadline(ctx, req.Deadline)
-		defer cancel()
+	ctx, cancel, err := r.callContext(ctx, req)
+	if err != nil {
+		return runtime.Response{}, err
 	}
+	defer cancel()
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return runtime.Response{}, herrors.Redact(herrors.New(herrors.HandlerFailed,
@@ -141,7 +154,7 @@ func (r *Runtime) Run(ctx context.Context, handler Handler, req *runtime.Request
 		return runtime.Response{}, callError(ctx, err, credential)
 	}
 	if int64(len(payload)) > limit {
-		return runtime.Response{}, herrors.Redact(herrors.New(herrors.HandlerOutputInvalid,
+		return runtime.Response{}, herrors.Redact(herrors.New(herrors.HandlerOutputTooLarge,
 			fmt.Sprintf("the http handler response exceeded the %d byte limit", limit),
 			map[string]any{"limit": limit}), credential)
 	}
@@ -163,6 +176,61 @@ func (r *Runtime) Run(ctx context.Context, handler Handler, req *runtime.Request
 		}
 	}
 	return parsed, nil
+}
+
+// callContext applies the call's timeout to the request context, handler
+// contract section 9.3. An operation call always carries a deadline: the
+// Gateway sets it from the operation's timeout. An option provider call
+// may leave it out, and then the documented 10 second default applies,
+// section 11.
+func (r *Runtime) callContext(parent context.Context, req *runtime.Request) (context.Context, context.CancelFunc, error) {
+	if req.Kind == runtime.KindOptions {
+		if req.Deadline.IsZero() {
+			timeout := r.OptionsTimeout
+			if timeout <= 0 {
+				timeout = config.DefaultTimeouts().Options
+			}
+			ctx, cancel := context.WithTimeout(parent, timeout)
+			return ctx, cancel, nil
+		}
+		ctx, cancel := context.WithDeadline(parent, req.Deadline)
+		return ctx, cancel, nil
+	}
+	if req.Deadline.IsZero() {
+		return nil, nil, herrors.New(herrors.Internal,
+			"an operation call needs a deadline", nil)
+	}
+	ctx, cancel := context.WithDeadline(parent, req.Deadline)
+	return ctx, cancel, nil
+}
+
+// checkEndpoint applies the TLS rule of handler contract section 9.1: the
+// Gateway always verifies the server's certificate, so a plain http URL is
+// allowed only on a loopback address. This is the same rule that
+// gateway.yaml's public_url and agent.yaml's gateway_url follow,
+// docs/configuration.md sections 3.2 and 7.1. The error names the host,
+// never the credential or the URL's user information.
+func checkEndpoint(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return herrors.New(herrors.HandlerFailed,
+			"the http handler URL is not a usable URL with a host", nil)
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "https":
+		return nil
+	case "http":
+		if config.IsLoopbackHost(parsed.Hostname()) {
+			return nil
+		}
+		return herrors.New(herrors.HandlerFailed,
+			fmt.Sprintf("the http handler URL host %q must use https; plain http is allowed only on a loopback address",
+				parsed.Hostname()), nil)
+	default:
+		return herrors.New(herrors.HandlerFailed,
+			fmt.Sprintf("the http handler URL scheme %q must be https, or http on a loopback address",
+				parsed.Scheme), nil)
+	}
 }
 
 // credential loads the credential of one call, or "" when the endpoint

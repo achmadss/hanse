@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -424,12 +425,106 @@ func TestRunRejectsOversizedResponseBody(t *testing.T) {
 	rt := newRuntime(t.TempDir())
 	rt.ResponseLimit = 64
 	_, err := rt.Run(context.Background(), httprt.Handler{URL: srv.URL}, newRequest(runtime.KindOperation))
-	if !errors.Is(err, herrors.HandlerOutputInvalid) {
-		t.Fatalf("error = %v, want handler_output_invalid", err)
+	if !errors.Is(err, herrors.HandlerOutputTooLarge) {
+		t.Fatalf("error = %v, want handler_output_too_large", err)
 	}
 	if herrors.From(err).Details["limit"] != int64(64) {
 		t.Errorf("details = %v, want the limit", herrors.From(err).Details)
 	}
+}
+
+func TestRunRefusesPlainHTTPToARemoteHost(t *testing.T) {
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		_, _ = io.WriteString(w, `{"status":"ok"}`)
+	}))
+	defer srv.Close()
+	// The listener is on 127.0.0.1, but the URL names 0.0.0.0, which
+	// connects to it on the test platforms. So a request that was not
+	// refused would reach the server.
+	endpoint := strings.Replace(srv.URL, "127.0.0.1", "0.0.0.0", 1)
+	credDir := t.TempDir()
+	writeCredential(t, credDir, "remote", "api_token", credentialValue)
+
+	_, err := newRuntime(credDir).Run(context.Background(), httprt.Handler{
+		URL:  endpoint,
+		Auth: httprt.Auth{Type: httprt.AuthBearer, Credential: "api_token"},
+	}, newRequest(runtime.KindOperation))
+	if !errors.Is(err, herrors.HandlerFailed) {
+		t.Fatalf("error = %v, want handler_failed", err)
+	}
+	if !strings.Contains(err.Error(), "0.0.0.0") {
+		t.Errorf("error %q does not name the URL host", err)
+	}
+	if strings.Contains(err.Error(), credentialValue) {
+		t.Errorf("error %q holds the credential value", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 0 {
+		t.Errorf("the server received %d requests, want none", got)
+	}
+}
+
+func TestRunAcceptsPlainHTTPOnLoopback(t *testing.T) {
+	srv, requests := captureServer(t, http.StatusOK, `{"status":"ok"}`)
+	resp, err := newRuntime(t.TempDir()).Run(context.Background(),
+		httprt.Handler{URL: srv.URL}, newRequest(runtime.KindOperation))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if resp.Status != runtime.StatusOK {
+		t.Errorf("status = %q, want ok", resp.Status)
+	}
+	<-requests
+}
+
+func TestRunRefusesAnOperationWithoutADeadline(t *testing.T) {
+	srv, requests := captureServer(t, http.StatusOK, `{"status":"ok"}`)
+	req := newRequest(runtime.KindOperation)
+	req.Deadline = time.Time{}
+	_, err := newRuntime(t.TempDir()).Run(context.Background(), httprt.Handler{URL: srv.URL}, req)
+	if !errors.Is(err, herrors.Internal) {
+		t.Fatalf("error = %v, want internal", err)
+	}
+	select {
+	case <-requests:
+		t.Error("the runtime sent an operation call without a deadline")
+	default:
+	}
+}
+
+func TestRunAppliesTheOptionsTimeout(t *testing.T) {
+	t.Run("responding provider", func(t *testing.T) {
+		srv, _ := captureServer(t, http.StatusOK, `{"status":"ok","result":{"options":[]}}`)
+		req := newRequest(runtime.KindOptions)
+		req.Deadline = time.Time{}
+		resp, err := newRuntime(t.TempDir()).Run(context.Background(),
+			httprt.Handler{URL: srv.URL}, req)
+		if err != nil {
+			t.Fatalf("run options without a deadline: %v", err)
+		}
+		if resp.Status != runtime.StatusOK {
+			t.Errorf("status = %q, want ok", resp.Status)
+		}
+	})
+	t.Run("slow provider", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			time.Sleep(2 * time.Second)
+		}))
+		defer srv.Close()
+		rt := newRuntime(t.TempDir())
+		rt.OptionsTimeout = 80 * time.Millisecond
+		req := newRequest(runtime.KindOptions)
+		req.Deadline = time.Time{}
+		start := time.Now()
+		_, err := rt.Run(context.Background(), httprt.Handler{URL: srv.URL}, req)
+		if !errors.Is(err, herrors.Timeout) {
+			t.Fatalf("error = %v, want timeout", err)
+		}
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Errorf("the options call took %v, want a prompt timeout", elapsed)
+		}
+	})
 }
 
 func TestRunDoesNotFollowRedirects(t *testing.T) {

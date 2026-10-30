@@ -70,6 +70,7 @@ func TestArchitectureCodes(t *testing.T) {
 		{GatewayRestart, "gateway_restart", 503, 37},
 		{HandlerExit, "handler_exit", 502, 38},
 		{HandlerOutputInvalid, "handler_output_invalid", 502, 39},
+		{HandlerOutputTooLarge, "handler_output_too_large", 502, 49},
 		{HandlerHTTPStatus, "http_status", 502, 40},
 		{AgentBusy, "agent_busy", 503, 41},
 		{BundleUnavailable, "bundle_unavailable", 503, 42},

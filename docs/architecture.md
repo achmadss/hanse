@@ -547,6 +547,7 @@ Additional codes used inside the system, with wire values that the [handler cont
 | `gateway_restart` | architecture §9.6 | 503 | 37 | The Gateway stopped while the operation ran. |
 | `handler_exit` | handler contract §5 | 502 | 38 | The handler exited nonzero without a valid response. |
 | `handler_output_invalid` | handler contract §5 | 502 | 39 | The handler's response is missing or invalid. |
+| `handler_output_too_large` | handler contract §11 | 502 | 49 | The handler's response exceeded the response size limit. |
 | `http_status` | handler contract §9 | 502 | 40 | An `http` handler returned an unexpected HTTP status. |
 | `agent_busy` | agent protocol §4.5 | 503 | 41 | The node agent already runs its maximum number of handlers. |
 | `bundle_unavailable` | agent protocol §4.5 | 503 | 42 | The agent could not download the handler bundle. |

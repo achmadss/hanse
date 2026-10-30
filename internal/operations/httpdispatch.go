@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	herrors "github.com/achmadss/hanse/internal/errors"
 	"github.com/achmadss/hanse/internal/registry"
@@ -22,6 +23,9 @@ type HTTPConfig struct {
 	// ResponseSize is gateway.yaml's limits.response_size; zero uses the
 	// documented 1 MiB default.
 	ResponseSize int64
+	// OptionsTimeout is gateway.yaml's timeouts.options; zero uses the
+	// documented 10 second default.
+	OptionsTimeout time.Duration
 }
 
 // HTTPDispatcher runs http handler calls on the Gateway host, handler
@@ -46,8 +50,9 @@ func NewHTTPDispatcher(cfg HTTPConfig) (*HTTPDispatcher, error) {
 	return &HTTPDispatcher{
 		registry: cfg.Registry,
 		runtime: &httprt.Runtime{
-			Credentials:   httprt.Credentials{Dir: cfg.CredentialsDir},
-			ResponseLimit: cfg.ResponseSize,
+			Credentials:    httprt.Credentials{Dir: cfg.CredentialsDir},
+			ResponseLimit:  cfg.ResponseSize,
+			OptionsTimeout: cfg.OptionsTimeout,
 		},
 	}, nil
 }
