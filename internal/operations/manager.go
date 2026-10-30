@@ -38,6 +38,10 @@ type Config struct {
 	// operation, in bytes (docs/configuration.md section 3). Zero takes
 	// DefaultLogLimit.
 	LogLimit int
+	// LogLineLimit is limits.log_line: the longest log line before the
+	// sink splits it, in bytes (docs/configuration.md section 3). Zero
+	// takes DefaultLogLineLimit.
+	LogLineLimit int
 }
 
 // Manager accepts operation requests, validates them, records them,
@@ -93,7 +97,7 @@ func New(cfg Config) (*Manager, error) {
 		dispatcher: cfg.Dispatcher,
 		timeouts:   timeouts,
 		store:      store,
-		logs:       NewLogSink(cfg.LogStore, cfg.LogLimit),
+		logs:       NewLogSink(cfg.LogStore, cfg.LogLimit, cfg.LogLineLimit),
 		now:        time.Now,
 		newID:      newOperationID,
 		live:       map[string]*execution{},

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/achmadss/hanse/internal/config"
 	"github.com/achmadss/hanse/internal/operations"
@@ -52,10 +53,17 @@ func (d *logDispatcher) Execute(_ context.Context, call *operations.Call) (runti
 // logManager builds a manager over the fixture with the given log limit.
 func logManager(t *testing.T, dispatcher operations.Dispatcher, limit int) *operations.Manager {
 	t.Helper()
+	return logManagerWithLines(t, dispatcher, limit, 0)
+}
+
+// logManagerWithLines builds the same manager with a log line limit too.
+func logManagerWithLines(t *testing.T, dispatcher operations.Dispatcher, limit, lineLimit int) *operations.Manager {
+	t.Helper()
 	manager, err := operations.New(operations.Config{
-		Registry:   newFixture(t),
-		Dispatcher: dispatcher,
-		LogLimit:   limit,
+		Registry:     newFixture(t),
+		Dispatcher:   dispatcher,
+		LogLimit:     limit,
+		LogLineLimit: lineLimit,
 		Timeouts: config.Timeouts{
 			Operation:   5 * time.Second,
 			GracePeriod: time.Second,
@@ -210,6 +218,119 @@ func TestLogTotalTruncatesOnce(t *testing.T) {
 	}
 	if total > limit {
 		t.Errorf("stored %d bytes before the truncation entry, want no more than %d", total, limit)
+	}
+}
+
+// lineDispatcher logs a fixed list of lines without waiting.
+type lineDispatcher struct{ lines []string }
+
+// Execute logs every line and returns a successful response.
+func (d lineDispatcher) Execute(_ context.Context, call *operations.Call) (runtime.Response, error) {
+	for _, line := range d.lines {
+		if call.Log != nil {
+			call.Log(line)
+		}
+	}
+	return runtime.OK(map[string]any{"lines": len(d.lines)}, "logged")
+}
+
+// handlerLines returns the entries that belong to the handler. The manager's
+// own system lines all start with a known word; a limit above their length
+// keeps them whole.
+func handlerLines(t *testing.T, entries []operations.LogEntry) []operations.LogEntry {
+	t.Helper()
+	system := map[string]bool{
+		"executor resolved:": true,
+		"handler started":    true,
+		"handler exited:":    true,
+		"timeout:":           true,
+		"cancelled:":         true,
+	}
+	out := make([]operations.LogEntry, 0, len(entries))
+	for _, entry := range entries {
+		own := false
+		for prefix := range system {
+			if strings.HasPrefix(entry.Line, prefix) {
+				own = true
+				break
+			}
+		}
+		if !own {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// TestLongLineIsSplit splits one long line into chunks of limits.log_line,
+// each its own entry with its own sequence number. The limit is above the
+// length of the manager's own system lines, so only the handler line splits.
+func TestLongLineIsSplit(t *testing.T) {
+	const lineLimit = 40
+	line := strings.Repeat("a", 100)
+	manager := logManagerWithLines(t, lineDispatcher{lines: []string{line}}, 0, lineLimit)
+	rec, err := manager.Submit(submit("alpha", "", "tester"))
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	<-manager.Done(rec.ID)
+
+	entries, err := manager.Logs(rec.ID, 0)
+	if err != nil {
+		t.Fatalf("read logs: %v", err)
+	}
+	chunks := handlerLines(t, entries)
+	if len(chunks) != 3 {
+		t.Fatalf("split one line into %d entries, want 3: %v", len(chunks), lineOf(entries))
+	}
+	want := []int{40, 40, 20}
+	joined := ""
+	for i, chunk := range chunks {
+		if len(chunk.Line) != want[i] {
+			t.Errorf("chunk %d is %d bytes, want %d", i, len(chunk.Line), want[i])
+		}
+		if i > 0 && chunk.Seq != chunks[i-1].Seq+1 {
+			t.Errorf("chunk %d has sequence %d, want %d", i, chunk.Seq, chunks[i-1].Seq+1)
+		}
+		joined += chunk.Line
+	}
+	if joined != line {
+		t.Errorf("the chunks join to %q, want the original line", joined)
+	}
+}
+
+// TestLongLineSplitsOnRuneBoundary never cuts a multi-byte rune in half. The
+// odd limit falls inside the two-byte runes of the line.
+func TestLongLineSplitsOnRuneBoundary(t *testing.T) {
+	const lineLimit = 39
+	line := strings.Repeat("é", 30)
+	manager := logManagerWithLines(t, lineDispatcher{lines: []string{line}}, 0, lineLimit)
+	rec, err := manager.Submit(submit("alpha", "", "tester"))
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	<-manager.Done(rec.ID)
+
+	entries, err := manager.Logs(rec.ID, 0)
+	if err != nil {
+		t.Fatalf("read logs: %v", err)
+	}
+	chunks := handlerLines(t, entries)
+	if len(chunks) < 2 {
+		t.Fatalf("split a 60-byte line into %d entries, want more", len(chunks))
+	}
+	joined := ""
+	for i, chunk := range chunks {
+		if len(chunk.Line) > lineLimit {
+			t.Errorf("chunk %d is %d bytes, want at most %d", i, len(chunk.Line), lineLimit)
+		}
+		if !utf8.ValidString(chunk.Line) {
+			t.Errorf("chunk %d is not valid UTF-8: %q", i, chunk.Line)
+		}
+		joined += chunk.Line
+	}
+	if joined != line {
+		t.Errorf("the chunks join to %q, want the original line", joined)
 	}
 }
 

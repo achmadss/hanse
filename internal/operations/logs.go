@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Stream names of one log entry, docs/architecture.md section 10.
@@ -17,6 +18,11 @@ const (
 // DefaultLogLimit is the most log data stored for one operation. It is the
 // documented default of limits.log_total (docs/configuration.md section 3).
 const DefaultLogLimit = 10 << 20
+
+// DefaultLogLineLimit is the longest log line before the line is split. It
+// is the documented default of limits.log_line (docs/configuration.md
+// section 3).
+const DefaultLogLineLimit = 16 << 10
 
 // LogEntry is one line of an operation's log. Seq is assigned by the log
 // store: it starts at 1 and grows by one with every entry of one operation.
@@ -90,18 +96,19 @@ func (s *MemoryLogStore) Logs(operationID string, after int64) ([]LogEntry, erro
 }
 
 // LogSink appends lines to the operation logs, redacts the run's secrets,
-// enforces limits.log_total, and delivers live lines to the followers of
-// one operation (docs/architecture.md section 10). It is safe for
-// concurrent use.
+// splits long lines, enforces the log limits, and delivers live lines to the
+// followers of one operation (docs/architecture.md section 10). It is safe
+// for concurrent use.
 //
 // A follower subscribes before the sink reads the backlog, so every entry
 // reaches it exactly once, in sequence order. The sink keeps the recent
 // state of an operation only while the run is open or a follower reads it;
 // a finished operation is served from the store.
 type LogSink struct {
-	store LogStore
-	limit int
-	now   func() time.Time
+	store     LogStore
+	limit     int
+	lineLimit int
+	now       func() time.Time
 
 	mu     sync.Mutex
 	topics map[string]*logTopic
@@ -125,19 +132,24 @@ type logTopic struct {
 }
 
 // NewLogSink returns a sink over store. A nil store keeps the logs in
-// memory. A limit of zero or less takes DefaultLogLimit.
-func NewLogSink(store LogStore, limit int) *LogSink {
+// memory. A total limit of zero or less takes DefaultLogLimit, and a line
+// limit of zero or less takes DefaultLogLineLimit.
+func NewLogSink(store LogStore, limit, lineLimit int) *LogSink {
 	if store == nil {
 		store = NewMemoryLogStore()
 	}
 	if limit <= 0 {
 		limit = DefaultLogLimit
 	}
+	if lineLimit <= 0 {
+		lineLimit = DefaultLogLineLimit
+	}
 	return &LogSink{
-		store:  store,
-		limit:  limit,
-		now:    time.Now,
-		topics: map[string]*logTopic{},
+		store:     store,
+		limit:     limit,
+		lineLimit: lineLimit,
+		now:       time.Now,
+		topics:    map[string]*logTopic{},
 	}
 }
 
@@ -172,10 +184,13 @@ func (s *LogSink) Release(operationID string) {
 	}
 }
 
-// Append stores one line and delivers it to every follower. A line that
-// would exceed limits.log_total is dropped, and the run gets one system
-// entry that says so; later lines are dropped too. A store failure drops
-// the line, so a follower never sees a line that a resume cannot replay.
+// Append stores one line and delivers it to every follower. The line is
+// redacted first, then split at limits.log_line, so a secret that would
+// straddle a chunk boundary is still removed and every chunk is its own
+// entry with its own sequence number. A chunk that would exceed
+// limits.log_total is dropped, and the run gets one system entry that says
+// so; later lines are dropped too. A store failure drops the chunk, so a
+// follower never sees a line that a resume cannot replay.
 func (s *LogSink) Append(operationID, stream, line string) {
 	if s == nil || operationID == "" {
 		return
@@ -190,12 +205,17 @@ func (s *LogSink) Append(operationID, stream, line string) {
 	if t.truncated {
 		return
 	}
-	if t.total+len(line) > s.limit {
-		t.truncated = true
-		s.storeLocked(t, StreamSystem, truncationLine(s.limit))
-		return
+	// One measure for both the cap check and the stored bytes: the
+	// redacted text, which is what the store keeps. Redaction runs before
+	// the split, so no chunk can hide a secret across a boundary.
+	for _, chunk := range splitLine(redactLine(line, t.terms), s.lineLimit) {
+		if t.total+len(chunk) > s.limit {
+			t.truncated = true
+			s.storeLocked(t, StreamSystem, truncationLine(s.limit))
+			return
+		}
+		s.storeLocked(t, stream, chunk)
 	}
-	s.storeLocked(t, stream, line)
 }
 
 // truncationLine is the one system entry of a run that reached
@@ -204,13 +224,13 @@ func truncationLine(limit int) string {
 	return fmt.Sprintf("log limit reached: %d bytes stored, further lines are dropped", limit)
 }
 
-// storeLocked redacts and stores one line, then wakes the followers. The
+// storeLocked stores one redacted line, then wakes the followers. The
 // caller holds the topic mutex.
 func (s *LogSink) storeLocked(t *logTopic, stream, line string) {
 	entry, err := s.store.AppendLog(t.id, LogEntry{
 		Time:   s.now().UTC(),
 		Stream: stream,
-		Line:   redactLine(line, t.terms),
+		Line:   line,
 	})
 	if err != nil {
 		return
@@ -220,6 +240,33 @@ func (s *LogSink) storeLocked(t *logTopic, stream, line string) {
 		sub.queue = append(sub.queue, entry)
 		signal(sub.wake)
 	}
+}
+
+// splitLine splits line into chunks of at most limit bytes, never inside a
+// multi-byte UTF-8 rune (docs/handler-contract.md section 11). A line within
+// the limit is returned unchanged. A single rune longer than the limit is
+// kept whole, because splitting it would corrupt it.
+func splitLine(line string, limit int) []string {
+	if limit <= 0 || len(line) <= limit {
+		return []string{line}
+	}
+	chunks := make([]string, 0, len(line)/limit+1)
+	for len(line) > limit {
+		cut := limit
+		for cut > 0 && !utf8.RuneStart(line[cut]) {
+			cut--
+		}
+		if cut == 0 {
+			_, size := utf8.DecodeRuneInString(line)
+			cut = size
+		}
+		chunks = append(chunks, line[:cut])
+		line = line[cut:]
+	}
+	if line != "" {
+		chunks = append(chunks, line)
+	}
+	return chunks
 }
 
 // loadTotal reads the bytes a previous process stored for this operation,
