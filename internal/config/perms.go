@@ -13,36 +13,57 @@ import (
 const unsafeGroupOther = 0o0044
 
 // permsCheckable reports whether POSIX permission checks run on the
-// current platform. On Windows POSIX modes do not apply, so the mode
-// check is skipped (docs/configuration.md §8: on Windows the Gateway
-// refuses files that Users, Authenticated Users, or Everyone can read;
-// that ACL check is future work).
+// current platform. On Windows POSIX mode bits do not apply, so the
+// mode checks are skipped (docs/configuration.md §8: on Windows the
+// Gateway refuses files that Users, Authenticated Users, or Everyone can
+// read; that ACL check is future work). File existence is checked on
+// every OS.
 func permsCheckable() bool { return runtime.GOOS != "windows" }
 
-// checkPermissions checks the permissions of the credentials directory,
-// the secret files inside it, and the TLS key, per docs/configuration.md
-// §8. Name is the gateway.yaml path as given on the command line; every
-// problem carries it. It never reads or logs a secret's contents: every
-// check inspects file metadata only, and every message names a path
-// only.
+// checkPermissions checks the existence of the credentials directory and
+// the TLS key on every OS, and their group/other read permissions only
+// on Linux and macOS, per docs/configuration.md §8. Name is the
+// gateway.yaml path as given on the command line; every problem carries
+// it. It never reads or logs a secret's contents: every check inspects
+// file metadata only, and every message names a path only.
 func checkPermissions(g *GatewayConfig, file string, problems *Problems) {
-	if !permsCheckable() {
-		// Skipped on Windows: POSIX mode bits and ACL ownership do not
-		// map to each other, so there is nothing to check here yet.
-		return
-	}
 	// An empty (already reported) credentials directory is not checked
 	// again, so "is required" stays the only problem about it.
 	if g.Paths.CredentialsDir != "" {
-		checkCredentialsDir(g.Paths.CredentialsDir, file, problems)
+		if permsCheckable() {
+			checkCredentialsDir(g.Paths.CredentialsDir, file, problems)
+		} else {
+			// Windows: only existence. The POSIX walk and mode checks do
+			// not apply (comment on permsCheckable).
+			checkCredentialsDirExists(g.Paths.CredentialsDir, file, problems)
+		}
 	}
 	if g.TLS != nil && g.TLS.KeyFile != "" {
 		if info, err := os.Stat(g.TLS.KeyFile); err != nil {
 			*problems = append(*problems, Problem{file, "tls.key_file",
 				"cannot read the file: " + err.Error()})
-		} else {
+		} else if permsCheckable() {
+			// Windows: the mode bits do not exist (comment on
+			// permsCheckable); the existence check above is the whole
+			// check there.
 			checkMode(info, g.TLS.KeyFile, problems, file, "tls.key_file", "")
 		}
+	}
+}
+
+// checkCredentialsDirExists checks that the credentials directory is
+// readable and is a directory, without POSIX mode checks. On Windows
+// this is the whole credentials-directory check.
+func checkCredentialsDirExists(dir, file string, problems *Problems) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		*problems = append(*problems, Problem{file, "paths.credentials_dir",
+			"cannot read the directory: " + err.Error()})
+		return
+	}
+	if !info.IsDir() {
+		*problems = append(*problems, Problem{file, "paths.credentials_dir",
+			"is not a directory"})
 	}
 }
 

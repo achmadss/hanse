@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -243,11 +244,15 @@ func TestLoadValidBase(t *testing.T) {
 // tree.
 func TestLoadValidationRules(t *testing.T) {
 	tests := []struct {
-		name  string
+		name string
+		// files rewrites the file tree; nil keeps the base tree.
 		files func() map[string]entry
 		dirs  func() map[string]os.FileMode
 		after func(t *testing.T, dir string)
-		want  []string
+		// winSkip marks a scenario that only exercises the POSIX mode
+		// checks, which are skipped on Windows.
+		winSkip bool
+		want    []string
 	}{
 		{
 			name: "valid base loads with no problems",
@@ -593,7 +598,7 @@ func TestLoadValidationRules(t *testing.T) {
 				f["gateway.yaml"] = entry{content: strings.Replace(gwBase, "public_url: http://127.0.0.1:8443", "public_url: ftp://127.0.0.1", 1)}
 				return f
 			},
-			want: []string{"/gateway.yaml: public_url: must use https, unless its host is a loopback address"},
+			want: []string{"gateway.yaml: public_url: must use https, unless its host is a loopback address"},
 		},
 		{
 			name: "a scheme that is not http or https is a problem on any host",
@@ -602,7 +607,7 @@ func TestLoadValidationRules(t *testing.T) {
 				f["gateway.yaml"] = entry{content: strings.Replace(gwBase, "public_url: http://127.0.0.1:8443", "public_url: ftp://gw.example.test", 1)}
 				return f
 			},
-			want: []string{"/gateway.yaml: public_url: must use https, unless its host is a loopback address"},
+			want: []string{"gateway.yaml: public_url: must use https, unless its host is a loopback address"},
 		},
 		{
 			name: "public_url is required",
@@ -611,7 +616,7 @@ func TestLoadValidationRules(t *testing.T) {
 				f["gateway.yaml"] = entry{content: strings.Replace(gwBase, "public_url: http://127.0.0.1:8443\n", "", 1)}
 				return f
 			},
-			want: []string{"/gateway.yaml: public_url: is required"},
+			want: []string{"gateway.yaml: public_url: is required"},
 		},
 		{
 			name: "public_url is not a URL",
@@ -620,7 +625,7 @@ func TestLoadValidationRules(t *testing.T) {
 				f["gateway.yaml"] = entry{content: strings.Replace(gwBase, "public_url: http://127.0.0.1:8443", "public_url: \":\"", 1)}
 				return f
 			},
-			want: []string{"/gateway.yaml: public_url: is not a valid URL"},
+			want: []string{"gateway.yaml: public_url: is not a valid URL"},
 		},
 		{
 			name: "listen on a non-loopback address without TLS",
@@ -679,7 +684,8 @@ func TestLoadValidationRules(t *testing.T) {
 			after: func(t *testing.T, dir string) {
 				setMode(t, filepath.Join(dir, "tls", "key.pem"), 0o644)
 			},
-			want: []string{"tls/key.pem is readable by users other than its owner"},
+			winSkip: true,
+			want:    []string{"tls/key.pem is readable by users other than its owner"},
 		},
 		{
 			name: "missing capabilities list",
@@ -728,7 +734,8 @@ func TestLoadValidationRules(t *testing.T) {
 			after: func(t *testing.T, dir string) {
 				setMode(t, filepath.Join(dir, "credentials"), 0o754)
 			},
-			want: []string{"credentials is readable by users other than its owner"},
+			winSkip: true,
+			want:    []string{"credentials is readable by users other than its owner"},
 		},
 		{
 			name: "secret file readable by others is a problem",
@@ -745,7 +752,8 @@ func TestLoadValidationRules(t *testing.T) {
 				}
 				setMode(t, filepath.Join(dir, "credentials", "backup", "api_token"), 0o644)
 			},
-			want: []string{"backup/api_token is readable by users other than its owner"},
+			winSkip: true,
+			want:    []string{"backup/api_token is readable by users other than its owner"},
 		},
 		{
 			name: "safe secret file passes",
@@ -834,6 +842,9 @@ func TestLoadValidationRules(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.winSkip && runtime.GOOS == "windows" {
+				t.Skip("the POSIX mode checks do not run on Windows")
+			}
 			files := baseFiles()
 			if tc.files != nil {
 				files = tc.files()
@@ -856,7 +867,9 @@ func TestLoadValidationRules(t *testing.T) {
 func TestLoadMissingGatewayFile(t *testing.T) {
 	dir := t.TempDir()
 	problems := runLoad(t, dir)
-	assertProblems(t, problems, []string{"/gateway.yaml: file: cannot read the file"})
+	assertProblems(t, problems, []string{
+		filepath.Join(dir, "gateway.yaml") + ": file: cannot read the file",
+	})
 }
 
 func TestLimitsDefaults(t *testing.T) {
