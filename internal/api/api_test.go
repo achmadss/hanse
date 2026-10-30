@@ -477,18 +477,68 @@ func TestBuiltinCapability(t *testing.T) {
 	if !equalStrings(described.Required, []string{"message"}) {
 		t.Errorf("echo.say required %v, want [message]", described.Required)
 	}
+	var describedWire struct {
+		Schema struct {
+			Required []string `json:"required"`
+		} `json:"schema"`
+	}
+	if err := json.Unmarshal(body, &describedWire); err != nil {
+		t.Fatalf("echo describe body: %v (%s)", err, body)
+	}
+	if !equalStrings(describedWire.Schema.Required, []string{"message"}) {
+		t.Errorf("echo.say describe schema required %v, want [message]", describedWire.Schema.Required)
+	}
 	if len(described.Executors) != 1 || described.Executors[0].ID != "gateway" || !described.Executors[0].Default {
 		t.Errorf("echo.say executors %+v, want the Gateway host as default", described.Executors)
 	}
 
-	// The raw schema of an in-memory builtin capability is not available,
-	// so the endpoint serves the empty schema, which accepts any object.
+	// The schema of an in-memory builtin capability comes from its manifest
+	// operation spec, so clients see the required arguments.
 	resp, body = get(t, handler, "/v1/operations/echo/say/schema")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET echo.say schema: status %d, body %s", resp.StatusCode, body)
 	}
-	if string(body) != "{}\n" {
-		t.Errorf("echo.say schema %q, want {}", string(body))
+	var schemaObject struct {
+		Required   []string                   `json:"required"`
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(body, &schemaObject); err != nil {
+		t.Fatalf("echo.say schema body: %v (%s)", err, body)
+	}
+	if !equalStrings(schemaObject.Required, []string{"message"}) {
+		t.Errorf("echo.say schema required %v, want [message]", schemaObject.Required)
+	}
+	if _, ok := schemaObject.Properties["message"]; !ok {
+		t.Errorf("echo.say schema has no message property: %s", body)
+	}
+	checkGolden(t, "builtin_schema", body)
+}
+
+// TestMissingRawSchema reports the Internal code instead of serving an
+// empty schema that accepts arguments the Gateway rejects.
+func TestMissingRawSchema(t *testing.T) {
+	reg := newFixture(t)
+	c, ok := reg.Capability("pc")
+	if !ok {
+		t.Fatal("the fixture has no pc capability")
+	}
+	delete(c.Manifest.Operations, "up")
+	handler := New(reg)
+	for _, path := range []string{
+		"/v1/operations/pc/up/schema",
+		"/v1/operations/pc/up/describe",
+	} {
+		resp, body := get(t, handler, path)
+		if resp.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("GET %s: status %d, body %s", path, resp.StatusCode, body)
+		}
+		var got wireError
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("GET %s: body is not a JSON error: %v (%s)", path, err, body)
+		}
+		if got.Code != "internal" {
+			t.Errorf("GET %s: code %q, want internal", path, got.Code)
+		}
 	}
 }
 

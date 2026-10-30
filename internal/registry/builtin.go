@@ -72,6 +72,14 @@ func (r *Registry) RegisterBuiltin(c *Capability) error {
 			return herrors.New(herrors.Internal,
 				fmt.Sprintf("builtin capability %q: operation %q argument schema is not type: object", c.ID, id), nil)
 		}
+		// Discovery serves the manifest's raw argument schema, so a
+		// builtin operation without one would publish an empty schema
+		// that accepts arguments the Gateway rejects.
+		if c.Manifest == nil || c.Manifest.Operations == nil || c.Manifest.Operations[id] == nil ||
+			c.Manifest.Operations[id].Arguments == nil {
+			return herrors.New(herrors.Internal,
+				fmt.Sprintf("builtin capability %q: operation %q has no raw argument schema in Manifest.Operations", c.ID, id), nil)
+		}
 	}
 	if r.capabilities == nil {
 		r.capabilities = map[string]*Capability{}

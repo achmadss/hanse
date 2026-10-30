@@ -1,10 +1,11 @@
 package api
 
 import (
-	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 
+	herrors "github.com/achmadss/hanse/internal/errors"
 	"github.com/achmadss/hanse/internal/registry"
 )
 
@@ -62,7 +63,12 @@ func (s *server) getSchema(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, operationSchema(c, op))
+	schema, err := operationSchema(c, op)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, schema)
 }
 
 // describeOperation answers
@@ -73,6 +79,11 @@ func (s *server) describeOperation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	schema, err := operationSchema(c, op)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	routing, _ := c.RoutingOf(op.ID)
 	out := describeResponse{
 		Capability:      c.ID,
@@ -80,7 +91,7 @@ func (s *server) describeOperation(w http.ResponseWriter, r *http.Request) {
 		Description:     op.Description,
 		Mode:            op.Mode,
 		Privileged:      op.Privileged,
-		Schema:          operationSchema(c, op),
+		Schema:          schema,
 		Required:        requiredArguments(op),
 		Options:         optionRefs(c, op),
 		NodeFilters:     nodeFilterViews(op),
@@ -94,16 +105,22 @@ func (s *server) describeOperation(w http.ResponseWriter, r *http.Request) {
 }
 
 // operationSchema returns the operation's argument schema as the manifest
-// wrote it. A capability built in memory, such as a builtin capability,
-// carries no raw manifest value: its compiled schema cannot be rendered
-// back, so clients receive the empty schema, which accepts every object.
-func operationSchema(c *registry.Capability, op *registry.Operation) any {
-	if c != nil && c.Manifest != nil && c.Manifest.Operations != nil {
+// wrote it. Every capability must carry it: a capability built in memory
+// fills Manifest.Operations, and RegisterBuiltin rejects one that does not,
+// because an empty schema would accept arguments the Gateway rejects. A
+// missing value is therefore an Internal error, never a silent `{}`.
+func operationSchema(c *registry.Capability, op *registry.Operation) (any, error) {
+	if c != nil && c.Manifest != nil {
 		if spec := c.Manifest.Operations[op.ID]; spec != nil && spec.Arguments != nil {
-			return spec.Arguments
+			return spec.Arguments, nil
 		}
 	}
-	return json.RawMessage("{}")
+	capID := ""
+	if c != nil {
+		capID = c.ID
+	}
+	return nil, herrors.New(herrors.Internal,
+		fmt.Sprintf("capability %q has no raw argument schema for operation %q", capID, op.ID), nil)
 }
 
 // requiredArguments returns the schema's required argument names, sorted.

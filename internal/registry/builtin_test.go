@@ -31,6 +31,9 @@ func builtinTestSchema(t *testing.T, text string) *jsonschema.Schema {
 // echo test harness uses.
 func builtinTestCapability(t *testing.T) *Capability {
 	t.Helper()
+	const schemaText = `{"type":"object"}`
+	saySchema := builtinTestSchema(t, schemaText)
+	sleepSchema := builtinTestSchema(t, schemaText)
 	return &Capability{
 		ID:   "echo",
 		Name: "Echo",
@@ -39,16 +42,31 @@ func builtinTestCapability(t *testing.T) *Capability {
 			ID:      "echo",
 			Name:    "Echo",
 			Handler: HandlerSpec{Kind: KindBuiltin},
+			Operations: map[string]*OperationSpec{
+				"say":   builtinTestSpec(t, schemaText),
+				"sleep": builtinTestSpec(t, schemaText),
+			},
 		},
 		Operations: map[string]*Operation{
-			"say":   {ID: "say", Mode: ModeSync, Schema: builtinTestSchema(t, `{"type":"object"}`)},
-			"sleep": {ID: "sleep", Mode: ModeAsync, Schema: builtinTestSchema(t, `{"type":"object"}`)},
+			"say":   {ID: "say", Mode: ModeSync, Schema: saySchema},
+			"sleep": {ID: "sleep", Mode: ModeAsync, Schema: sleepSchema},
 		},
 		Routing: map[string]OperationRouting{
 			"say":   {Executors: []string{"gateway-host"}, DefaultExecutor: "gateway-host"},
 			"sleep": {Executors: []string{"gateway-host"}, DefaultExecutor: "gateway-host"},
 		},
 	}
+}
+
+// builtinTestSpec builds one manifest operation spec with its raw argument
+// schema, the part discovery serves.
+func builtinTestSpec(t *testing.T, text string) *OperationSpec {
+	t.Helper()
+	var raw any
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		t.Fatalf("test schema does not decode: %v", err)
+	}
+	return &OperationSpec{Description: "test operation", Mode: ModeSync, Arguments: raw}
 }
 
 func codeOf(t *testing.T, err error, want *herrors.Code) {
@@ -135,6 +153,21 @@ func TestRegisterBuiltinRejects(t *testing.T) {
 	t.Run("nil schema", func(t *testing.T) {
 		capability := builtinTestCapability(t)
 		capability.Operations["say"].Schema = nil
+		codeOf(t, New().RegisterBuiltin(capability), herrors.Internal)
+	})
+	t.Run("no manifest operations", func(t *testing.T) {
+		capability := builtinTestCapability(t)
+		capability.Manifest.Operations = nil
+		codeOf(t, New().RegisterBuiltin(capability), herrors.Internal)
+	})
+	t.Run("no operation spec", func(t *testing.T) {
+		capability := builtinTestCapability(t)
+		delete(capability.Manifest.Operations, "say")
+		codeOf(t, New().RegisterBuiltin(capability), herrors.Internal)
+	})
+	t.Run("no raw schema", func(t *testing.T) {
+		capability := builtinTestCapability(t)
+		capability.Manifest.Operations["say"].Arguments = nil
 		codeOf(t, New().RegisterBuiltin(capability), herrors.Internal)
 	})
 	t.Run("schema is not an object", func(t *testing.T) {
