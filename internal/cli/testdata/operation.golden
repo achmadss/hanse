@@ -1,0 +1,23 @@
+{
+  "operation": {
+    "id": "op_01J9Z6",
+    "capability": "service",
+    "operation": "restart",
+    "requester": "carol",
+    "executor": "node-c",
+    "executor_source": "explicit",
+    "status": "failed",
+    "mode": "async",
+    "created_at": "2026-10-30T06:00:00Z",
+    "started_at": "2026-10-30T06:00:01Z",
+    "finished_at": "2026-10-30T06:00:03Z",
+    "summary": "the handler exited nonzero",
+    "error": {
+      "code": "handler_exit",
+      "message": "the handler exited nonzero",
+      "details": {
+        "exit_code": 1
+      }
+    }
+  }
+}
