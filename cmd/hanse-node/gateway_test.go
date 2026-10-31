@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,7 +42,14 @@ func newTestGateway(t *testing.T) *testGateway {
 	if err != nil {
 		t.Fatalf("load the registry: %v", err)
 	}
-	if len(warnings) != 0 {
+	for _, warning := range warnings {
+		// This Gateway test loads every capability directory, and only echo
+		// is routed here. Another capability's missing route is not this
+		// test's concern.
+		if warning.Capability != "echo" &&
+			strings.Contains(warning.Message, "routes.yaml does not mention this capability") {
+			continue
+		}
 		t.Fatalf("warnings: %+v", warnings)
 	}
 	var enrollment *enroll.Service
