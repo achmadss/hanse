@@ -363,9 +363,10 @@ Every operation has an append-only log. Each entry has a sequence number, a time
 | `stderr` | A line that the handler wrote to stderr. The node agent streams it to the Gateway live. |
 | `system` | A Gateway event, such as executor resolved, handler started, handler exited, timeout, or cancelled. |
 
-Clients read logs in two ways:
+Clients read logs in three ways:
 
 - `GET /v1/operations/{id}/logs` returns the stored lines.
+- `GET /v1/operations/{id}/logs?stream=true` streams the stored lines with Server-Sent Events and closes after a `status` event. It does not wait for new lines, so the CLI reads a log of any size this way even when it is larger than the CLI's JSON response cap.
 - `GET /v1/operations/{id}/logs?follow=true` streams lines with Server-Sent Events (SSE), a plain HTTP stream that works through reverse proxies. The stream ends with a `status` event when the operation ends. A client that loses the connection resumes with the `Last-Event-ID` header and receives no gaps or duplicates.
 
 The Gateway removes the values of resolved secrets from log lines before it stores or streams them. Logs follow the same retention as history. `http` handlers return only a final result in v1, so they have no live logs.
@@ -392,10 +393,10 @@ Execution endpoints:
 |---|---|
 | `POST /v1/operations` | Submit an operation |
 | `POST /v1/operations/validate` | Validate a request without running it |
-| `GET /v1/operations` | List operations, with filters |
+| `GET /v1/operations` | List operations newest first, with filters |
 | `GET /v1/operations/{id}` | One operation's status and result |
 | `POST /v1/operations/{id}/cancel` | Cancel an operation |
-| `GET /v1/operations/{id}/logs` | Read or follow an operation's logs |
+| `GET /v1/operations/{id}/logs` | Read, stream, or follow an operation's logs |
 
 Configuration endpoints, used by operators and the CLI:
 
@@ -417,7 +418,7 @@ All JSON responses are deterministic, with keys in a stable order, so that scrip
 
 ### 11.1 Response shapes
 
-Every discovery response is JSON. Object keys keep a fixed order, and every list is sorted by ID, so two identical requests return identical bytes.
+Every discovery response is JSON. Object keys keep a fixed order, and every list is sorted by ID, so two identical requests return identical bytes. The exception is the operation list, which is newest first: by `created_at` descending, then by ID descending.
 
 | Endpoint | Body |
 |---|---|
