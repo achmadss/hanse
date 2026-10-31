@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	goruntime "runtime"
 	"testing"
 	"time"
@@ -101,18 +102,22 @@ func TestExecOptionProvider(t *testing.T) {
 }
 
 // TestHTTPOptionProvider covers an http option provider through the HTTP
-// dispatcher and the options endpoint.
+// dispatcher and the options endpoint. The partial arguments name a node,
+// so the envelope's `nodes` object carries it (docs/handler-contract.md
+// sections 2 and 8).
 func TestHTTPOptionProvider(t *testing.T) {
+	nodesCh := make(chan map[string]runtime.Node, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method = %s, want POST", r.Method)
 		}
 		var envelope struct {
-			Kind       string `json:"kind"`
-			ID         string `json:"id"`
-			Capability string `json:"capability"`
-			Operation  string `json:"operation"`
-			Field      string `json:"field"`
+			Kind       string                  `json:"kind"`
+			ID         string                  `json:"id"`
+			Capability string                  `json:"capability"`
+			Operation  string                  `json:"operation"`
+			Field      string                  `json:"field"`
+			Nodes      map[string]runtime.Node `json:"nodes"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
 			t.Errorf("decode request envelope: %v", err)
@@ -120,6 +125,7 @@ func TestHTTPOptionProvider(t *testing.T) {
 		if envelope.Kind != runtime.KindOptions || envelope.Field != "mode" {
 			t.Errorf("envelope = %+v, want an options call for mode", envelope)
 		}
+		nodesCh <- envelope.Nodes
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"contract":"hanse.handler/v1","status":"ok","result":{"options":[` +
 			`{"value":"fast","label":"Fast profile"},{"value":"safe","description":"Lower risk"}]}}`))
@@ -149,6 +155,9 @@ operations:
       properties:
         mode:
           type: string
+        node:
+          type: string
+          format: hanse:node
     options:
       mode: provider
 `, srv.URL)
@@ -158,13 +167,24 @@ operations:
 	reg, _, err := registry.Load(registry.Options{
 		Dirs: []string{root},
 		Input: registry.Input{
-			Nodes: []registry.Node{{
-				ID:      "gateway",
-				Name:    "Gateway host",
-				OS:      goruntime.GOOS,
-				Arch:    goruntime.GOARCH,
-				Enabled: true,
-			}},
+			Nodes: []registry.Node{
+				{
+					ID:      "gateway",
+					Name:    "Gateway host",
+					OS:      goruntime.GOOS,
+					Arch:    goruntime.GOARCH,
+					Enabled: true,
+				},
+				{
+					ID:         "node-b",
+					Name:       "Target machine",
+					OS:         "windows",
+					Arch:       "amd64",
+					Address:    "192.0.2.20",
+					Enabled:    true,
+					Attributes: map[string]string{"mac": "00:00:5e:00:53:01"},
+				},
+			},
 			GatewayHost: "gateway",
 			Routes: registry.Routes{Capabilities: map[string]registry.CapabilityRoute{
 				"remote": {Wildcard: true, DefaultExecutor: "gateway"},
@@ -183,13 +203,27 @@ operations:
 		t.Fatalf("build the HTTP dispatcher: %v", err)
 	}
 	handler := NewWithOptionProviders(reg, nil, nil, OptionProviders{HTTP: dispatcher})
-	resp, body := get(t, handler, "/v1/operations/remote/probe/options/mode")
+	resp, body := get(t, handler, "/v1/operations/remote/probe/options/mode?node=node-b")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, body %s", resp.StatusCode, body)
 	}
 	values := decodeOptionValues(t, body)
 	if len(values) != 2 || values[0] != "fast" || values[1] != "safe" {
 		t.Errorf("options = %v, want [fast safe]", values)
+	}
+	nodes := <-nodesCh
+	want := runtime.Node{
+		ID:         "node-b",
+		Name:       "Target machine",
+		OS:         "windows",
+		Arch:       "amd64",
+		Address:    "192.0.2.20",
+		Attributes: map[string]any{"mac": "00:00:5e:00:53:01"},
+	}
+	if got, ok := nodes["node-b"]; !ok {
+		t.Fatalf("envelope nodes %v have no node-b", nodes)
+	} else if !reflect.DeepEqual(got, want) {
+		t.Errorf("envelope node %+v, want %+v", got, want)
 	}
 }
 

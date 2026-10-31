@@ -51,6 +51,9 @@ operations:
           type: array
           items: {type: string, format: "hanse:node"}
         chosen: {$ref: "#/$defs/node"}
+        linked:
+          allOf:
+            - {type: string, format: "hanse:node"}
       $defs:
         node: {type: string, format: "hanse:node"}
   by-os:
@@ -543,5 +546,46 @@ func TestValidateValidArguments(t *testing.T) {
 	args := `{"node":"node-c","count":3,"mode":"slow","target":{"node":"node-e"},"nodes":["node-a"],"chosen":"gateway"}`
 	if err := validation.Validate(operation(t, reg, "run"), reg.Nodes, json.RawMessage(args)); err != nil {
 		t.Fatalf("Validate(valid arguments) = %v, want nil", err)
+	}
+}
+
+// TestNodeIDs checks the collection of `hanse:node` values for the request
+// envelope. The walk follows the schema and the actual arguments, so a
+// value counts wherever the schema puts it: a top-level argument, an array
+// item, a nested object property, a `$ref`, or an `allOf` branch.
+func TestNodeIDs(t *testing.T) {
+	reg := newRegistry(t)
+	op := operation(t, reg, "run")
+	args := `{"node":"gateway","count":1,"mode":"fast",` +
+		`"target":{"node":"node-a"},"nodes":["node-c","node-c"],` +
+		`"chosen":"node-e","linked":"node-c"}`
+	got := validation.NodeIDs(op, json.RawMessage(args))
+	want := []string{"gateway", "node-a", "node-c", "node-e"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("NodeIDs = %v, want %v", got, want)
+	}
+}
+
+// TestNodeIDsWithoutValues checks the empty results: no operation, no
+// schema, no arguments, and arguments that name no node.
+func TestNodeIDsWithoutValues(t *testing.T) {
+	reg := newRegistry(t)
+	op := operation(t, reg, "run")
+	cases := []struct {
+		name string
+		op   *registry.Operation
+		args string
+	}{
+		{name: "no operation"},
+		{name: "no schema", op: &registry.Operation{ID: "demo.run"}},
+		{name: "no arguments", op: op},
+		{name: "no node values", op: op, args: `{"count":2,"mode":"fast"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := validation.NodeIDs(tc.op, json.RawMessage(tc.args)); len(got) != 0 {
+				t.Fatalf("NodeIDs = %v, want none", got)
+			}
+		})
 	}
 }

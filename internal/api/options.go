@@ -164,7 +164,9 @@ func (s *server) optionProvider(capability *registry.Capability) OptionProvider 
 // optionsRequest builds the request envelope of one provider call. The
 // executor is the one the operation would use, chosen by the normal
 // executor resolution, and the arguments are the query values that name a
-// top-level argument of the schema. The call has no deadline here: the
+// top-level argument of the schema. `nodes` holds every node that those
+// values refer to through a `hanse:node` argument, as for an operation run
+// (docs/handler-contract.md section 2). The call has no deadline here: the
 // provider applies the documented option provider timeout.
 func (s *server) optionsRequest(r *http.Request, capability *registry.Capability, op *registry.Operation, field string) (*runtime.Request, error) {
 	if s.reg == nil || s.reg.Nodes == nil {
@@ -183,6 +185,12 @@ func (s *server) optionsRequest(r *http.Request, capability *registry.Capability
 	if err != nil {
 		return nil, err
 	}
+	nodes := map[string]runtime.Node{}
+	for _, id := range validation.NodeIDs(op, arguments) {
+		if node, ok := s.reg.Nodes.Get(id); ok {
+			nodes[id] = envelopeNode(node)
+		}
+	}
 	return &runtime.Request{
 		Contract:   runtime.ContractV1,
 		Kind:       runtime.KindOptions,
@@ -191,7 +199,7 @@ func (s *server) optionsRequest(r *http.Request, capability *registry.Capability
 		Operation:  op.ID,
 		Field:      field,
 		Arguments:  arguments,
-		Nodes:      map[string]runtime.Node{},
+		Nodes:      nodes,
 		Executor:   envelopeNode(view),
 		Secrets:    map[string]string{},
 	}, nil
