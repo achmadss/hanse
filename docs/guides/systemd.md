@@ -150,6 +150,15 @@ queued or running as failed with the reason `gateway_restart`
 is longer than the default 10 second grace period, so a normal stop is
 graceful.
 
+A handler that the embedded agent started is not cancelled by the Gateway's
+shutdown sequence; it keeps running until it finishes or the service manager
+stops the whole control group. The unit keeps `KillMode=control-group`, which
+is systemd's default: after the main process exits, systemd sends `SIGTERM`
+to every remaining process in the unit and then `SIGKILL` after
+`TimeoutStopSec`. The handler therefore never outlives the service. A remote
+`exec` handler on a node agent is not affected: its own agent still owns the
+process tree and stops the run on its own schedule.
+
 A configuration error makes the process exit 1 and `Restart=on-failure`
 retries it every two seconds. Fix the file, run `--check-config`, then
 restart; `journalctl -u hanse-gateway` holds every problem the Gateway
@@ -178,6 +187,7 @@ the Gateway never needs the capability it removes.
 | `RestrictNamespaces=yes`, `RestrictRealtime=yes`, `RestrictSUIDSGID=yes` | No new namespaces, no realtime scheduling, no setuid or setgid files. |
 | `LockPersonality=yes`, `MemoryDenyWriteExecute=yes` | No execution-personality change and no writable, executable memory. |
 | `SystemCallFilter=@system-service`, `SystemCallErrorNumber=EPERM` | Only the system-service system calls; anything else gets `EPERM`. |
+| `KillMode=control-group` | On stop, systemd also stops a handler process that outlived the Gateway. The default is kept explicitly. |
 | `UMask=0077` | Every file the Gateway creates is private. |
 
 If an `exec` capability needs to run a program that the filter blocks, add the

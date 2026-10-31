@@ -10,13 +10,19 @@ public host name and `192.0.2.0/24` for addresses.
 The example Compose file is
 [`deploy/docker/compose.yaml`](../../deploy/docker/compose.yaml).
 
-## 1. Build or pull the image
+## 1. Build the image
 
-Build from the repository root:
+Build from the repository root, where the `Dockerfile` is:
 
 ```console
 $ docker build --tag hanse-gateway:local .
 ```
+
+The Compose example uses the same `Dockerfile` with `build: { context: ../.. }`
+and the local tag `hanse-gateway:local`, so `docker compose up --build` needs
+no separate build step. The repository does not publish an image yet; the
+Compose file keeps a commented `ghcr.io/achmadss/hanse-gateway:<version>`
+line for a future release.
 
 The image has three properties that matter:
 
@@ -104,7 +110,7 @@ in a named volume, publishes the port on loopback, and sets a health check:
 
 ```console
 $ cd deploy/docker
-$ docker compose up --detach
+$ docker compose up --detach --build
 $ docker compose ps
 $ curl --fail --silent http://127.0.0.1:8443/healthz
 ok
@@ -113,6 +119,43 @@ ok
 The health check calls `/healthz`, which needs no token. `/readyz` is the
 better signal for a load balancer; see
 [Health and readiness endpoints](health.md).
+
+### What the health check assumes
+
+The compose health check runs busybox `wget` inside the container against
+`http://127.0.0.1:8443/healthz`. It works only when `listen` in
+`gateway.yaml` binds an address that is reachable inside the container:
+
+| Gateway configuration | Health check command |
+|---|---|
+| `listen: 0.0.0.0:8443` with `allow_insecure_http: true` (behind a TLS proxy) | Plain HTTP to `127.0.0.1:8443`, the example default. |
+| `listen: 127.0.0.1:8443` and the proxy runs in another container | Plain HTTP works only if the proxy shares the network namespace. |
+| TLS from the container on `0.0.0.0:8443` | `https://127.0.0.1:8443/healthz` with `--no-check-certificate`, because the probe cannot verify the public name. |
+
+For the TLS case, change the health check to:
+
+```yaml
+healthcheck:
+  test: ["CMD", "wget", "--quiet", "--no-check-certificate", "--output-document=/dev/null", "https://127.0.0.1:8443/healthz"]
+  interval: 30s
+  timeout: 3s
+  retries: 3
+  start_period: 5s
+```
+
+The probe is a liveness check, not an authorization test: it never sends a
+token, so it must not be pointed at a route that requires one.
+
+### Stopping and handler processes
+
+`docker compose stop` sends `SIGTERM` to the Gateway, which stops accepting
+requests, waits up to `timeouts.grace_period`, marks interrupted operations
+as failed with `gateway_restart`, and closes the stores. A handler that the
+embedded agent started is not cancelled by that sequence. The container
+runtime then stops the whole container, so the handler never outlives the
+container; `init: true` in the example adds a small PID 1 that reaps it and
+forwards the signal to the Gateway. A remote `exec` handler on a node agent
+is unaffected: its agent still owns that process tree.
 
 ### Wake-on-LAN and the host network
 
@@ -155,9 +198,13 @@ working file locks and a local file system.
 ## 6. Upgrades
 
 ```console
-$ docker compose pull
+$ docker compose build --pull
 $ docker compose up --detach
 ```
+
+`build --pull` fetches the current base image and rebuilds the Gateway from
+this checkout. If the deployment uses a published registry image, replace
+both commands with `docker compose pull` and `docker compose up --detach`.
 
 The named volume survives. An operation that was running during the restart
 is stored as `failed` with `gateway_restart`; a client retries it with the
@@ -178,5 +225,5 @@ $ docker run --rm \
 | `permission denied` under `/var/lib/hanse` | The volume or bind mount is not owned by uid 10001. |
 | Container exits 1 with `configuration problem(s)` | The file is invalid; the message names the file and the field. Run `--check-config`. |
 | `refusing to listen on ... without TLS` | `listen` is not loopback and `allow_insecure_http` is false. |
-| Health check fails but the log says `gateway listening` | The health check uses the wrong address or scheme. Probe the configured listen address; with TLS, use `https`. |
+| Health check fails but the log says `gateway listening` | The health check uses the wrong address or scheme. Probe the configured listen address; with TLS, use `https` and `--no-check-certificate`. See section 4. |
 | Wake-on-LAN does nothing | The container is not on the host network. See section 4. |
