@@ -44,6 +44,14 @@ func writeJSON(w io.Writer, v any) error {
 	return enc.Encode(v)
 }
 
+// writeJSONLine encodes v as one JSON object on one line (NDJSON), which a
+// script or an AI agent can read while a log streams.
+func writeJSONLine(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	return enc.Encode(v)
+}
+
 // writeSchemaJSON prints a decoded schema. The schema is decoded into
 // maps, which encoding/json orders by key, so the output is stable.
 func writeSchemaJSON(w io.Writer, schema any) error {

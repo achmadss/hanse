@@ -26,8 +26,8 @@ import (
 // commandNames lists the commands the top level completes.
 func commandNames() []string {
 	return []string{
-		"capabilities", "describe", "help", "login", "nodes", "operations",
-		"options", "run", "schema", "validate", "version",
+		"capabilities", "describe", "help", "login", "logs", "nodes",
+		"operations", "options", "run", "schema", "validate", "version",
 	}
 }
 

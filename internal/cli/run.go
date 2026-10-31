@@ -34,10 +34,10 @@ var runValueFlags = map[string]bool{
 	"args-file": true,
 }
 
-// runFollow is the hook of the --follow flag of #28. It streams one
-// operation's logs and returns when the stream ends or ctx is cancelled.
-// waitOperation runs it before its polling loop, so the future flag needs no
-// other change.
+// runFollow is the hook of the --follow flag. It streams one operation's
+// logs and returns when the stream ends or ctx is cancelled.
+// waitOperation runs it before its polling loop, so --follow only adds a
+// stream to the wait and never changes the exit code.
 type runFollow func(ctx context.Context, c *client.Client, operation string) error
 
 // errWaitInterrupted reports that Ctrl+C stopped the wait. The operation
@@ -84,6 +84,9 @@ func (a *app) runCommand(ctx context.Context, args []string) error {
 	if len(positional) > 0 {
 		return withUsageHint(usagef("unexpected argument %q", positional[0]), hint)
 	}
+	if *rf.detach && *rf.follow {
+		return withUsageHint(usagef("--follow and --detach cannot be used together"), hint)
+	}
 	fm, err := outputFormat(*rf.formatValue)
 	if err != nil {
 		return withUsageHint(err, hint)
@@ -124,7 +127,17 @@ func (a *app) runCommand(ctx context.Context, args []string) error {
 		}
 		return operationFailure(record)
 	}
-	record, err = a.waitOperation(ctx, c, record, nil)
+	// --follow streams the log while the command still waits for the
+	// final record, so the exit code and the result are the same as a
+	// plain run (docs/architecture.md section 12).
+	var follow runFollow
+	if *rf.follow {
+		follow = func(followCtx context.Context, followClient *client.Client, operation string) error {
+			_, err := a.followLogs(followCtx, followClient, operation, fm)
+			return err
+		}
+	}
+	record, err = a.waitOperation(ctx, c, record, follow)
 	if err != nil {
 		if errors.Is(err, errWaitInterrupted) {
 			a.warnf("stopped waiting; operation %s is still running: follow it with \"hanse operations show %s\"",

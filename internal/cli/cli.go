@@ -104,6 +104,8 @@ func (a *app) run(ctx context.Context, args []string) error {
 		return a.runCommand(ctx, args[1:])
 	case "operations":
 		return a.operationsCommand(ctx, args[1:])
+	case "logs":
+		return a.logsCommand(ctx, args[1:])
 	case "__complete":
 		return a.completeCommand(ctx, args[1:])
 	default:
@@ -174,6 +176,7 @@ Commands:
   operations [filters]                      List operations.
   operations show <id>                      Show one operation.
   operations cancel <id>                    Cancel an operation.
+  logs <id> [-f]                            Print an operation's log; -f follows it.
   version                                   Print the CLI version.
 
 Every command accepts --format text|json. The default is text.
