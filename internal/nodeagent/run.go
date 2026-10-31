@@ -113,8 +113,8 @@ func (a *Agent) execute(r *run, msg *agentproto.Run) {
 			fmt.Sprintf("handler contract %q is not %s", req.Contract, runtime.ContractV1))
 		return
 	}
+	password := ""
 	if msg.Privileged {
-		password := ""
 		if msg.Elevation != nil {
 			password = msg.Elevation.Password
 		}
@@ -129,8 +129,8 @@ func (a *Agent) execute(r *run, msg *agentproto.Run) {
 				"an option provider never runs with administrator rights")
 			return
 		}
-		if allowed, reason := a.elevation.check(req.Capability, req.Operation, password); !allowed {
-			a.reject(r, herrors.ElevationDenied, reason)
+		if allowed, code, reason := a.elevation.check(req.Capability, req.Operation, password); !allowed {
+			a.reject(r, code, reason)
 			return
 		}
 	}
@@ -169,6 +169,10 @@ func (a *Agent) execute(r *run, msg *agentproto.Run) {
 		// on POSIX systems, and with the service's full rights on
 		// Windows (docs/handler-contract.md section 7.2).
 		Privileged: msg.Privileged,
+		// The password reaches sudo on its stdin and is cleared as soon
+		// as the launcher wrote the bytes (docs/agent-protocol.md
+		// section 9).
+		Password: password,
 		Log: func(line string) {
 			a.emitLog(r, agentproto.StreamStderr, line, limit)
 		},

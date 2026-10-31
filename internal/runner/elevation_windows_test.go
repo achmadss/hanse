@@ -4,6 +4,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -55,6 +56,19 @@ func TestPrivilegedHandlerRunsWithFullRights(t *testing.T) {
 	}
 	if !ordinary.contains("RIGHTS admin=false") {
 		t.Errorf("the ordinary handler kept administrator rights: %v", ordinary.all())
+	}
+}
+
+// TestVerifyCredentialNeedsAKnownAdministrator covers the two refusals
+// that are configuration problems, not wrong passwords: an account that
+// does not exist, and an account outside the local Administrators group.
+func TestVerifyCredentialNeedsAKnownAdministrator(t *testing.T) {
+	err := VerifyCredential("hanse-placeholder-missing-account", "placeholder-password")
+	if err == nil {
+		t.Fatal("an unknown account was accepted")
+	}
+	if errors.Is(err, ErrPasswordRejected) {
+		t.Errorf("err = %v, want a configuration error, not a rejected password", err)
 	}
 }
 

@@ -152,6 +152,7 @@ type stack struct {
 	configPath     string
 	process        *exec.Cmd
 	output         *syncBuffer
+	sudoRecord     string
 }
 
 // syncBuffer is a byte buffer that is safe to read while the agent process
@@ -193,6 +194,9 @@ type stackOptions struct {
 	// env replaces the agent process's environment. Nil inherits the
 	// test's environment. A privileged test points PATH at a fake sudo.
 	env []string
+	// sudoRecord is where a fake sudo writes its calls, for the tests
+	// that prove how the agent invokes it.
+	sudoRecord string
 }
 
 // stackCapability is one capability directory the stack writes.
@@ -289,6 +293,7 @@ func newStackWithOptions(t *testing.T, opts stackOptions) *stack {
 		logs:           sink,
 		bundleRequests: bundleRequests,
 		capsDir:        capsDir,
+		sudoRecord:     opts.sudoRecord,
 		stateDir:       filepath.Join(t.TempDir(), "state"),
 		configPath:     filepath.Join(t.TempDir(), "agent.yaml"),
 	}

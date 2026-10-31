@@ -34,6 +34,7 @@ import (
 	"github.com/achmadss/hanse/internal/bundle"
 	"github.com/achmadss/hanse/internal/config"
 	herrors "github.com/achmadss/hanse/internal/errors"
+	"github.com/achmadss/hanse/internal/runner"
 	"github.com/achmadss/hanse/internal/version"
 )
 
@@ -252,9 +253,22 @@ func New(cfg Config) (*Agent, error) {
 		journal:   j,
 		tls:       tlsConfig,
 		workDir:   workDir,
-		elevation: newElevationGate(cfg.Elevation, cfg.Now, cfg.VerifyCredential),
+		elevation: newElevationGate(cfg.Elevation, cfg.Now, passwordVerifier(cfg)),
 		runs:      map[string]*run{},
 	}, nil
+}
+
+// passwordVerifier returns the node's password check. A configured check
+// wins; otherwise the platform check runs the same supervisor command the
+// launch uses, so sudo needs permission for exactly one command.
+func passwordVerifier(cfg Config) func(account, password string) error {
+	if cfg.VerifyCredential != nil {
+		return cfg.VerifyCredential
+	}
+	supervisor := append([]string(nil), cfg.SupervisorCommand...)
+	return func(account, password string) error {
+		return runner.VerifyCredential(account, password, supervisor...)
+	}
 }
 
 // tlsConfigFor builds the Gateway TLS configuration, with the extra CA

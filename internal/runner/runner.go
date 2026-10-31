@@ -70,9 +70,12 @@ type Spec struct {
 	// (docs/architecture.md section 8.5). On POSIX systems the runner
 	// starts it through sudo and the agent's root supervisor; on Windows
 	// it keeps the agent service's full rights. The handler receives
-	// HANSE_PRIVILEGED=1. The runner never receives the password: the
-	// agent checks it before the call.
+	// HANSE_PRIVILEGED=1.
 	Privileged bool
+	// Password is the elevation password of a privileged run. It is
+	// written to sudo's stdin and never to argv, the environment, a log,
+	// or a record. The caller should clear its own copy.
+	Password string
 	// Outcome, when not nil, receives how the process ended: its raw
 	// stdout, exit status, duration, and stop reason. It exists for a
 	// caller that must report the process status itself, such as the node
@@ -200,6 +203,7 @@ func (r *Runner) Run(ctx context.Context, spec Spec) (runtime.Response, error) {
 		WorkDir:    workDir,
 		CancelFile: cancelFile,
 		Grace:      grace,
+		Password:   spec.Password,
 	}
 	if spec.Privileged {
 		if err := preparePrivileged(r, plan); err != nil {
@@ -207,6 +211,10 @@ func (r *Runner) Run(ctx context.Context, spec Spec) (runtime.Response, error) {
 			return runtime.Response{}, err
 		}
 	}
+	// The password now lives only in the prefix buffer, which is zeroed as
+	// soon as sudo has read it.
+	spec.Password = ""
+	plan.Password = ""
 	cmd := exec.Command(plan.Entry[0], plan.Entry[1:]...)
 	cmd.Dir = plan.Dir
 	cmd.Env = plan.Env
@@ -248,7 +256,7 @@ func (r *Runner) Run(ctx context.Context, spec Spec) (runtime.Response, error) {
 			fmt.Sprintf("the handler process tree cannot be attached: %s", err), nil)
 	}
 
-	go writeRequest(stdinW, payload)
+	go writeRequest(stdinW, plan.StdinPrefix, payload)
 	if spec.Started != nil {
 		spec.Started()
 	}
@@ -476,12 +484,27 @@ func writeCancelFile(path string) error {
 	return f.Close()
 }
 
-// writeRequest writes the envelope and closes stdin. A handler that exits
-// before reading it makes the write fail; that is the handler's business,
-// not a runner error.
-func writeRequest(w *os.File, payload []byte) {
+// writeRequest writes the password line of a privileged run and the
+// request envelope, then closes stdin. sudo reads the password one byte at
+// a time up to the newline, so the envelope that follows reaches the
+// supervisor and then the handler unchanged. A handler that exits before
+// reading it makes the write fail; that is the handler's business, not a
+// runner error.
+func writeRequest(w *os.File, prefix, payload []byte) {
+	if len(prefix) > 0 {
+		_, _ = w.Write(prefix)
+		zeroBytes(prefix)
+	}
 	_, _ = w.Write(payload)
 	_ = w.Close()
+}
+
+// zeroBytes clears a buffer that held the elevation password, so the value
+// does not stay in the process's memory once sudo has read it.
+func zeroBytes(data []byte) {
+	for i := range data {
+		data[i] = 0
+	}
 }
 
 // readStdout reads at most limit+1 bytes and reports whether the handler

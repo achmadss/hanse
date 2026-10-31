@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	herrors "github.com/achmadss/hanse/internal/errors"
 	"github.com/achmadss/hanse/internal/runner"
 )
 
@@ -35,11 +36,12 @@ func TestElevationGateAcceptsTheRightPassword(t *testing.T) {
 	clock := &gateClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	gate, _ := newTestGate(t, Elevation{Enabled: true}, clock)
 
-	if allowed, reason := gate.check("pc", "down", "placeholder-good-password"); !allowed {
+	if allowed, _, reason := gate.check("pc", "down", "placeholder-good-password"); !allowed {
 		t.Fatalf("correct password refused: %s", reason)
 	}
-	if allowed, reason := gate.check("pc", "down", "placeholder-wrong-password"); allowed {
-		t.Fatalf("wrong password accepted: %s", reason)
+	if allowed, code, _ := gate.check("pc", "down", "placeholder-wrong-password"); allowed ||
+		code != herrors.ElevationDenied {
+		t.Fatalf("wrong password accepted or reported as %v", code)
 	}
 }
 
@@ -47,7 +49,7 @@ func TestElevationGateAcceptsTheRightPassword(t *testing.T) {
 func TestElevationGateDisabled(t *testing.T) {
 	clock := &gateClock{now: time.Now()}
 	gate, checks := newTestGate(t, Elevation{}, clock)
-	if allowed, _ := gate.check("pc", "down", "placeholder-good-password"); allowed {
+	if allowed, _, _ := gate.check("pc", "down", "placeholder-good-password"); allowed {
 		t.Fatal("a node with elevation off accepted a privileged run")
 	}
 	if *checks != 0 {
@@ -64,10 +66,10 @@ func TestElevationGateAllowList(t *testing.T) {
 		Operations: []string{"pc.down"},
 	}, clock)
 
-	if allowed, reason := gate.check("pc", "down", "placeholder-good-password"); !allowed {
+	if allowed, _, reason := gate.check("pc", "down", "placeholder-good-password"); !allowed {
 		t.Fatalf("a listed operation was refused: %s", reason)
 	}
-	if allowed, _ := gate.check("pc", "restart", "placeholder-good-password"); allowed {
+	if allowed, _, _ := gate.check("pc", "restart", "placeholder-good-password"); allowed {
 		t.Fatal("an operation outside the allow list was elevated")
 	}
 }
@@ -80,16 +82,16 @@ func TestElevationGateLockout(t *testing.T) {
 	gate, _ := newTestGate(t, Elevation{Enabled: true}, clock)
 
 	for attempt := 0; attempt < DefaultLockoutAttempts; attempt++ {
-		if allowed, _ := gate.check("pc", "down", "placeholder-wrong-password"); allowed {
+		if allowed, _, _ := gate.check("pc", "down", "placeholder-wrong-password"); allowed {
 			t.Fatalf("attempt %d was accepted", attempt)
 		}
 		clock.Advance(time.Minute)
 	}
-	if allowed, reason := gate.check("pc", "down", "placeholder-good-password"); allowed {
+	if allowed, _, reason := gate.check("pc", "down", "placeholder-good-password"); allowed {
 		t.Fatalf("the correct password passed during the lockout: %s", reason)
 	}
 	clock.Advance(DefaultLockoutDuration)
-	if allowed, reason := gate.check("pc", "down", "placeholder-good-password"); !allowed {
+	if allowed, _, reason := gate.check("pc", "down", "placeholder-good-password"); !allowed {
 		t.Fatalf("the lockout outlasted its duration: %s", reason)
 	}
 }
@@ -101,7 +103,7 @@ func TestElevationGateWindowForgetsOldFailures(t *testing.T) {
 	gate, _ := newTestGate(t, Elevation{Enabled: true}, clock)
 
 	for attempt := 0; attempt < DefaultLockoutAttempts*2; attempt++ {
-		if allowed, _ := gate.check("pc", "down", "placeholder-wrong-password"); allowed {
+		if allowed, _, _ := gate.check("pc", "down", "placeholder-wrong-password"); allowed {
 			t.Fatalf("attempt %d was accepted", attempt)
 		}
 		// Each wrong password is older than the window by the time the
@@ -113,17 +115,40 @@ func TestElevationGateWindowForgetsOldFailures(t *testing.T) {
 	}
 }
 
-// TestElevationGateCountsARejectedCheckOnlyOnce proves that a check which
+// TestElevationGateRefusesAnEmptyPassword covers the protocol guard: the
+// Gateway refuses a privileged run without a password, so an empty one is
+// a protocol bug and is neither checked nor counted toward the lockout.
+func TestElevationGateRefusesAnEmptyPassword(t *testing.T) {
+	clock := &gateClock{now: time.Now()}
+	gate, checks := newTestGate(t, Elevation{Enabled: true}, clock)
+	for attempt := 0; attempt < DefaultLockoutAttempts*2; attempt++ {
+		allowed, code, _ := gate.check("pc", "down", "")
+		if allowed {
+			t.Fatal("an empty password was accepted")
+		}
+		if code != herrors.ElevationRequired {
+			t.Fatalf("code %v, want elevation_required", code)
+		}
+	}
+	if *checks != 0 {
+		t.Error("an empty password reached the platform check")
+	}
+	if gate.locked() {
+		t.Error("an empty password counted toward the lockout")
+	}
+}
+
+// TestElevationGateDoesNotCountABrokenCheck proves that a check which
 // cannot run, such as a missing sudo, is reported without counting as a
 // wrong password.
-func TestElevationGateCountsARejectedCheckOnlyOnce(t *testing.T) {
+func TestElevationGateDoesNotCountABrokenCheck(t *testing.T) {
 	clock := &gateClock{now: time.Now()}
 	messages := 0
 	gate := newElevationGate(Elevation{Enabled: true}, clock.Now, func(_, _ string) error {
 		messages++
 		return errors.New("sudo is not installed with the placeholder name")
 	})
-	if allowed, reason := gate.check("pc", "down", "placeholder-some-password"); allowed {
+	if allowed, _, reason := gate.check("pc", "down", "placeholder-some-password"); allowed {
 		t.Fatal("a password check that could not run was accepted")
 	} else if reason == "" {
 		t.Error("the refusal carries no reason")

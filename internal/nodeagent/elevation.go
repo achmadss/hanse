@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	herrors "github.com/achmadss/hanse/internal/errors"
 	"github.com/achmadss/hanse/internal/runner"
 )
 
@@ -60,7 +61,8 @@ type elevationGate struct {
 	lockout  time.Duration
 	now      func() time.Time
 	// verify checks one password. It returns runner.ErrPasswordRejected
-	// for a wrong password and another error when the check cannot run.
+	// for a wrong password and another error when the password cannot be
+	// checked, so only a real rejection counts toward the lockout.
 	verify func(account, password string) error
 
 	mu          sync.Mutex
@@ -75,7 +77,9 @@ func newElevationGate(cfg Elevation, now func() time.Time, verify func(account, 
 		now = time.Now
 	}
 	if verify == nil {
-		verify = runner.VerifyCredential
+		verify = func(account, password string) error {
+			return runner.VerifyCredential(account, password)
+		}
 	}
 	attempts := cfg.LockoutAttempts
 	if attempts <= 0 {
@@ -118,36 +122,45 @@ func (g *elevationGate) allowed(capability, operation string) bool {
 }
 
 // check decides one privileged run. It returns whether elevation may go
-// ahead and, when it may not, a reason that holds no password and no
-// secret. A wrong password counts toward the lockout; a correct one clears
-// the count.
-func (g *elevationGate) check(capability, operation, password string) (bool, string) {
+// ahead and, when it may not, the error code to report and a reason that
+// holds no password and no secret.
+//
+// A wrong password counts toward the lockout. A password that cannot be
+// checked, such as one for an account that is not an administrator, a
+// missing sudo, or a disabled account, refuses the run without counting:
+// it is a node or configuration problem, not a guess. An empty password is
+// a protocol bug, because the Gateway refuses a privileged run without one
+// and the agent never invents a value, so it reports elevation_required
+// and does not count either.
+func (g *elevationGate) check(capability, operation, password string) (bool, *herrors.Code, string) {
 	if g == nil || !g.enabled {
-		return false, "elevation is turned off on this node"
+		return false, herrors.ElevationDenied, "elevation is turned off on this node"
 	}
 	if !g.allowed(capability, operation) {
-		return false, fmt.Sprintf("elevation is not allowed for %s.%s on this node", capability, operation)
+		return false, herrors.ElevationDenied,
+			fmt.Sprintf("elevation is not allowed for %s.%s on this node", capability, operation)
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.now()
 	if now.Before(g.lockedUntil) {
-		return false, "elevation is locked after too many wrong passwords"
+		return false, herrors.ElevationDenied,
+			"elevation is locked after too many wrong passwords"
 	}
 	if password == "" {
-		g.recordFailureLocked(now)
-		return false, "the run carries no elevation password"
+		return false, herrors.ElevationRequired, "the run carries no elevation password"
 	}
 	err := g.verify(g.account, password)
 	if err == nil {
 		g.failures = nil
-		return true, ""
+		return true, nil, ""
 	}
 	if errors.Is(err, runner.ErrPasswordRejected) {
 		g.recordFailureLocked(now)
-		return false, "the elevation password is wrong"
+		return false, herrors.ElevationDenied, "the elevation password is wrong"
 	}
-	return false, "the elevation password cannot be checked: " + err.Error()
+	return false, herrors.ElevationDenied,
+		"the elevation password cannot be checked: " + err.Error()
 }
 
 // recordFailureLocked counts one wrong password and starts the lockout

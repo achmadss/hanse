@@ -23,6 +23,14 @@ type launchPlan struct {
 	WorkDir    string
 	CancelFile string
 	Grace      time.Duration
+	// Password is the elevation password of a privileged run. It travels
+	// only in memory and on sudo's stdin, and the runner zeroes
+	// StdinPrefix as soon as the bytes are written.
+	Password string
+	// StdinPrefix is written to the process's stdin before the request
+	// envelope: the password line that sudo consumes before it execs the
+	// supervisor.
+	StdinPrefix []byte
 }
 
 // SupervisorControl is the control file that the runner writes for the
@@ -36,8 +44,19 @@ type SupervisorControl struct {
 
 // supervisor returns the command prefix that starts the root supervisor.
 func (r *Runner) supervisor() ([]string, error) {
-	if r != nil && len(r.Supervisor) > 0 {
-		return append([]string(nil), r.Supervisor...), nil
+	if r == nil {
+		return supervisorCommand(nil)
+	}
+	return supervisorCommand(r.Supervisor)
+}
+
+// supervisorCommand resolves the command prefix of the agent's supervisor:
+// the configured prefix, or this executable with the `supervise`
+// subcommand. The password check and the launch must agree on it, because
+// sudo's permission is checked for that exact command.
+func supervisorCommand(prefix []string) ([]string, error) {
+	if len(prefix) > 0 {
+		return append([]string(nil), prefix...), nil
 	}
 	exe, err := os.Executable()
 	if err != nil {

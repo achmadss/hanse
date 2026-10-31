@@ -64,6 +64,8 @@ func Supervise(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	spec := SuperviseSpec{Stdin: stdin, Stdout: stdout, Stderr: stderr}
 	var grace string
+	var check bool
+	fs.BoolVar(&check, "check", false, "check the supervisor's own permission and exit")
 	fs.StringVar(&spec.Dir, "dir", "", "the handler's working directory")
 	fs.StringVar(&grace, "grace", "", "the time between SIGTERM and SIGKILL")
 	fs.StringVar(&spec.CancelFile, "cancel-file", "", "the file that requests a stop")
@@ -71,6 +73,12 @@ func Supervise(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs.IntVar(&spec.AgentPID, "agent-pid", 0, "the agent process to watch")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if check {
+		// The agent's password check runs this mode: sudo started the
+		// supervisor, so the account may run it, and there is nothing to
+		// do but report success without creating a sudo timestamp.
+		return 0
 	}
 	if len(fs.Args()) == 0 {
 		superviseError(stderr, "no handler entry command")

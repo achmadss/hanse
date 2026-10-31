@@ -31,11 +31,18 @@ func configureProcess(cmd *exec.Cmd, _ bool) (*processOptions, error) {
 }
 
 // preparePrivileged wraps the handler in sudo and the agent's root
-// supervisor. sudo checks the password that the agent already verified and
-// starts the supervisor as root; the supervisor starts the handler and
-// carries out every stop itself, because the agent's account cannot signal
-// a root process (docs/handler-contract.md section 7.2). The password is
-// never part of this command: sudo uses the timestamp of the check.
+// supervisor. sudo checks the password itself and starts the supervisor as
+// root; the supervisor starts the handler and carries out every stop
+// itself, because the agent's account cannot signal a root process
+// (docs/handler-contract.md section 7.2).
+//
+// sudo runs with `-S -k` and a command, so `-k` both ignores any cached
+// credential and leaves no new timestamp behind: the launch never depends
+// on a cached credential, and a later process the agent starts cannot run
+// sudo without a password. The password reaches sudo on its own stdin,
+// never in the argument list or the environment, and the request follows
+// on the same pipe because sudo reads the password one byte at a time up
+// to the newline.
 func preparePrivileged(r *Runner, plan *launchPlan) error {
 	supervisor, err := r.supervisor()
 	if err != nil {
@@ -51,7 +58,7 @@ func preparePrivileged(r *Runner, plan *launchPlan) error {
 		return herrors.New(herrors.Internal,
 			fmt.Sprintf("the supervisor control file cannot be written: %s", err), nil)
 	}
-	argv := append([]string{"sudo", "-n", "-p", "", "--"}, supervisor...)
+	argv := append([]string{"sudo", "-S", "-k", "-p", "", "--"}, supervisor...)
 	argv = append(argv,
 		"--dir", plan.Dir,
 		"--grace", plan.Grace.String(),
@@ -64,6 +71,9 @@ func preparePrivileged(r *Runner, plan *launchPlan) error {
 	argv = append(argv, plan.Entry...)
 	plan.Entry = argv
 	plan.Env = sudoEnv()
+	plan.StdinPrefix = []byte(plan.Password + "\n")
+	// Drop the plan's own reference now that the bytes exist.
+	plan.Password = ""
 	return nil
 }
 
