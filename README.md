@@ -7,8 +7,6 @@
 
 Hanse is a small, self-hosted platform. A central **Gateway** publishes **capabilities**. A capability is a named group of operations, such as `pc.up` or `backup.run`. Clients discover these operations and run them on the **nodes** (machines) you allow. The Gateway checks every argument against a schema, picks the machine, runs the handler, and keeps the result and the logs.
 
-**Status: pre-release.** The core works and is tested on Linux, macOS, and Windows, but there is no tagged release yet, and the configuration format may still change.
-
 ## Why Hanse?
 
 - **Capabilities, not shell access.** Clients can only run the operations you package. The Gateway has no endpoint that runs arbitrary commands, so an AI agent or a script gets exactly the actions you allow.
@@ -50,7 +48,7 @@ The repository builds three binaries:
 
 ## Quickstart
 
-This walkthrough runs everything on one Linux or macOS machine, on loopback, without root. It starts a Gateway, enrolls one node, and runs the bundled `echo` capability on that node. It needs Go 1.27 or later.
+This walkthrough runs everything on one Linux or macOS machine, on loopback, without root. It starts a Gateway, enrolls one node, and runs the bundled `echo` capability on that node. It builds the binaries from source with Go 1.27 or later; with the [release binaries](#installation), skip step 1 and copy `capabilities/` from the `hanse-gateway` archive instead.
 
 **1. Build the binaries.**
 
@@ -163,7 +161,15 @@ Every command accepts `--format json` for scripts and AI agents. `logs -f` print
 
 ## Installation
 
-There are no published release binaries yet. Build from source with Go 1.27 or later:
+Download the archives for your OS and architecture from [GitHub Releases](https://github.com/achmadss/hanse/releases). Each binary has its own archive for Linux, macOS, or Windows, on amd64 or arm64:
+
+- `hanse-gateway_<version>_<os>_<arch>`: the Gateway, the bundled capabilities (`capabilities/`), and example configuration files (`config/`).
+- `hanse-node_<version>_<os>_<arch>`: the node agent.
+- `hanse_<version>_<os>_<arch>`: the CLI.
+
+Put the binaries on your `PATH`, and check them against `checksums.txt`.
+
+You can also build from source with Go 1.27 or later:
 
 ```sh
 go install github.com/achmadss/hanse/cmd/hanse@latest
