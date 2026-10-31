@@ -46,11 +46,29 @@ func powershellSpec(t *testing.T, log func(string)) Spec {
 // under 3 seconds. Before the fix the same script needed 18 to 27 seconds,
 // because the handler environment had no PSModulePath and Windows PowerShell
 // searched for its modules on the first cmdlet use.
+//
+// The first PowerShell start of a Windows session is a cold start: the
+// operating system faults in the binaries and the antivirus scans them, which
+// took 3.3 to 3.9 seconds in the issue #85 measurement even with the full
+// agent environment. The test therefore runs the handler once untimed, which
+// must still succeed, and measures the second run.
 func TestOrdinaryPowerShellHandlerRunsAtNormalSpeed(t *testing.T) {
 	logs := &logCollector{}
 	start := time.Now()
+	warm, err := newTestRunner(t).Run(context.Background(), powershellSpec(t, logs.log))
+	cold := time.Since(start)
+	if err != nil {
+		t.Fatalf("cold run: %v", err)
+	}
+	if warm.Status != runtime.StatusOK {
+		t.Fatalf("cold run status = %q, want ok", warm.Status)
+	}
+
+	start = time.Now()
 	resp, err := newTestRunner(t).Run(context.Background(), powershellSpec(t, logs.log))
 	elapsed := time.Since(start)
+	t.Logf("PowerShell handler: cold run %v, measured run %v",
+		cold.Round(time.Millisecond), elapsed.Round(time.Millisecond))
 	if err != nil {
 		t.Fatalf("ordinary run: %v", err)
 	}
