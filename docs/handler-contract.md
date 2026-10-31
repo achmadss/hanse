@@ -205,7 +205,11 @@ The handler receives only these environment variables, plus the variables that t
 | `HOME` (POSIX) or `USERPROFILE` (Windows) | The user's home directory. |
 | `TMPDIR` (POSIX) or `TEMP` and `TMP` (Windows) | The same value as `HANSE_WORK_DIR`. |
 | `SystemRoot` (Windows only) | The Windows directory. Many Windows programs fail without it. |
+| `PSModulePath` (Windows only) | The module search path of the agent's PowerShell. Without it, Windows PowerShell rebuilds the path and searches for modules on the first cmdlet use, which can take 20 seconds. |
+| `windir`, `SystemDrive`, `ComSpec`, `PATHEXT`, `ProgramData`, `ProgramFiles`, `ProgramFiles(x86)`, `CommonProgramFiles`, `APPDATA`, `LOCALAPPDATA`, `NUMBER_OF_PROCESSORS`, `PROCESSOR_ARCHITECTURE`, `OS` (Windows only) | The values that the agent's own environment holds for these variables, so a program finds its installation, its per-user cache, and the command processor without a slow search. |
 | `LANG` (POSIX) | `C.UTF-8` |
+
+The Windows variables carry the values that the agent's own environment holds. When the agent does not hold one, the handler does not receive it. None of them is a secret.
 
 ### 4.3 stdout
 
