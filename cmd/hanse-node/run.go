@@ -28,14 +28,33 @@ func defaultConfigPath() string {
 	}
 }
 
-// runAgent loads agent.yaml, reads the node credential that `hanse-node
-// join` wrote, and runs the agent until SIGINT or SIGTERM.
+// runAgent parses the run arguments and runs the agent.
 func runAgent(args []string, stderr io.Writer, configPath string) int {
 	path, ok := parseRunArgs(args, configPath, stderr)
 	if !ok {
 		return exitUse
 	}
-	cfg, problems, err := config.LoadAgent(path)
+	return startAgent(path, stderr)
+}
+
+// startAgent runs the agent under the operating system's service manager
+// when the manager started this process, and under signal handling when an
+// operator or a terminal started it (docs/architecture.md section 8.4).
+func startAgent(configPath string, stderr io.Writer) int {
+	if handled, code := runAsService(configPath, stderr); handled {
+		return code
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
+	defer stop()
+	return agentRun(ctx, configPath, stderr)
+}
+
+// agentRun loads agent.yaml, reads the node credential that `hanse-node
+// join` wrote, and runs the agent until ctx is done. The Windows service
+// handler cancels ctx on Stop and Shutdown, so the agent stops its
+// handlers before the service manager kills the process.
+func agentRun(ctx context.Context, configPath string, stderr io.Writer) int {
+	cfg, problems, err := config.LoadAgent(configPath)
 	if err != nil {
 		printf(stderr, "hanse-node: %v\n", err)
 		return exitFail
@@ -44,7 +63,7 @@ func runAgent(args []string, stderr io.Writer, configPath string) int {
 		for _, problem := range problems {
 			printf(stderr, "%s\n", problem.Error())
 		}
-		printf(stderr, "hanse-node: %s: %d configuration problem(s)\n", path, len(problems))
+		printf(stderr, "hanse-node: %s: %d configuration problem(s)\n", configPath, len(problems))
 		return exitFail
 	}
 	credential, err := readCredential(cfg.StateDir)
@@ -75,8 +94,6 @@ func runAgent(args []string, stderr io.Writer, configPath string) int {
 		printf(stderr, "hanse-node: %v\n", err)
 		return exitFail
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
-	defer stop()
 	logf("connecting to %s", cfg.GatewayURL)
 	if err := agent.Run(ctx); err != nil {
 		printf(stderr, "hanse-node: %v\n", err)
