@@ -1,7 +1,9 @@
 package validation
 
 import (
+	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/achmadss/hanse/internal/registry"
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -76,6 +78,12 @@ type nodeVisitor struct {
 	nodes    *registry.NodeRegistry
 	filters  map[string]registry.NodeFilter
 	problems []Problem
+	// collect receives every value the schema marks with the format, known
+	// node or not. NodeIDs uses it to gather the envelope's nodes.
+	collect func(id string)
+	// collectOnly stops the visitor after collection, for a walk that has
+	// no node registry to check values against.
+	collectOnly bool
 	// seen stops a recursive schema from being walked forever.
 	seen map[nodeVisit]bool
 }
@@ -95,6 +103,39 @@ func nodeProblems(op *registry.Operation, nodes *registry.NodeRegistry, value an
 	}
 	visitor.walk(op.Schema, value, nil)
 	return visitor.problems
+}
+
+// NodeIDs returns the distinct IDs that the operation's `hanse:node`
+// arguments name in args, sorted. It walks the schema beside the actual
+// arguments, so a value anywhere in the arguments counts: a top-level
+// argument, an array item, or a property of a nested object. The walk also
+// follows `$ref`, `allOf`, `anyOf`, `oneOf`, and `if`/`then`/`else`, which
+// the argument validator handles the same way.
+//
+// The result holds the values as the arguments give them. A caller looks
+// each one up in the node registry; validation rejects an unknown ID before
+// an operation runs, and an options call simply omits it.
+func NodeIDs(op *registry.Operation, args json.RawMessage) []string {
+	if op == nil || op.Schema == nil {
+		return nil
+	}
+	value, ok := decodeArguments(args)
+	if !ok {
+		return nil
+	}
+	seen := map[string]bool{}
+	visitor := &nodeVisitor{
+		collect:     func(id string) { seen[id] = true },
+		collectOnly: true,
+		seen:        map[nodeVisit]bool{},
+	}
+	visitor.walk(op.Schema, value, nil)
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // walk checks one instance value against one schema. The handler contract
@@ -126,6 +167,12 @@ func (v *nodeVisitor) checkFormat(sch *jsonschema.Schema, value any, path []stri
 	id, ok := value.(string)
 	if !ok {
 		// The format assertion of the schema reports the wrong type.
+		return
+	}
+	if v.collect != nil {
+		v.collect(id)
+	}
+	if v.collectOnly {
 		return
 	}
 	if message := v.nodeMessage(id, path); message != "" {

@@ -697,43 +697,19 @@ func (m *Manager) envelope(rec Record, op *registry.Operation, start time.Time, 
 }
 
 // referencedNodes returns every node that a `hanse:node` argument refers
-// to, keyed by node ID (docs/handler-contract.md section 2.1). The filters
-// of the operation name the arguments; a value can sit inside a nested
-// object or an array.
+// to, keyed by node ID (docs/handler-contract.md section 2.1). The
+// argument schema names the values, wherever they sit: a top-level
+// argument, an array item, or a property of a nested object. A node filter
+// plays no part here; it only narrows what validation accepts
+// (docs/configuration.md section 6.4).
 func (m *Manager) referencedNodes(op *registry.Operation, args json.RawMessage) map[string]runtime.Node {
 	out := map[string]runtime.Node{}
-	if len(op.NodeFilters) == 0 || len(bytes.TrimSpace(args)) == 0 {
-		return out
-	}
-	var values map[string]any
-	if err := json.Unmarshal(args, &values); err != nil {
-		return out
-	}
-	for field := range op.NodeFilters {
-		collectNodeIDs(values[field], func(id string) {
-			if view, ok := m.registry.Nodes.Get(id); ok {
-				out[id] = runtimeNode(view)
-			}
-		})
+	for _, id := range validation.NodeIDs(op, args) {
+		if view, ok := m.registry.Nodes.Get(id); ok {
+			out[id] = runtimeNode(view)
+		}
 	}
 	return out
-}
-
-// collectNodeIDs calls visit for every string in value that names a known
-// node. It walks objects and arrays, because a node argument can be nested.
-func collectNodeIDs(value any, visit func(id string)) {
-	switch v := value.(type) {
-	case string:
-		visit(v)
-	case []any:
-		for _, item := range v {
-			collectNodeIDs(item, visit)
-		}
-	case map[string]any:
-		for _, item := range v {
-			collectNodeIDs(item, visit)
-		}
-	}
 }
 
 // runtimeNode renders one registry node as the envelope's node object. The
