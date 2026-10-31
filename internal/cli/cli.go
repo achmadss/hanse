@@ -48,7 +48,7 @@ func Run(ctx context.Context, args []string, opts Options) int {
 		printUsage(opts.Stderr)
 		return 2
 	}
-	if hasHelpFlag(args) || args[0] == "help" {
+	if (hasHelpFlag(args) && !runOperationHelpTarget(args)) || args[0] == "help" {
 		printUsage(opts.Stdout)
 		return 0
 	}
@@ -95,8 +95,12 @@ func (a *app) run(ctx context.Context, args []string) error {
 		return a.describeCommand(ctx, args[1:])
 	case "validate":
 		return a.validateCommand(ctx, args[1:])
+	case "run":
+		return a.runCommand(ctx, args[1:])
 	case "operations":
 		return a.operationsCommand(ctx, args[1:])
+	case "__complete":
+		return a.completeCommand(ctx, args[1:])
 	default:
 		return usagef("unknown command %q", args[0])
 	}
@@ -140,6 +144,7 @@ Commands:
   options <capability> <operation> <field>  Show the valid values for an argument.
   describe <capability> <operation>         Show everything needed to build a request.
   validate <capability> <operation>         Validate a request without running it.
+  run <capability> <operation> [flags]      Run an operation; its flags come from its schema.
   operations [filters]                      List operations.
   operations show <id>                      Show one operation.
   operations cancel <id>                    Cancel an operation.
