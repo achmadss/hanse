@@ -39,6 +39,10 @@ type Runner struct {
 	// WorkRoot is where HANSE_WORK_DIR is created; empty means the
 	// operating system's temporary directory.
 	WorkRoot string
+	// Supervisor is the command prefix that starts the root supervisor
+	// mode of the node agent on POSIX systems. Empty means this
+	// executable with the `supervise` subcommand. Windows ignores it.
+	Supervisor []string
 }
 
 // Spec is one exec handler call: the request envelope, the entry command,
@@ -62,6 +66,13 @@ type Spec struct {
 	// Started, when not nil, runs once the handler process exists and its
 	// stdin has a writer, before the runner waits for it to exit.
 	Started func()
+	// Privileged runs the handler with administrator rights
+	// (docs/architecture.md section 8.5). On POSIX systems the runner
+	// starts it through sudo and the agent's root supervisor; on Windows
+	// it keeps the agent service's full rights. The handler receives
+	// HANSE_PRIVILEGED=1. The runner never receives the password: the
+	// agent checks it before the call.
+	Privileged bool
 	// Outcome, when not nil, receives how the process ended: its raw
 	// stdout, exit status, duration, and stop reason. It exists for a
 	// caller that must report the process status itself, such as the node
@@ -182,13 +193,35 @@ func (r *Runner) Run(ctx context.Context, spec Spec) (runtime.Response, error) {
 	}
 
 	argv := resolveEntry(spec.Dir, spec.Entry)
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Dir = spec.Dir
-	cmd.Env = buildEnv(spec.Request, workDir, cancelFile, envAllow)
+	plan := &launchPlan{
+		Entry:      argv,
+		Dir:        spec.Dir,
+		Env:        buildEnv(spec.Request, workDir, cancelFile, envAllow, spec.Privileged),
+		WorkDir:    workDir,
+		CancelFile: cancelFile,
+		Grace:      grace,
+	}
+	if spec.Privileged {
+		if err := preparePrivileged(r, plan); err != nil {
+			closeFiles(stdinR, stdinW, stdoutR, stdoutW, stderrR, stderrW)
+			return runtime.Response{}, err
+		}
+	}
+	cmd := exec.Command(plan.Entry[0], plan.Entry[1:]...)
+	cmd.Dir = plan.Dir
+	cmd.Env = plan.Env
 	cmd.Stdin = stdinR
 	cmd.Stdout = stdoutW
 	cmd.Stderr = stderrW
-	configureProcess(cmd)
+	opts, err := configureProcess(cmd, spec.Privileged)
+	if err != nil {
+		closeFiles(stdinR, stdinW, stdoutR, stdoutW, stderrR, stderrW)
+		return runtime.Response{}, herrors.New(herrors.HandlerStartFailed,
+			fmt.Sprintf("the handler process cannot be configured: %s", err), nil)
+	}
+	if opts != nil {
+		defer opts.close()
+	}
 
 	started := time.Now()
 
@@ -512,7 +545,7 @@ func resolveEntry(dir string, entry []string) []string {
 // buildEnv builds the handler environment of docs/handler-contract.md
 // section 4.2: the HANSE_* variables, the documented per-OS variables, and
 // only the allow-listed extra variables.
-func buildEnv(req *runtime.Request, workDir, cancelFile string, allow []string) []string {
+func buildEnv(req *runtime.Request, workDir, cancelFile string, allow []string, privileged bool) []string {
 	type entry struct {
 		name  string
 		value string
@@ -534,7 +567,11 @@ func buildEnv(req *runtime.Request, workDir, cancelFile string, allow []string) 
 	set("HANSE_CALL_ID", req.ID)
 	set("HANSE_WORK_DIR", workDir)
 	set("HANSE_CANCEL_FILE", cancelFile)
-	set("HANSE_PRIVILEGED", "0")
+	if privileged {
+		set("HANSE_PRIVILEGED", "1")
+	} else {
+		set("HANSE_PRIVILEGED", "0")
+	}
 	if path := os.Getenv("PATH"); path != "" {
 		set("PATH", path)
 	}

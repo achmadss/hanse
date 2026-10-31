@@ -151,17 +151,83 @@ type stack struct {
 	stateDir       string
 	configPath     string
 	process        *exec.Cmd
-	output         *bytes.Buffer
+	output         *syncBuffer
+}
+
+// syncBuffer is a byte buffer that is safe to read while the agent process
+// writes to it. The tests read the agent's output both while it runs and
+// after it stops.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+// Write appends to the buffer.
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+// String returns the output so far.
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // newStack builds the Gateway side, enrolls node-a with the real join
 // command, and starts the agent process.
 func newStack(t *testing.T) *stack {
 	t.Helper()
+	return newStackWithOptions(t, stackOptions{})
+}
+
+// stackOptions tweaks one stack for a focused test.
+type stackOptions struct {
+	// capabilities are extra capability directories the stack serves.
+	capabilities []stackCapability
+	// agentYAML is appended to agent.yaml, so a test can enable elevation
+	// or limit it.
+	agentYAML string
+	// env replaces the agent process's environment. Nil inherits the
+	// test's environment. A privileged test points PATH at a fake sudo.
+	env []string
+}
+
+// stackCapability is one capability directory the stack writes.
+type stackCapability struct {
+	id       string
+	manifest string
+	handler  string
+}
+
+// newStackWithOptions builds the Gateway side, enrolls node-a with the
+// real join command, and starts the agent process.
+func newStackWithOptions(t *testing.T, opts stackOptions) *stack {
+	t.Helper()
 	requireInterpreter(t)
 	root := filepath.Join("..", "..")
 	capsDir := filepath.Join(t.TempDir(), "capabilities")
 	copyTree(t, filepath.Join(root, "capabilities", "echo"), filepath.Join(capsDir, "echo"))
+	routes := map[string]registry.CapabilityRoute{
+		"echo": {Executors: []string{"node-a"}, DefaultExecutor: "node-a"},
+	}
+	for _, capability := range opts.capabilities {
+		dir := filepath.Join(capsDir, capability.id)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create capability directory: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte(capability.manifest), 0o644); err != nil {
+			t.Fatalf("write manifest: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "handler.sh"), []byte(capability.handler), 0o644); err != nil {
+			t.Fatalf("write handler: %v", err)
+		}
+		routes[capability.id] = registry.CapabilityRoute{
+			Executors: []string{"node-a"}, DefaultExecutor: "node-a",
+		}
+	}
 
 	reg, warnings, err := registry.Load(registry.Options{
 		Dirs: []string{capsDir},
@@ -170,9 +236,7 @@ func newStack(t *testing.T) *stack {
 				ID: "node-a", OS: goruntime.GOOS, Arch: goruntime.GOARCH,
 				Roles: []string{"server"}, Enabled: true,
 			}},
-			Routes: registry.Routes{Capabilities: map[string]registry.CapabilityRoute{
-				"echo": {Executors: []string{"node-a"}, DefaultExecutor: "node-a"},
-			}},
+			Routes: registry.Routes{Capabilities: routes},
 		},
 	})
 	if err != nil {
@@ -230,7 +294,7 @@ func newStack(t *testing.T) *stack {
 	}
 	if err := os.WriteFile(st.configPath, []byte(fmt.Sprintf(
 		"version: 1\nstate_dir: %s\nmax_concurrent_runs: 4\nlog:\n  level: info\n  format: text\n",
-		st.stateDir)), 0o600); err != nil {
+		st.stateDir)+opts.agentYAML), 0o600); err != nil {
 		t.Fatalf("write agent.yaml: %v", err)
 	}
 	token, err := service.IssueJoinToken("node-a")
@@ -239,8 +303,11 @@ func newStack(t *testing.T) *stack {
 	}
 	st.runCommand(t, "join", server.URL, token.Plain, "--state-dir", st.stateDir, "--config", st.configPath)
 
-	st.output = &bytes.Buffer{}
+	st.output = &syncBuffer{}
 	st.process = exec.Command(nodeBinary, "run", "--config", st.configPath)
+	if opts.env != nil {
+		st.process.Env = opts.env
+	}
 	st.process.Stdout = st.output
 	st.process.Stderr = st.output
 	if err := st.process.Start(); err != nil {
@@ -282,17 +349,25 @@ func (s *stack) runCommand(t *testing.T, args ...string) string {
 // call runs one operation through the Gateway's hub.
 func (s *stack) call(ctx context.Context, t *testing.T, runID, operation string, arguments map[string]any) (runtime.Response, error) {
 	t.Helper()
-	capability, ok := s.reg.Capability("echo")
+	return s.callWith(ctx, t, "echo", runID, operation, arguments, "")
+}
+
+// callWith runs one operation of one capability through the Gateway's hub.
+// A non-empty password marks a privileged call and travels to the agent
+// only in the run message.
+func (s *stack) callWith(ctx context.Context, t *testing.T, capID, runID, operation string, arguments map[string]any, password string) (runtime.Response, error) {
+	t.Helper()
+	capability, ok := s.reg.Capability(capID)
 	if !ok {
-		t.Fatal("the echo capability is not loaded")
+		t.Fatalf("capability %q is not loaded", capID)
 	}
 	op, ok := capability.Operation(operation)
 	if !ok {
-		t.Fatalf("echo has no operation %q", operation)
+		t.Fatalf("%s has no operation %q", capID, operation)
 	}
 	entry := op.Entry[goruntime.GOOS]
 	if len(entry) == 0 {
-		t.Skipf("the echo capability has no entry command for %s", goruntime.GOOS)
+		t.Skipf("the %s capability has no entry command for %s", capID, goruntime.GOOS)
 	}
 	deadline := time.Now().Add(5 * time.Minute).UTC().Format("2006-01-02T15:04:05.000Z")
 	argumentsJSON, err := json.Marshal(arguments)
@@ -303,7 +378,7 @@ func (s *stack) call(ctx context.Context, t *testing.T, runID, operation string,
 		"contract":   runtime.ContractV1,
 		"kind":       runtime.KindOperation,
 		"id":         runID,
-		"capability": "echo",
+		"capability": capID,
 		"operation":  operation,
 		"arguments":  json.RawMessage(argumentsJSON),
 		"nodes":      map[string]any{},
@@ -320,11 +395,13 @@ func (s *stack) call(ctx context.Context, t *testing.T, runID, operation string,
 	return s.hub.Execute(ctx, &agentconn.Call{
 		RunID:       runID,
 		Node:        "node-a",
-		Capability:  "echo",
+		Capability:  capID,
 		Operation:   operation,
 		Bundle:      capability.BundleHash,
 		Entry:       entry,
 		Request:     envelope,
+		Privileged:  op.Privileged,
+		Password:    password,
 		GracePeriod: 10 * time.Second,
 	})
 }

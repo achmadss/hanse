@@ -114,6 +114,10 @@ func TestRunnerHelper(_ *testing.T) {
 		for {
 			time.Sleep(time.Second)
 		}
+	case "rights":
+		helperReadRequest()
+		helperReportRights()
+		helperOK()
 	case "grandchild":
 		time.Sleep(800 * time.Millisecond)
 		marker := os.Getenv(helperMarkerEnv)

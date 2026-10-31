@@ -93,6 +93,16 @@ type Config struct {
 	BufferLimit int64
 	// EnvAllow lists extra environment variables passed to handlers.
 	EnvAllow []string
+	// Elevation holds the node's privileged-operation settings
+	// (docs/configuration.md section 7.1).
+	Elevation Elevation
+	// VerifyCredential checks one elevation password. Nil uses the
+	// platform check. Tests inject a fake so no real password is needed.
+	VerifyCredential func(account, password string) error
+	// SupervisorCommand is the command prefix that starts the root
+	// supervisor of a privileged POSIX run. Nil means this executable
+	// with the `supervise` subcommand. Windows ignores it.
+	SupervisorCommand []string
 	// AgentVersion is reported in hello. Empty means version.Version.
 	AgentVersion string
 	// OS and Arch are reported in hello. Empty means the running binary's
@@ -140,6 +150,9 @@ type Agent struct {
 	journal *journal
 	tls     *tls.Config
 	workDir string
+	// elevation decides every privileged run (docs/architecture.md
+	// section 8.5).
+	elevation *elevationGate
 
 	mu       sync.Mutex
 	runs     map[string]*run
@@ -236,10 +249,11 @@ func New(cfg Config) (*Agent, error) {
 			Client:           cfg.HTTPClient,
 			MaxUnpackedBytes: cfg.MaxUnpackedBytes,
 		},
-		journal: j,
-		tls:     tlsConfig,
-		workDir: workDir,
-		runs:    map[string]*run{},
+		journal:   j,
+		tls:       tlsConfig,
+		workDir:   workDir,
+		elevation: newElevationGate(cfg.Elevation, cfg.Now, cfg.VerifyCredential),
+		runs:      map[string]*run{},
 	}, nil
 }
 

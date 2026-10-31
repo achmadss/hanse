@@ -20,11 +20,23 @@ type processTree struct {
 
 // configureProcess starts the handler suspended, so the job object is
 // assigned before the handler can start any child, and in its own process
-// group.
-func configureProcess(cmd *exec.Cmd) {
+// group. An ordinary handler gets a restricted copy of the agent's token,
+// in which the Administrators group is deny-only and every privilege is
+// removed (docs/architecture.md section 8.4). A privileged handler keeps
+// the service's full rights, so Windows shows no UAC prompt.
+func configureProcess(cmd *exec.Cmd, privileged bool) (*processOptions, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: windows.CREATE_SUSPENDED | windows.CREATE_NEW_PROCESS_GROUP,
 	}
+	if privileged {
+		return nil, nil
+	}
+	token, err := restrictedToken()
+	if err != nil {
+		return nil, err
+	}
+	cmd.SysProcAttr.Token = syscall.Token(token)
+	return &processOptions{token: token}, nil
 }
 
 // newProcessTree creates the job object. Closing the handle kills every
