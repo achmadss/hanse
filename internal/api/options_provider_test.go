@@ -72,10 +72,14 @@ func TestExecOptionProvider(t *testing.T) {
 			OS:   goruntime.GOOS,
 			Arch: goruntime.GOARCH,
 		},
-		Registry:       reg,
-		ResponseLimit:  1 << 20,
-		GracePeriod:    time.Second,
-		OptionsTimeout: 5 * time.Second,
+		Registry:      reg,
+		ResponseLimit: 1 << 20,
+		GracePeriod:   time.Second,
+		// A Windows runner can take several seconds to start `sh` for the
+		// echo handler, so the option provider deadline is generous: the
+		// test proves the exec provider runs, not how fast a process
+		// starts.
+		OptionsTimeout: 30 * time.Second,
 		WorkRoot:       t.TempDir(),
 	})
 	if err != nil {

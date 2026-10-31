@@ -8,7 +8,11 @@ agent's WebSocket connection, over HTTPS.
 The values here are placeholders: `gateway.example.com` for the host name
 and `192.0.2.10` for the Gateway host.
 
-## 1. Put the Gateway on a loopback address
+## 1. Put the Gateway behind the proxy
+
+Choose one of the two layouts below.
+
+### Proxy on the same host: loopback
 
 The proxy and the Gateway run on the same host, so the Gateway listens on a
 loopback address and lets Caddy terminate TLS
@@ -22,7 +26,33 @@ allow_insecure_http: false
 
 A loopback `listen` address needs no `allow_insecure_http`. Set that flag
 only when the Gateway must listen on a non-loopback address without TLS,
-which this guide does not do.
+which this layout does not do.
+
+### Proxy on another host: a private address
+
+When the proxy runs on another machine, the Gateway must accept plain HTTP
+on a network address. That is the one case where `allow_insecure_http: true`
+is correct:
+
+```yaml
+# gateway.yaml
+listen: 192.0.2.10:8443
+allow_insecure_http: true
+public_url: https://gateway.example.com
+```
+
+Restrict the listener to the proxy, so no other host can reach the plain-HTTP
+port. With a firewall that allows only the proxy's address:
+
+```console
+$ sudo nft add rule inet filter input tcp dport 8443 \
+    ip saddr != 192.0.2.11 drop
+```
+
+Keep `allow_insecure_http: true` on that private, proxy-only network and
+nowhere else. A Gateway that listens on a public address without TLS hands
+credentials and arguments to anyone on the path, because the node credential
+and the API token travel in plain text.
 
 The agent protocol requires `https` URLs; an agent may use `http` only for a
 loopback host in tests (docs/agent-protocol.md section 1).
@@ -51,6 +81,7 @@ That single block covers all of these routes:
 
 | Route | Transport | Used by |
 |---|---|---|
+| `GET /healthz`, `GET /readyz` | HTTPS + text | Health probes |
 | `GET /v1/version`, `/v1/capabilities`, `/v1/nodes`, `/v1/operations` | HTTPS + JSON | Clients and discovery |
 | `POST /v1/operations`, `/v1/operations/{id}/cancel` | HTTPS + JSON | Clients |
 | `POST /v1/agent/join` | HTTPS + JSON | Enrollment |
@@ -62,6 +93,40 @@ That single block covers all of these routes:
 credential, not with a user API token. The Gateway therefore serves them
 outside the user-token middleware; the proxy must not add authentication of
 its own in front of them, or the agent cannot connect.
+
+`GET /healthz` and `GET /readyz` also need no token. A proxy health check can
+use them, but they must not be cached: the Gateway answers them with
+`Cache-Control: no-store`. See
+[Health and readiness endpoints](health.md).
+
+### The proxy must pass WebSocket connections
+
+The node agent is reachable only through
+`GET /v1/agent/connect`, and that route is a WebSocket upgrade on HTTPS. Any
+proxy in front of the Gateway must:
+
+- forward `Connection: Upgrade` and `Upgrade: websocket` for
+  `/v1/agent/connect`,
+- keep the connection open for as long as both sides use it, and
+- stream bytes both ways without buffering the response.
+
+Caddy 2 does all three by default. Other proxies need an explicit setting; an
+nginx location, for example, needs the upgrade header map:
+
+```nginx
+location = /v1/agent/connect {
+    proxy_pass http://127.0.0.1:8443;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 1h;
+    proxy_buffering off;
+}
+```
+
+A proxy that strips the upgrade headers answers the agent with an ordinary
+`200` or `400` response instead of `101`, and the node never comes online.
+See [Verify the proxy](#4-verify-the-proxy).
 
 ### Certificate trusted only by the nodes
 
@@ -105,6 +170,15 @@ Check the discovery endpoint through the proxy:
 
 ```console
 $ curl --fail --silent https://gateway.example.com/v1/version
+```
+
+Check the probes. Both need no token and answer through the proxy:
+
+```console
+$ curl --fail --silent https://gateway.example.com/healthz
+ok
+$ curl --fail --silent https://gateway.example.com/readyz
+ready
 ```
 
 Check the agent route without a credential. The Gateway answers `401`

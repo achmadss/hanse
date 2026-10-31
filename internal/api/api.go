@@ -50,6 +50,8 @@ func newServer(reg *registry.Registry, ops *operations.Manager, enr *enroll.Serv
 		option(s)
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", s.healthz)
+	mux.HandleFunc("GET /readyz", s.readyz)
 	mux.HandleFunc("GET /v1/version", s.getVersion)
 	mux.HandleFunc("GET /v1/capabilities", s.listCapabilities)
 	mux.HandleFunc("GET /v1/capabilities/{id}", s.getCapability)
@@ -108,6 +110,9 @@ type server struct {
 	// optionProviders are the handler-backed option providers of the
 	// capabilities this Gateway loaded.
 	optionProviders OptionProviders
+	// ready reports whether the Gateway can serve API traffic. Nil means
+	// not ready; the /readyz route then answers 503.
+	ready func() bool
 }
 
 // connectAgent answers GET /v1/agent/connect: the hub authenticates the

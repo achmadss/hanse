@@ -1,15 +1,17 @@
-// Command hanse-gateway is the Hanse Gateway server. This is a skeleton
-// entry point; it checks its configuration with --check-config and only
-// reports its version and usage otherwise. The server itself is not
-// implemented yet.
+// Command hanse-gateway is the Hanse Gateway server. It runs the Gateway,
+// validates its configuration with --check-config, and manages API tokens
+// and node enrollment with its token and node subcommands.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 
 	"github.com/achmadss/hanse/internal/config"
 	"github.com/achmadss/hanse/internal/version"
@@ -76,18 +78,35 @@ func run(args []string, stdout, stderr io.Writer) int {
 		printf(stdout, "hanse-gateway %s\n", version.Version)
 		return exitOK
 	}
-	if !checkConfig {
-		usage(stderr, fs)
-		return exitUse
+	if checkConfig {
+		return runCheckConfig(stdout, stderr, configPath)
 	}
-	return runCheckConfig(stdout, stderr, configPath)
+	return runServe(stderr, configPath)
+}
+
+// runServe runs the Gateway until it receives SIGINT or SIGTERM, then shuts
+// it down gracefully. A configuration problem, an unsafe transport, or a
+// store or registry failure keeps the server from starting at all.
+func runServe(stderr io.Writer, path string) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	g, err := startGateway(ctx, path, startOptions{stderr: stderr})
+	if err != nil {
+		printf(stderr, "hanse-gateway: %v\n", err)
+		return exitFail
+	}
+	if err := <-g.Done(); err != nil {
+		printf(stderr, "hanse-gateway: %v\n", err)
+		return exitFail
+	}
+	return exitOK
 }
 
 // runCheckConfig validates the configuration and prints every problem,
 // one per line, naming the file path and the field. It never starts a
 // server.
 func runCheckConfig(stdout, stderr io.Writer, path string) int {
-	cfg, problems, err := config.Load(path)
+	_, problems, err := config.Load(path)
 	if err != nil {
 		printf(stderr, "hanse-gateway: %v\n", err)
 		return exitFail
@@ -100,14 +119,13 @@ func runCheckConfig(stdout, stderr io.Writer, path string) int {
 		return exitFail
 	}
 	printf(stdout, "%s: configuration is valid\n", path)
-	// The server is not implemented yet; the configuration only parses
-	// and validates here.
-	_ = cfg
 	return exitOK
 }
 
 func usage(w io.Writer, fs *flag.FlagSet) {
-	printf(w, "usage: hanse-gateway [--version] [--check-config] [--config <path>]\n")
+	printf(w, "usage: hanse-gateway [--config <path>]\n")
+	printf(w, "       hanse-gateway --version\n")
+	printf(w, "       hanse-gateway --check-config [--config <path>]\n")
 	printf(w, "       hanse-gateway token add <name> [--allow <cap.op>,...] [--config <path>]\n")
 	printf(w, "       hanse-gateway token list [--config <path>]\n")
 	printf(w, "       hanse-gateway token revoke <name> [--config <path>]\n")
