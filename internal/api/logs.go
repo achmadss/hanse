@@ -35,10 +35,11 @@ type logStatusView struct {
 }
 
 // getOperationLogs answers GET /v1/operations/{id}/logs. Without follow it
-// returns every stored line as JSON; with `follow=true` it streams the
-// lines as Server-Sent Events and closes after a final status event
-// (docs/architecture.md section 10). The Last-Event-ID header resumes at the
-// line after the given sequence number, for both forms.
+// returns every stored line as JSON; with `stream=true` it sends the same
+// lines as Server-Sent Events and closes after a final status event; with
+// `follow=true` it streams the lines live and closes after a final status
+// event (docs/architecture.md section 10). The Last-Event-ID header resumes
+// at the line after the given sequence number, for every form.
 func (s *server) getOperationLogs(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.identity(w, r)
 	if !ok {
@@ -68,6 +69,10 @@ func (s *server) getOperationLogs(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
+		if r.URL.Query().Get("stream") == "true" {
+			streamStoredLogs(w, rec, entries)
+			return
+		}
 		out := logsResponse{Logs: make([]logView, 0, len(entries))}
 		for _, entry := range entries {
 			out.Logs = append(out.Logs, logViewOf(entry))
@@ -76,6 +81,37 @@ func (s *server) getOperationLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.followOperationLogs(w, r, ops, rec, after)
+}
+
+// streamStoredLogs writes the stored lines as Server-Sent Events and closes
+// the stream with the operation's current status. Unlike a followed log it
+// does not wait for new lines, so a client can read a log of any size
+// without a single response carrying all of it (docs/architecture.md
+// section 10).
+func streamStoredLogs(w http.ResponseWriter, rec operations.Record, entries []operations.LogEntry) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, herrors.New(herrors.Internal,
+			"the response writer cannot stream Server-Sent Events", nil))
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+	for _, entry := range entries {
+		data, err := json.Marshal(logViewOf(entry))
+		if err != nil {
+			return
+		}
+		if err := writeLogEvent(w, entry.Seq, "log", data); err != nil {
+			return
+		}
+		flusher.Flush()
+	}
+	sendLogStatus(w, flusher, rec)
 }
 
 // followOperationLogs streams one operation's log. It subscribes before it

@@ -115,6 +115,14 @@ func (c *Client) Logs(ctx context.Context, operationID string, after int64) (Ope
 	return out, err
 }
 
+// The query values that select a log read (docs/architecture.md section
+// 10). follow keeps the stream open until the operation ends; stream sends
+// the stored lines and closes at once.
+const (
+	logsQueryFollow = "follow"
+	logsQueryStored = "stream"
+)
+
 // FollowLogs streams GET /v1/operations/{id}/logs?follow=true and calls
 // handle for every event, in sequence order and with no duplicate and no
 // gap. It returns when the operation ends (the status event) or when ctx is
@@ -123,6 +131,22 @@ func (c *Client) Logs(ctx context.Context, operationID string, after int64) (Ope
 // unknown operation or a rejected token, returns at once. Errors from handle
 // stop the stream, so a failed write is not retried.
 func (c *Client) FollowLogs(ctx context.Context, operationID string, after int64, handle func(LogEvent) error) error {
+	return c.logStream(ctx, operationID, after, logsQueryFollow, handle)
+}
+
+// StreamLogs reads the stored lines of one operation through
+// GET /v1/operations/{id}/logs?stream=true and calls handle for every line.
+// The Gateway sends the lines as Server-Sent Events and closes the stream
+// after a status event, so a log larger than the JSON response cap arrives
+// whole and a running operation is not waited for. A reconnect after a
+// dropped connection resumes with the Last-Event-ID header, as a followed
+// log does.
+func (c *Client) StreamLogs(ctx context.Context, operationID string, after int64, handle func(LogEvent) error) error {
+	return c.logStream(ctx, operationID, after, logsQueryStored, handle)
+}
+
+// logStream runs one log read in the given query form.
+func (c *Client) logStream(ctx context.Context, operationID string, after int64, mode string, handle func(LogEvent) error) error {
 	if handle == nil {
 		handle = func(LogEvent) error { return nil }
 	}
@@ -135,7 +159,7 @@ func (c *Client) FollowLogs(ctx context.Context, operationID string, after int64
 	var giveUp time.Time
 	var lastErr error
 	for {
-		out, err := c.followStream(ctx, operationID, last, handle)
+		out, err := c.logStreamOnce(ctx, operationID, last, mode, handle)
 		last = out.last
 		if err != nil {
 			var fatal *fatalFollow
@@ -182,7 +206,7 @@ func (c *Client) FollowLogs(ctx context.Context, operationID string, after int64
 	}
 }
 
-// followOutcome reports what one connection of FollowLogs did. connected
+// followOutcome reports what one connection of a log read did. connected
 // means the Gateway accepted the request; healthy means the stream carried
 // at least one line, which a keepalive comment alone already does.
 type followOutcome struct {
@@ -192,16 +216,16 @@ type followOutcome struct {
 	last      int64
 }
 
-// followStream runs one connection of FollowLogs. It resumes after
+// logStreamOnce runs one connection of a log read. It resumes after
 // out.last, and it reports the newest sequence number it saw so a retry
 // never repeats a line.
-func (c *Client) followStream(ctx context.Context, operationID string, after int64, handle func(LogEvent) error) (followOutcome, error) {
+func (c *Client) logStreamOnce(ctx context.Context, operationID string, after int64, mode string, handle func(LogEvent) error) (followOutcome, error) {
 	out := followOutcome{last: after}
 	endpoint, err := c.endpoint([]string{"v1", "operations", operationID, "logs"})
 	if err != nil {
 		return out, fatalFollowOf(err)
 	}
-	query := url.Values{"follow": {"true"}}
+	query := url.Values{mode: {"true"}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+query.Encode(), nil)
 	if err != nil {
 		return out, fatalFollowOf(herrors.New(herrors.Internal,
@@ -229,6 +253,13 @@ func (c *Client) followStream(ctx context.Context, operationID string, after int
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 		return out, errorFromResponse(resp.StatusCode, body)
+	}
+	if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "text/event-stream") {
+		// A Gateway that ignores the query would answer with JSON, so a
+		// caller must get one clear error instead of a five-minute wait.
+		return out, fatalFollowOf(herrors.New(herrors.Internal,
+			fmt.Sprintf("the Gateway at %s did not stream the log (content type %q)",
+				c.baseURL.Redacted(), contentType), nil))
 	}
 	out.connected = true
 

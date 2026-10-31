@@ -71,7 +71,18 @@ func newLogsGateway(t *testing.T) (*httptest.Server, *logsGateway) {
 // serveLogs answers the stored log, or one connection of a followed log.
 func (g *logsGateway) serveLogs(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/operations/"), "/logs")
-	if r.URL.Query().Get("follow") != "true" {
+	query := r.URL.Query()
+	if query.Get("follow") != "true" && query.Get("stream") == "true" {
+		// The non-follow read of the CLI uses the event stream, so a log
+		// larger than the JSON response cap still arrives whole.
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		writeFixtureSSE(w, 1, "log", `{"seq":1,"ts":"2026-10-31T08:00:01Z","stream":"system","line":"executor resolved: node-a"}`)
+		writeFixtureSSE(w, 2, "log", `{"seq":2,"ts":"2026-10-31T08:00:02Z","stream":"stderr","line":"waking node-c"}`)
+		writeFixtureSSE(w, 0, "status", fmt.Sprintf(`{"operation_id":%q,"status":"completed"}`, id))
+		return
+	}
+	if query.Get("follow") != "true" {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(fixtureLogsBody))
 		return
@@ -378,6 +389,77 @@ func TestLogsFollowInterrupted(t *testing.T) {
 	gw.mu.Unlock()
 	if cancels != 0 {
 		t.Errorf("logs -f: %d cancel requests, want none", cancels)
+	}
+}
+
+// TestLogsStoredLargerThanResponseCap prints a stored log larger than the
+// client's 8 MiB response cap. The JSON form of the endpoint would exceed
+// the cap, so the command reads the event stream instead
+// (docs/architecture.md section 10).
+func TestLogsStoredLargerThanResponseCap(t *testing.T) {
+	const (
+		lineCount = 600
+		lineBytes = 16 << 10
+		capBytes  = 8 << 20
+	)
+	line := strings.Repeat("x", lineBytes)
+	var stored strings.Builder
+	stored.WriteString(`{"logs":[`)
+	for i := 1; i <= lineCount; i++ {
+		if i > 1 {
+			stored.WriteByte(',')
+		}
+		fmt.Fprintf(&stored,
+			`{"seq":%d,"ts":"2026-10-31T08:00:01Z","stream":"stderr","line":%q}`, i, line)
+	}
+	stored.WriteString(`]}`)
+	if stored.Len() <= capBytes {
+		t.Fatalf("the fixture log has %d bytes, want more than the %d byte cap", stored.Len(), capBytes)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+testToken {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"code":"authentication_failed","message":"the token is wrong"}`))
+			return
+		}
+		switch {
+		case r.URL.Path == "/v1/version":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(fixtureVersionBody))
+		case strings.HasSuffix(r.URL.Path, "/logs"):
+			if r.URL.Query().Get("stream") != "true" {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(stored.String()))
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			for i := 1; i <= lineCount; i++ {
+				writeFixtureSSE(w, int64(i), "log", fmt.Sprintf(
+					`{"seq":%d,"ts":"2026-10-31T08:00:01Z","stream":"stderr","line":%q}`, i, line))
+			}
+			writeFixtureSSE(w, 0, "status", `{"operation_id":"op_big","status":"completed"}`)
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"code":"unknown_operation","message":"operation does not exist"}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	configPath := filepath.Join(t.TempDir(), "hanse", "config.json")
+	writeTestConfig(t, configPath, srv.URL, testToken)
+
+	stdout, stderr, code := runCLI(t, []string{"logs", "op_big"}, configPath)
+	if code != 0 {
+		t.Fatalf("logs: exit code %d, stderr %s", code, stderr)
+	}
+	if len(stdout) <= capBytes {
+		t.Errorf("printed %d bytes, want the whole %d byte log", len(stdout), stored.Len())
+	}
+	if got := strings.Count(stdout, "stderr: "); got != lineCount {
+		t.Errorf("printed %d lines, want %d", got, lineCount)
 	}
 }
 

@@ -157,9 +157,9 @@ func followServer(t *testing.T, attempt func(n int, lastEventID string, w http.R
 			_, _ = w.Write([]byte(`{"code":"authentication_failed","message":"the token is wrong"}`))
 			return
 		}
-		if r.URL.Query().Get("follow") != "true" {
+		if r.URL.Query().Get("follow") != "true" && r.URL.Query().Get("stream") != "true" {
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"code":"invalid_arguments","message":"the fixture follows only"}`))
+			_, _ = w.Write([]byte(`{"code":"invalid_arguments","message":"the fixture streams only"}`))
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -191,6 +191,94 @@ func logStreamLine(seq int64, line string) string {
 // logStreamStatus renders one final status event body.
 func logStreamStatus(operationID, status, extra string) string {
 	return fmt.Sprintf(`{"operation_id":%q,"status":%q%s}`, operationID, status, extra)
+}
+
+// TestStreamLogs reads the stored lines through the stream form of the log
+// endpoint, which the CLI uses so a log larger than the JSON response cap
+// arrives whole.
+func TestStreamLogs(t *testing.T) {
+	srv := followServer(t, func(_ int, _ string, w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("stream"); got != "true" {
+			t.Errorf("stream query %q, want true", got)
+		}
+		writeSSE(w, 1, EventLog, logStreamLine(1, "first"))
+		writeSSE(w, 2, EventLog, logStreamLine(2, "second"))
+		writeSSE(w, 0, EventStatus, logStreamStatus("op_01J9Z3", "completed", ""))
+	})
+	c := newTestClient(t, srv)
+
+	var lines []string
+	err := c.StreamLogs(context.Background(), "op_01J9Z3", 0, func(event LogEvent) error {
+		if event.Event == EventLog {
+			lines = append(lines, event.Entry.Line)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if strings.Join(lines, ",") != "first,second" {
+		t.Errorf("stream: lines %v, want [first second]", lines)
+	}
+}
+
+// TestStreamLogsReconnect requires a dropped stored read to resume with
+// Last-Event-ID, so a proxy timeout does not lose lines.
+func TestStreamLogsReconnect(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		headers []string
+	)
+	srv := followServer(t, func(n int, lastEventID string, w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		headers = append(headers, lastEventID)
+		mu.Unlock()
+		if n == 1 {
+			writeSSE(w, 1, EventLog, logStreamLine(1, "first"))
+			return
+		}
+		writeSSE(w, 1, EventLog, logStreamLine(1, "first"))
+		writeSSE(w, 2, EventLog, logStreamLine(2, "second"))
+		writeSSE(w, 0, EventStatus, logStreamStatus("op_01J9Z3", "completed", ""))
+	})
+	c := newTestClient(t, srv)
+	c.follow = followTuning{
+		initialBackoff: time.Millisecond,
+		maxBackoff:     5 * time.Millisecond,
+		retryWindow:    time.Second,
+		now:            time.Now,
+	}
+
+	var lines []string
+	err := c.StreamLogs(context.Background(), "op_01J9Z3", 0, func(event LogEvent) error {
+		if event.Event == EventLog {
+			lines = append(lines, event.Entry.Line)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if strings.Join(lines, ",") != "first,second" {
+		t.Errorf("stream: lines %v, want [first second]", lines)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(headers) != 2 || headers[0] != "" || headers[1] != "1" {
+		t.Errorf("stream: Last-Event-ID values %v, want [\"\" \"1\"]", headers)
+	}
+}
+
+// TestStreamLogsRejectsJSON requires a clear error when a Gateway ignores
+// the stream form and answers with the JSON body.
+func TestStreamLogsRejectsJSON(t *testing.T) {
+	srv := newTestServer(t, map[string]http.HandlerFunc{
+		"/v1/operations/op_01J9Z3/logs": jsonRoute(`{"logs":[]}`),
+	})
+	err := newTestClient(t, srv).StreamLogs(context.Background(), "op_01J9Z3", 0, nil)
+	if err == nil || !strings.Contains(err.Error(), "did not stream the log") {
+		t.Fatalf("stream: error %v, want the content type error", err)
+	}
 }
 
 // TestFollowLogs covers a stream that ends with the completed status.

@@ -165,6 +165,46 @@ func TestLogsEndpoint(t *testing.T) {
 	}
 }
 
+// TestStreamLogsEndpoint reads the stored log through the stream form,
+// which carries a log of any size and ends with the operation's status.
+func TestStreamLogsEndpoint(t *testing.T) {
+	fixture := newExecutionFixture(t)
+	server := logServer(t, fixture)
+	body := `{"capability":"echo","operation":"say","arguments":{"message":"hello"}}`
+	resp, payload := call(t, fixture.handler, fixture.token, http.MethodPost, "/v1/operations", body, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("submit: status %d, body %s", resp.StatusCode, payload)
+	}
+	view := decodeOperation(t, payload)
+
+	resp = getLogs(t, server, fixture.token, "/v1/operations/"+view.ID+"/logs?stream=true", nil)
+	logEvents, status := splitLogEvents(t, readSSE(t, resp))
+	if len(logEvents) < 3 {
+		t.Fatalf("stream sent %d lines, want the executor, start, and exit entries", len(logEvents))
+	}
+	for i, event := range logEvents {
+		if event.ID != int64(i+1) {
+			t.Errorf("event %d has sequence %d, want %d", i, event.ID, i+1)
+		}
+	}
+	var final logStatusView
+	if err := json.Unmarshal([]byte(status.Data), &final); err != nil {
+		t.Fatalf("decode status event %q: %v", status.Data, err)
+	}
+	if final.Status != "completed" || final.OperationID != view.ID {
+		t.Errorf("status event %+v, want the completed operation", final)
+	}
+
+	// The Last-Event-ID header resumes the streamed read as well.
+	resp = getLogs(t, server, fixture.token, "/v1/operations/"+view.ID+"/logs?stream=true",
+		map[string]string{"Last-Event-ID": "2"})
+	resumed, _ := splitLogEvents(t, readSSE(t, resp))
+	if len(resumed) != len(logEvents)-2 || resumed[0].ID != 3 {
+		t.Errorf("resume after 2 sent %d lines starting at %d, want %d lines starting at 3",
+			len(resumed), resumed[0].ID, len(logEvents)-2)
+	}
+}
+
 // TestFollowLogsLive covers the first acceptance criterion over HTTP: a
 // follower that joins a running operation gets the earlier lines from the
 // backlog and then the live lines, with no gap and no duplicate, and the
