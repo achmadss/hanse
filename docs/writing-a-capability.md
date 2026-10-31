@@ -347,9 +347,9 @@ capabilities:
 
 This allows only the Gateway host node to run `audit`, and makes it the default. The embedded agent is always online, so the tutorial needs no second agent. To run on enrolled nodes instead, list them and set one as `default_executor` ([configuration](configuration.md#5-routesyaml)).
 
-Routes are read when the Gateway starts. `POST /v1/capabilities/reload`, and the reload that `hanse capabilities install` performs, rescan the capability directories; they do not re-read `routes.yaml`. Add the route before you start the Gateway, or restart the Gateway after this edit.
+The Gateway reads `routes.yaml` and `nodes.yaml` at startup, and a reload re-reads both files as well as the capability directories. `hanse capabilities install` performs that reload, so the route and the new capability become live together, with no restart.
 
-If your `nodes.yaml` does not give `node-a` an address and attributes, you can add them while the Gateway is stopped. The `audit node` example below uses these values:
+If your `nodes.yaml` does not give `node-a` an address and attributes, add them before you install. The reload reads `nodes.yaml` too. The `audit node` example below uses these values:
 
 ```yaml
 version: 1
@@ -379,14 +379,13 @@ hanse-gateway --config gateway.yaml --check-config
 gateway.yaml: configuration is valid
 ```
 
-Restart the Gateway from the quickstart so that it reads the new route, then install the package. Stop the old process first if it is still running:
+Install the package:
 
 ```sh
-hanse-gateway --config gateway.yaml &
 hanse capabilities install ./audit --config ./gateway.yaml --yes
 ```
 
-The install command reads `paths.capabilities` from `gateway.yaml`, copies the package into the first entry, and asks the Gateway to reload. `--yes` skips the confirmation prompt and is required when stdin is not a terminal. The output is:
+The install command reads `paths.capabilities` from `gateway.yaml`, copies the package into the first entry, and asks the Gateway to reload. The reload rescans the capability directories and re-reads `routes.yaml` and `nodes.yaml`, so the new route is live without a restart. `--yes` skips the confirmation prompt and is required when stdin is not a terminal. The output is:
 
 ```text
 Capability: audit
@@ -401,7 +400,9 @@ Installed capability "audit" in capabilities/audit.
 Reloaded the Gateway: 1 capabilities.
 ```
 
-The CLI reloads with the login from `hanse login`. When the CLI is not logged in or the Gateway is unreachable, it warns that the change takes effect after a reload or restart instead. In that case, copy the directory into `capabilities/` by hand and restart the Gateway.
+The CLI reloads with the login from `hanse login`. When the CLI is not logged in or the Gateway is unreachable, it warns that the change takes effect after a reload or restart instead. In that case, copy the directory into `capabilities/` by hand and send the Gateway `SIGHUP`.
+
+To pick up a later `routes.yaml` or `nodes.yaml` edit without installing anything, reload the Gateway the same way: send it `SIGHUP` (`kill -HUP <pid>`), or call `POST /v1/capabilities/reload`.
 
 Check that the Gateway sees the capability:
 
@@ -564,6 +565,7 @@ Finally, trigger the handler's own error. Pass a file instead of a directory:
 
 ```sh
 hanse run audit files --path "$PWD/demo-data/notes.txt"
+echo "exit code: $?"
 ```
 
 ```text
@@ -582,10 +584,11 @@ Finished:         2026-10-31T02:25:04Z
 Error:
   Code:     not_a_directory
   Message:  /home/you/hanse-demo/demo-data/notes.txt is not a directory
-hanse: internal: /home/you/hanse-demo/demo-data/notes.txt is not a directory
+hanse: handler_failed: /home/you/hanse-demo/demo-data/notes.txt is not a directory
+exit code: 33
 ```
 
-The CLI exits with code `1` because the operation failed. The handler's code and message stay in the operation's error.
+The CLI exits with code `33` (`handler_failed`). The operation's error keeps the handler's own code, `not_a_directory`, with its message and details.
 
 ## 7. Change it
 
