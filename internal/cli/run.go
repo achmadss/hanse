@@ -41,8 +41,12 @@ var runValueFlags = map[string]bool{
 type runFollow func(ctx context.Context, c *client.Client, operation string) error
 
 // errWaitInterrupted reports that Ctrl+C stopped the wait. The operation
-// keeps running.
+// keeps running, and Run turns the error into exit code 130.
 var errWaitInterrupted = errors.New("the wait was interrupted")
+
+// interruptExitCode is 128+SIGINT, the shell convention for a command the
+// user stopped. docs/architecture.md section 14 keeps 130 free for it.
+const interruptExitCode = 130
 
 // runCommand implements run <capability> <operation>. The argument flags
 // come from the operation's schema at run time
@@ -71,20 +75,22 @@ func (a *app) runCommand(ctx context.Context, args []string) error {
 	if hasHelpFlag(args) {
 		return a.writeRunHelp(describe, rf)
 	}
+	hint := fmt.Sprintf("run \"hanse run %s %s --help\" for usage",
+		oneLine(describe.Capability), oneLine(describe.Operation))
 	positional, err := parseArgs(rf.fs, rest)
 	if err != nil {
-		return err
+		return withUsageHint(err, hint)
 	}
 	if len(positional) > 0 {
-		return usagef("unexpected argument %q", positional[0])
+		return withUsageHint(usagef("unexpected argument %q", positional[0]), hint)
 	}
 	fm, err := outputFormat(*rf.formatValue)
 	if err != nil {
-		return err
+		return withUsageHint(err, hint)
 	}
 	arguments, err := a.runArguments(rf)
 	if err != nil {
-		return err
+		return withUsageHint(err, hint)
 	}
 	if err := checkRequired(describe, arguments); err != nil {
 		return err
@@ -123,7 +129,7 @@ func (a *app) runCommand(ctx context.Context, args []string) error {
 		if errors.Is(err, errWaitInterrupted) {
 			a.warnf("stopped waiting; operation %s is still running: follow it with \"hanse operations show %s\"",
 				oneLine(record.ID), oneLine(record.ID))
-			return nil
+			return errWaitInterrupted
 		}
 		return err
 	}

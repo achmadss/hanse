@@ -61,10 +61,15 @@ func Run(ctx context.Context, args []string, opts Options) int {
 	if err == nil {
 		return 0
 	}
+	if errors.Is(err, errWaitInterrupted) {
+		// Ctrl+C follows the shell convention: 128+SIGINT. The operation
+		// keeps running, so the wait did not finish successfully.
+		return interruptExitCode
+	}
 	var usage *usageError
 	if errors.As(err, &usage) {
 		_, _ = fmt.Fprintf(opts.Stderr, "hanse: %s\n", usage.message)
-		_, _ = fmt.Fprintln(opts.Stderr, `run "hanse --help" for usage`)
+		_, _ = fmt.Fprintln(opts.Stderr, usage.hintOr())
 		return 2
 	}
 	_, _ = fmt.Fprintf(opts.Stderr, "hanse: %s\n", err)
@@ -109,10 +114,31 @@ func (a *app) run(ctx context.Context, args []string) error {
 // usageError is a command line mistake. It maps to exit code 2.
 type usageError struct {
 	message string
+	// hint is the line that tells the user where the usage is. Empty means
+	// the command list of "hanse --help".
+	hint string
 }
 
 // Error implements the error interface.
 func (e *usageError) Error() string { return e.message }
+
+// hintOr returns the help hint, or the command list hint when none is set.
+func (e *usageError) hintOr() string {
+	if e.hint != "" {
+		return e.hint
+	}
+	return `run "hanse --help" for usage`
+}
+
+// withUsageHint returns the usage error err with another help hint. An error
+// that is not a usage error passes through unchanged.
+func withUsageHint(err error, hint string) error {
+	var usage *usageError
+	if !errors.As(err, &usage) {
+		return err
+	}
+	return &usageError{message: usage.message, hint: hint}
+}
 
 // usagef returns a usage error.
 func usagef(format string, args ...any) error {

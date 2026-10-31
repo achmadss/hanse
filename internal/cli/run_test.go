@@ -439,6 +439,7 @@ func TestRunRejectedArguments(t *testing.T) {
 		args   []string
 		code   int
 		stderr string
+		hint   string
 	}{
 		{
 			name:   "missing required",
@@ -451,42 +452,49 @@ func TestRunRejectedArguments(t *testing.T) {
 			args:   []string{"run", "hvac", "set", "--zone", "loft", "--mode", "warm"},
 			code:   2,
 			stderr: "must be one of: auto, cool, heat",
+			hint:   `run "hanse run hvac set --help" for usage`,
 		},
 		{
 			name:   "integer",
 			args:   []string{"run", "hvac", "set", "--zone", "loft", "--level", "1.5"},
 			code:   2,
 			stderr: "must be an integer",
+			hint:   `run "hanse run hvac set --help" for usage`,
 		},
 		{
 			name:   "number",
 			args:   []string{"run", "hvac", "set", "--zone", "loft", "--threshold", "warm"},
 			code:   2,
 			stderr: "must be a number",
+			hint:   `run "hanse run hvac set --help" for usage`,
 		},
 		{
 			name:   "boolean",
 			args:   []string{"run", "hvac", "set", "--zone", "loft", "--force=yes"},
 			code:   2,
 			stderr: "must be true or false",
+			hint:   `run "hanse run hvac set --help" for usage`,
 		},
 		{
 			name:   "unknown flag",
 			args:   []string{"run", "hvac", "set", "--zone", "loft", "--znoe", "loft"},
 			code:   2,
 			stderr: "znoe",
+			hint:   `run "hanse run hvac set --help" for usage`,
 		},
 		{
 			name:   "both argument sources",
 			args:   []string{"run", "hvac", "set", "--zone", "loft", "--args-json", `{}`, "--args-file", "x"},
 			code:   2,
 			stderr: "not both",
+			hint:   `run "hanse run hvac set --help" for usage`,
 		},
 		{
 			name:   "usage",
 			args:   []string{"run"},
 			code:   2,
 			stderr: "usage: hanse run",
+			hint:   `run "hanse --help" for usage`,
 		},
 	}
 	for _, tc := range cases {
@@ -497,6 +505,9 @@ func TestRunRejectedArguments(t *testing.T) {
 			}
 			if !strings.Contains(stderr, tc.stderr) {
 				t.Errorf("%v: stderr %q, want %q", tc.args, stderr, tc.stderr)
+			}
+			if tc.hint != "" && !strings.Contains(stderr, tc.hint) {
+				t.Errorf("%v: stderr %q, want the hint %q", tc.args, stderr, tc.hint)
 			}
 			if stdout != "" {
 				t.Errorf("%v: stdout %q, want no output", tc.args, stdout)
@@ -694,7 +705,7 @@ func TestRunFailedOperation(t *testing.T) {
 }
 
 // TestRunInterrupted proves Ctrl+C ends the wait without cancelling the
-// operation and leaves the ID behind.
+// operation, leaves the ID behind, and exits 130.
 func TestRunInterrupted(t *testing.T) {
 	fixture, configPath := newRunFixture(t, false, runRecord("op_hvac_1", "running", ""))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -710,8 +721,8 @@ func TestRunInterrupted(t *testing.T) {
 		Stderr:     &errOut,
 		ConfigPath: configPath,
 	})
-	if code != 0 {
-		t.Fatalf("run: exit code %d, want 0; stderr %s", code, errOut.String())
+	if code != 130 {
+		t.Fatalf("run: exit code %d, want 130; stderr %s", code, errOut.String())
 	}
 	if !strings.Contains(errOut.String(), "op_hvac_1") || !strings.Contains(errOut.String(), "still running") {
 		t.Errorf("run: stderr %q, want the running operation's ID", errOut.String())
