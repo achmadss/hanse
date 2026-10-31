@@ -1,6 +1,7 @@
 package operations
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -815,7 +816,8 @@ func TestTestkitPrivileged(t *testing.T) {
 	}
 
 	for _, value := range []string{"0", "1"} {
-		result := runTestkitPrivilegedHandler(t, env.registry, value)
+		out := runTestkitPrivilegedHandler(t, env.registry, value)
+		result := out.Result
 		if result.HANSEPrivileged != value {
 			t.Errorf("HANSE_PRIVILEGED=%s result hanse_privileged = %q", value, result.HANSEPrivileged)
 		}
@@ -824,6 +826,34 @@ func TestTestkitPrivileged(t *testing.T) {
 		}
 		if result.User == "" {
 			t.Errorf("HANSE_PRIVILEGED=%s result has no user", value)
+		}
+		// The OS name is the lowercase Go name on every platform, and the
+		// log and the summary spell booleans as lowercase JSON does.
+		if result.OS != goruntime.GOOS {
+			t.Errorf("HANSE_PRIVILEGED=%s result os = %q, want %q", value, result.OS, goruntime.GOOS)
+		}
+		adminText := "false"
+		if result.Admin {
+			adminText = "true"
+		}
+		for _, text := range []struct {
+			name string
+			body string
+		}{
+			{"summary", out.Summary},
+			{"log", out.Log},
+		} {
+			if !strings.Contains(text.body, "admin="+adminText) {
+				t.Errorf("HANSE_PRIVILEGED=%s %s %q does not hold admin=%s",
+					value, text.name, text.body, adminText)
+			}
+			if strings.Contains(text.body, "True") || strings.Contains(text.body, "False") {
+				t.Errorf("HANSE_PRIVILEGED=%s %s %q holds an uppercase boolean",
+					value, text.name, text.body)
+			}
+		}
+		if !strings.Contains(out.Summary, "privileged="+value) {
+			t.Errorf("HANSE_PRIVILEGED=%s summary = %q, want privileged=%s", value, out.Summary, value)
 		}
 	}
 }
@@ -837,10 +867,18 @@ type privilegedResult struct {
 	OS              string `json:"os"`
 }
 
+// privilegedHandlerOutput is one run of the testkit.privileged handler: its
+// result, its summary, and the log lines it wrote to stderr.
+type privilegedHandlerOutput struct {
+	Result  privilegedResult
+	Summary string
+	Log     string
+}
+
 // runTestkitPrivilegedHandler runs the real handler of testkit.privileged
 // with one HANSE_PRIVILEGED value. The embedded agent refuses to elevate, so
 // this helper proves the handler's own report on every platform.
-func runTestkitPrivilegedHandler(t *testing.T, reg *registry.Registry, privilegedValue string) privilegedResult {
+func runTestkitPrivilegedHandler(t *testing.T, reg *registry.Registry, privilegedValue string) privilegedHandlerOutput {
 	t.Helper()
 	capability, ok := reg.Capability("testkit")
 	if !ok {
@@ -864,14 +902,17 @@ func runTestkitPrivilegedHandler(t *testing.T, reg *registry.Registry, privilege
 	cmd := exec.Command(entry[0], entry[1:]...)
 	cmd.Dir = capability.Dir
 	cmd.Stdin = strings.NewReader(envelope)
+	var log bytes.Buffer
+	cmd.Stderr = &log
 	cmd.Env = append(os.Environ(), "HANSE_PRIVILEGED="+privilegedValue)
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("run the testkit.privileged handler: %v", err)
 	}
 	var response struct {
-		Status string           `json:"status"`
-		Result privilegedResult `json:"result"`
+		Status  string           `json:"status"`
+		Result  privilegedResult `json:"result"`
+		Summary string           `json:"summary"`
 	}
 	if err := json.Unmarshal(out, &response); err != nil {
 		t.Fatalf("decode the handler response %q: %v", out, err)
@@ -879,5 +920,5 @@ func runTestkitPrivilegedHandler(t *testing.T, reg *registry.Registry, privilege
 	if response.Status != "ok" {
 		t.Fatalf("handler status = %q, want ok", response.Status)
 	}
-	return response.Result
+	return privilegedHandlerOutput{Result: response.Result, Summary: response.Summary, Log: log.String()}
 }

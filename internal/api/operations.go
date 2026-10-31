@@ -16,11 +16,14 @@ const nodeFormat = "hanse:node"
 
 // executorView is one eligible executor. Status is the node's current
 // connection state and is omitted when the Gateway has no node registry
-// for it.
+// for it. CanElevate is false when the Gateway knows it will refuse
+// elevation for this executor, which it does for the host node its embedded
+// agent runs.
 type executorView struct {
-	ID      string `json:"id"`
-	Status  string `json:"status,omitempty"`
-	Default bool   `json:"default"`
+	ID         string `json:"id"`
+	Status     string `json:"status,omitempty"`
+	Default    bool   `json:"default"`
+	CanElevate bool   `json:"can_elevate"`
 }
 
 // optionRef points at the option provider of one argument.
@@ -177,7 +180,11 @@ func (s *server) executorViews(routing registry.OperationRouting) []executorView
 	sort.Strings(ids)
 	out := make([]executorView, 0, len(ids))
 	for _, id := range ids {
-		view := executorView{ID: id, Default: id == routing.DefaultExecutor}
+		view := executorView{
+			ID:         id,
+			Default:    id == routing.DefaultExecutor,
+			CanElevate: s.canElevate(id),
+		}
 		if s.reg != nil {
 			if status, ok := s.reg.Nodes.Status(id); ok {
 				view.Status = string(status)
@@ -186,4 +193,13 @@ func (s *server) executorViews(routing registry.OperationRouting) []executorView
 		out = append(out, view)
 	}
 	return out
+}
+
+// canElevate reports whether the Gateway runs a privileged handler with
+// administrator rights on one executor. The embedded agent never elevates:
+// it refuses every privileged operation with the ElevationDenied code
+// (docs/guides/systemd.md). A remote node decides elevation locally, so the
+// Gateway leaves it enabled and the node may still refuse the run.
+func (s *server) canElevate(executorID string) bool {
+	return s.embeddedNode == "" || executorID != s.embeddedNode
 }

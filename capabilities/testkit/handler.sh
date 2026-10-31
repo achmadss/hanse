@@ -233,7 +233,9 @@ privileged)
 		admin=true
 	fi
 	user=$(id -un)
-	os_name=$(uname -s)
+	# Report the lowercase Go name of the OS, as handler.ps1 does, so a
+	# result reads the same on every platform: linux, darwin, or windows.
+	os_name=$(uname -s | tr '[:upper:]' '[:lower:]')
 	log "privileged: HANSE_PRIVILEGED=$env_value admin=$admin user=$user"
 	reply_ok "$(jq -cn --arg e "$env_value" --argjson a "$admin" --arg u "$user" --arg o "$os_name" \
 		'{hanse_privileged:$e,privileged:($e == "1"),admin:$a,user:$u,os:$o}')" \

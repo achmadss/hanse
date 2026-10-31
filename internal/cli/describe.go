@@ -146,6 +146,28 @@ func (a *app) writeExecutors(executors []client.DescribeExecutor) error {
 	return tw.Flush()
 }
 
+// describeRefusesElevation reports whether the describe response knows the
+// chosen executor and says the Gateway will refuse elevation for it, as it
+// does for the host node of its embedded agent. An empty executor ID means
+// the default executor. An executor the response does not list, or a
+// response from a Gateway that does not send can_elevate, is left to the
+// Gateway.
+func describeRefusesElevation(describe client.Describe, executorID string) bool {
+	if !describe.Privileged {
+		return false
+	}
+	executorID = strings.TrimSpace(executorID)
+	if executorID == "" {
+		executorID = describe.DefaultExecutor
+	}
+	for _, executor := range describe.Executors {
+		if executor.ID == executorID {
+			return executor.CanElevate != nil && !*executor.CanElevate
+		}
+	}
+	return false
+}
+
 // writeOptionProviders prints the arguments that have an option provider.
 func (a *app) writeOptionProviders(options []client.DescribeOption) error {
 	if _, err := fmt.Fprintln(a.opts.Stdout, "\nOptions:"); err != nil {

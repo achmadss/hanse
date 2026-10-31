@@ -61,12 +61,14 @@ const fixtureDescribeBody = `{
     {
       "id": "node-a",
       "status": "online",
-      "default": true
+      "default": true,
+      "can_elevate": true
     },
     {
       "id": "node-b",
       "status": "offline",
-      "default": false
+      "default": false,
+      "can_elevate": true
     }
   ],
   "default_executor": "node-a",

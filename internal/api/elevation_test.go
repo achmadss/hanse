@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -86,7 +87,8 @@ type privilegedFixture struct {
 
 // newPrivilegedFixture builds the Gateway over a manifest with one
 // privileged operation and one dispatcher that records the elevation.
-func newPrivilegedFixture(t *testing.T) *privilegedFixture {
+// Options extend the API, such as the embedded node of the Gateway host.
+func newPrivilegedFixture(t *testing.T, options ...Option) *privilegedFixture {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "capabilities")
 	if err := os.MkdirAll(filepath.Join(dir, "demo"), 0o755); err != nil {
@@ -132,9 +134,53 @@ func newPrivilegedFixture(t *testing.T) *privilegedFixture {
 		t.Fatalf("add token: %v", err)
 	}
 	return &privilegedFixture{
-		handler:    store.Middleware(New(reg, manager, nil)),
+		handler:    store.Middleware(New(reg, manager, nil, options...)),
 		dispatcher: dispatcher,
 		token:      token,
+	}
+}
+
+// TestDescribeExecutorCanElevate covers the per-executor elevation hint of
+// the describe response: the Gateway host node of its embedded agent cannot
+// elevate, and every other executor is left to its own node
+// (docs/guides/systemd.md).
+func TestDescribeExecutorCanElevate(t *testing.T) {
+	cases := []struct {
+		name       string
+		options    []Option
+		canElevate bool
+	}{
+		{"remote executor", nil, true},
+		{"embedded agent", []Option{WithEmbeddedNode("gateway")}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newPrivilegedFixture(t, tc.options...)
+			resp, payload := call(t, fixture.handler, fixture.token, http.MethodGet,
+				"/v1/operations/demo/restart/describe", "", nil)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("describe status %d, want 200: %s", resp.StatusCode, payload)
+			}
+			var described struct {
+				Privileged bool `json:"privileged"`
+				Executors  []struct {
+					ID         string `json:"id"`
+					CanElevate bool   `json:"can_elevate"`
+				} `json:"executors"`
+			}
+			if err := json.Unmarshal(payload, &described); err != nil {
+				t.Fatalf("decode describe body %s: %v", payload, err)
+			}
+			if !described.Privileged {
+				t.Error("describe does not mark the operation privileged")
+			}
+			if len(described.Executors) != 1 || described.Executors[0].ID != "gateway" {
+				t.Fatalf("describe executors = %+v, want the gateway host", described.Executors)
+			}
+			if got := described.Executors[0].CanElevate; got != tc.canElevate {
+				t.Errorf("can_elevate = %v, want %v", got, tc.canElevate)
+			}
+		})
 	}
 }
 

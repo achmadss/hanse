@@ -244,14 +244,18 @@ switch ($req.operation) {
         $envValue = $env:HANSE_PRIVILEGED
         if (-not $envValue) { $envValue = '0' }
         $user = $identity.Name
-        Write-Log "privileged: HANSE_PRIVILEGED=$envValue admin=$admin user=$user"
+        # String interpolation renders a boolean as True or False. Use the
+        # lowercase JSON spelling in the log and the summary, as handler.sh
+        # does.
+        $adminText = if ($admin) { 'true' } else { 'false' }
+        Write-Log "privileged: HANSE_PRIVILEGED=$envValue admin=$adminText user=$user"
         Reply-Ok ([ordered]@{
                 hanse_privileged = $envValue
                 privileged       = ($envValue -eq '1')
                 admin            = $admin
                 user             = $user
                 os               = 'windows'
-            }) "privileged=$envValue admin=$admin"
+            }) "privileged=$envValue admin=$adminText"
     }
 
     default {
