@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"sort"
 	"time"
 
 	herrors "github.com/achmadss/hanse/internal/errors"
@@ -126,11 +127,19 @@ func (f OperationFilter) query() url.Values {
 	return query
 }
 
-// Operations returns GET /v1/operations.
+// Operations returns GET /v1/operations, newest first: by creation time
+// descending, then by ID descending. The Gateway sorts the list already;
+// sorting here too keeps the CLI order the same against an older Gateway.
 func (c *Client) Operations(ctx context.Context, filter OperationFilter) (OperationList, error) {
 	var out OperationList
 	err := c.do(ctx, http.MethodGet, &out, filter.query(), nil, "v1", "operations")
 	normalize(&out.Operations)
+	sort.SliceStable(out.Operations, func(i, j int) bool {
+		if !out.Operations[i].CreatedAt.Equal(out.Operations[j].CreatedAt) {
+			return out.Operations[i].CreatedAt.After(out.Operations[j].CreatedAt)
+		}
+		return out.Operations[i].ID > out.Operations[j].ID
+	})
 	return out, err
 }
 

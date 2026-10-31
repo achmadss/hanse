@@ -188,7 +188,9 @@ func (s *server) getOperation(w http.ResponseWriter, r *http.Request) {
 
 // listOperations answers GET /v1/operations. The filters are the query
 // parameters capability, operation, executor, status, and requester. The
-// list drops every operation the token's allow list does not cover.
+// list is newest first, by creation time and then ID, and drops every
+// operation the token's allow list does not cover
+// (docs/architecture.md section 11.1).
 func (s *server) listOperations(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.identity(w, r)
 	if !ok {

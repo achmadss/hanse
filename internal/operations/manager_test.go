@@ -487,7 +487,7 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-// TestListFilters checks the filter and the ID order.
+// TestListFilters checks the filter and the newest-first order.
 func TestListFilters(t *testing.T) {
 	d := newDispatcher()
 	manager := newManager(t, d)
@@ -510,8 +510,13 @@ func TestListFilters(t *testing.T) {
 	if len(all) != 2 {
 		t.Fatalf("list returned %d operations, want 2", len(all))
 	}
-	if all[0].ID > all[1].ID {
-		t.Errorf("list is not sorted by ID: %s then %s", all[0].ID, all[1].ID)
+	if all[0].ID != second.ID || all[1].ID != first.ID {
+		t.Errorf("list is not newest first: %s then %s, want %s then %s",
+			all[0].ID, all[1].ID, second.ID, first.ID)
+	}
+	if all[0].CreatedAt.Before(all[1].CreatedAt) {
+		t.Errorf("list is not sorted by creation time: %s then %s",
+			all[0].CreatedAt, all[1].CreatedAt)
 	}
 	byRequester, err := manager.List(operations.Filter{Requester: "other"})
 	if err != nil {
