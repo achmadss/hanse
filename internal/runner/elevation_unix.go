@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -24,6 +25,43 @@ const elevationCheckFlag = "--check"
 // it to its standard error when it asks for a password, so the agent can
 // tell a rejected password from a refusal that never asked for one.
 const ElevationPrompt = "hanse-elevation-password:"
+
+// ErrNoNewPrivileges reports that the process runs with
+// PR_SET_NO_NEW_PRIVS, so sudo cannot raise its rights and a privileged
+// run cannot work. systemd's NoNewPrivileges=yes sets the flag. The
+// message names the unit setting, so the run fails with an explanation
+// rather than a bare sudo refusal.
+var ErrNoNewPrivileges = errors.New(
+	"privileged operations cannot run under NoNewPrivileges: remove NoNewPrivileges=yes from the node agent unit (docs/node-setup.md)")
+
+// noNewPrivsFile is the Linux status file that reports PR_SET_NO_NEW_PRIVS.
+// A variable so tests can point it at a fixture.
+var noNewPrivsFile = "/proc/self/status"
+
+// noNewPrivileges reports whether this process runs with
+// PR_SET_NO_NEW_PRIVS, which systemd's NoNewPrivileges=yes sets and which
+// stops sudo from gaining root. Linux reports the flag in
+// /proc/self/status; the other Unix systems have no such file, so the
+// check reports false there.
+func noNewPrivileges() bool {
+	data, err := os.ReadFile(noNewPrivsFile)
+	if err != nil {
+		return false
+	}
+	return parseNoNewPrivs(string(data))
+}
+
+// parseNoNewPrivs reads the NoNewPrivs line of a Linux status file. A
+// missing or zero line means the flag is clear.
+func parseNoNewPrivs(status string) bool {
+	for _, line := range strings.Split(status, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "NoNewPrivs:" && fields[1] == "1" {
+			return true
+		}
+	}
+	return false
+}
 
 // The supervisor's check mode reports what it saw on its standard input:
 // sudo already read the password line, or the line was still there.
@@ -52,6 +90,9 @@ const (
 // and counts toward the lockout; every other failure is a node or policy
 // problem and does not count.
 func VerifyCredential(_ string, password string, supervisor ...string) error {
+	if noNewPrivileges() {
+		return ErrNoNewPrivileges
+	}
 	command, err := supervisorCommand(supervisor)
 	if err != nil {
 		return err

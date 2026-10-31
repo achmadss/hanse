@@ -81,7 +81,8 @@ with a `missing_dependency` handler error.
    ```
 
 4. Start the Gateway on the Linux host. The Linux host is also a node, so its
-   embedded agent runs every operation whose executor is `gateway-linux`.
+   embedded agent runs every operation whose executor is `gateway-linux`. A
+   privileged operation is the one exception; see that step in section 2.
 5. Join the Windows machine with `hanse-node`, and confirm that
    `hanse nodes` shows it as connected.
 6. Log in on the client: `hanse login --url https://gateway.example.com`.
@@ -139,11 +140,20 @@ names its executor. Tick the box only when the output matches.
 - [ ] **choose, option provider.** `hanse options testkit choose choice`
   prints `alpha`, `beta`, and `gamma`. `hanse run testkit choose --executor gateway-linux --choice beta`
   completes with `known: true`.
-- [ ] **privileged, password prompt.** As a non-root user on the Linux host,
+- [ ] **privileged, password prompt.** Run this step only when
+  `gateway-linux` is an ordinary executor: `gateway.yaml` sets
+  `embedded_agent: false`, `hanse-node` runs on that host with elevation
+  enabled, and the unit omits `NoNewPrivileges`. The embedded agent cannot
+  run privileged operations, and the Gateway's systemd unit sets
+  `NoNewPrivileges=yes`; see
+  [privileged operations on the Gateway host](../../docs/guides/systemd.md#privileged-operations-on-the-gateway-host).
+  In that layout, as a non-root user on the Linux host,
   `hanse run testkit privileged --executor gateway-linux` prompts for the
   elevation password without echoing it. The result shows
   `hanse_privileged: "1"`, `privileged: true`, and `admin: true`. With a wrong
   password, the run fails with `elevation_denied` before the handler starts.
+  Under the embedded agent the same run fails with `elevation_denied` and
+  `the embedded agent does not elevate handlers`.
 - [ ] **privileged, Windows.** Give `node-win` a credential or token, then
   run `hanse run testkit privileged --executor node-win`. The result shows
   `hanse_privileged: "1"` and the administrator state of the agent service's

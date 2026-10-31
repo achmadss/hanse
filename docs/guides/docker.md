@@ -54,7 +54,8 @@ The image has three properties that matter:
 Create one directory for configuration and one volume for state:
 
 ```console
-$ mkdir -p config/capabilities config/credentials config/tls
+$ mkdir -p config/capabilities config/tls
+$ install -d -m 0700 config/credentials
 $ cp config/gateway.example.yaml config/gateway.yaml
 $ cp config/nodes.example.yaml  config/nodes.yaml
 $ cp config/routes.example.yaml config/routes.yaml
@@ -128,11 +129,15 @@ An `http` capability still routes to the Gateway host node and runs in the
 Gateway process in this layout, so it needs no node agent. `embedded_agent`
 changes only where the `exec` handlers run.
 
-The state directory must be writable by uid 10001. When you use a bind mount
-instead of a named volume, set the owner:
+The state directory must be writable by uid 10001. The credentials directory
+must be mode `0700` and owned by that uid, because the Gateway refuses a
+credentials directory whose group or other read bits are set and runs in the
+container as 10001. Secret files inside it must be mode `0600` and owned by
+10001 too. When you use a bind mount instead of a named volume, set the
+owners:
 
 ```console
-$ sudo chown -R 10001:10001 state
+$ sudo chown -R 10001:10001 state config/credentials
 ```
 
 Capability packages, credential files, and the TLS key stay read-only.
@@ -377,6 +382,8 @@ it run their handlers on the host.
 
 Run the image with `read_only: true` as the example does. The only paths the
 Gateway writes are inside `/var/lib/hanse`, which the state volume mounts.
+Within `/etc/hanse`, `credentials/` must be mode `0700` and owned by uid
+10001, and each secret file mode `0600`.
 
 Do not mount the state directory from a network file system. SQLite needs
 working file locks and a local file system.

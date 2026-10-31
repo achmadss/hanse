@@ -506,7 +506,7 @@ For example, the secret `api_token` of the capability `backup` lives in `/etc/ha
 
 - The Gateway reads the file each time a handler needs it, so you can replace a secret without a restart.
 - The Gateway removes one trailing newline from the value.
-- On Linux and macOS, the Gateway refuses a secret file or directory that the group or other users can read. On Windows, it refuses one that `Users`, `Authenticated Users`, or `Everyone` can read.
+- On Linux and macOS, the Gateway refuses a secret file or directory that the group or other users can read. The credentials directory must be mode `0700` and each secret file mode `0600`; a group-read bit on the directory alone fails `--check-config`. On Windows, the Gateway refuses one that `Users`, `Authenticated Users`, or `Everyone` can read.
 - A missing file fails the operation with `Handler failed` and a message that names the secret, never its value.
 
 ### 8.2 Other secrets
