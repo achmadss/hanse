@@ -61,7 +61,15 @@ func runAgent(args []string, stderr io.Writer, configPath string) int {
 		MaxConcurrentRuns: *cfg.MaxConcurrentRuns,
 		BufferLimit:       cfg.BufferLimit.Value,
 		EnvAllow:          cfg.Handlers.EnvAllow,
-		Logf:              logf,
+		Elevation: nodeagent.Elevation{
+			Enabled:         cfg.Elevation.Enabled,
+			Operations:      cfg.Elevation.Operations,
+			Account:         cfg.Elevation.Account,
+			LockoutAttempts: *cfg.Elevation.Lockout.Attempts,
+			LockoutWindow:   cfg.Elevation.Lockout.Window.Value,
+			LockoutDuration: cfg.Elevation.Lockout.Duration.Value,
+		},
+		Logf: logf,
 	})
 	if err != nil {
 		printf(stderr, "hanse-node: %v\n", err)

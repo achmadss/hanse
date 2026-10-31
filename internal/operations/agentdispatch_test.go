@@ -372,3 +372,42 @@ func readDispatchMessage(t *testing.T, ws *websocket.Conn) agentproto.Message {
 	}
 	return msg
 }
+
+// TestAgentDispatcherOptionProviderIsNeverElevated covers the rule that an
+// option provider never runs with administrator rights, even for a
+// privileged operation (docs/handler-contract.md section 4.5).
+func TestAgentDispatcherOptionProviderIsNeverElevated(t *testing.T) {
+	f := newDispatchFixture(t)
+	ws := f.connect(t)
+	request := dispatchRequest("opt_admin")
+	request.Operation = "admin"
+	request.Kind = runtime.KindOptions
+	request.Field = "name"
+	done := make(chan dispatchOutcome, 1)
+	go func() {
+		response, err := f.dispatcher.Execute(context.Background(), &Call{
+			Request:   request,
+			Elevation: &Elevation{Password: "placeholder-password"},
+		})
+		done <- dispatchOutcome{response: response, err: err}
+	}()
+	msg := readDispatchMessage(t, ws)
+	run, ok := msg.(*agentproto.Run)
+	if !ok {
+		t.Fatalf("message %T, want run", msg)
+	}
+	if run.Privileged {
+		t.Error("an option provider run was privileged")
+	}
+	if run.Elevation != nil {
+		t.Error("an option provider run carried an elevation password")
+	}
+	exit := 0
+	writeDispatchMessage(t, ws, &agentproto.Result{
+		Type: agentproto.TypeResult, RunID: "opt_admin", Seq: 1,
+		TS: agentproto.Timestamp(time.Now()), ExitCode: &exit,
+		Response: json.RawMessage(`{"status":"ok","result":{}}`),
+	})
+	_ = readDispatchMessage(t, ws)
+	<-done
+}

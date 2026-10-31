@@ -38,3 +38,7 @@ func helperWaitForTerminationSignal() {
 		os.Exit(6)
 	}
 }
+
+// helperReportRights has nothing to report on POSIX systems: the runner
+// test that calls it runs only on Windows.
+func helperReportRights() {}

@@ -113,13 +113,26 @@ func (a *Agent) execute(r *run, msg *agentproto.Run) {
 			fmt.Sprintf("handler contract %q is not %s", req.Contract, runtime.ContractV1))
 		return
 	}
+	password := ""
 	if msg.Privileged {
-		// Elevation runs through a privileged supervisor and is not part
-		// of this agent release, so a privileged run never starts with
-		// fewer rights than it needs.
-		a.reject(r, herrors.ElevationDenied,
-			"this node does not run privileged handlers")
-		return
+		if msg.Elevation != nil {
+			password = msg.Elevation.Password
+		}
+		// The password lives only in this call. Dropping it here keeps a
+		// retry, a buffer, or a diagnostic from ever seeing it
+		// (docs/agent-protocol.md section 9).
+		msg.Elevation = nil
+		if req.Kind == runtime.KindOptions {
+			// An option provider never runs with administrator rights
+			// (docs/handler-contract.md section 4.5).
+			a.reject(r, herrors.ElevationDenied,
+				"an option provider never runs with administrator rights")
+			return
+		}
+		if allowed, code, reason := a.elevation.check(req.Capability, req.Operation, password); !allowed {
+			a.reject(r, code, reason)
+			return
+		}
 	}
 	dir, err := a.cache.Ensure(ctx, msg.Bundle)
 	if err != nil {
@@ -145,12 +158,21 @@ func (a *Agent) execute(r *run, msg *agentproto.Run) {
 		ResponseLimit: int64(msg.Limits.ResponseBytes),
 		GracePeriod:   time.Duration(msg.GracePeriod) * time.Millisecond,
 		WorkRoot:      a.workDir,
+		Supervisor:    append([]string(nil), a.cfg.SupervisorCommand...),
 	}
 	_, runErr := rep.Run(ctx, runner.Spec{
 		Request: req,
 		Raw:     msg.Request,
 		Entry:   msg.Entry,
 		Dir:     dir,
+		// A privileged handler runs through sudo and the root supervisor
+		// on POSIX systems, and with the service's full rights on
+		// Windows (docs/handler-contract.md section 7.2).
+		Privileged: msg.Privileged,
+		// The password reaches sudo on its stdin and is cleared as soon
+		// as the launcher wrote the bytes (docs/agent-protocol.md
+		// section 9).
+		Password: password,
 		Log: func(line string) {
 			a.emitLog(r, agentproto.StreamStderr, line, limit)
 		},

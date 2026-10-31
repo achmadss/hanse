@@ -4,7 +4,6 @@ package runner
 
 import (
 	"os"
-	"os/exec"
 	"syscall"
 )
 
@@ -13,11 +12,6 @@ import (
 // 7.2.
 type processTree struct {
 	pid int
-}
-
-// configureProcess starts the handler as the leader of a new process group.
-func configureProcess(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
 // newProcessTree prepares the process group state. POSIX needs no handle

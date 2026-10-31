@@ -157,11 +157,17 @@ func (e *execution) cancellationRequested() bool {
 
 // Validate runs the checks of the dry-run endpoint: it looks up the
 // operation, validates the arguments, and resolves the executor without
-// creating or running anything (docs/architecture.md section 4).
+// creating or running anything (docs/architecture.md section 4). A dry run
+// does not need the password of a privileged operation, but it rejects a
+// password sent for an operation that is not privileged, exactly as a
+// submit does.
 func (m *Manager) Validate(req Request) (Check, error) {
 	_, op, res, err := m.prepare(req)
 	if err != nil {
 		return Check{}, err
+	}
+	if !op.Privileged && req.Elevation != nil {
+		return Check{}, elevationNotAllowed()
 	}
 	return Check{
 		Executor:       res.Executor,
@@ -215,6 +221,13 @@ func (m *Manager) Submit(req Request) (Record, error) {
 			m.mu.Unlock()
 			return m.await(prior, exec, op.Mode == registry.ModeSync)
 		}
+	}
+	// The elevation check comes after the idempotency lookup: a replay
+	// returns the stored operation and runs nothing, so it needs no
+	// password. A new run of a privileged operation always needs one.
+	if err := checkElevation(op, req); err != nil {
+		m.mu.Unlock()
+		return Record{}, err
 	}
 	running, conflicted, err := m.conflict(req.Capability, op, key)
 	if err != nil {
@@ -417,6 +430,44 @@ func (m *Manager) prepare(req Request) (*registry.Capability, *registry.Operatio
 		return nil, nil, resolver.Resolution{}, err
 	}
 	return c, op, res, nil
+}
+
+// checkElevation enforces the elevation rules of docs/architecture.md
+// section 8.5: a privileged operation needs a password for every run, and
+// an operation that is not privileged must not carry one, so that nothing
+// runs with administrator rights by accident. The password itself never
+// appears in an error message or its details.
+func checkElevation(op *registry.Operation, req Request) error {
+	if op.Privileged {
+		if passwordOf(req.Elevation) == "" {
+			return herrors.New(herrors.ElevationRequired,
+				fmt.Sprintf("operation %q is privileged and needs a password",
+					req.Capability+"."+req.Operation),
+				map[string]any{
+					"capability": req.Capability,
+					"operation":  req.Operation,
+					"field":      "elevation.password",
+				})
+		}
+		return nil
+	}
+	if req.Elevation != nil {
+		return elevationNotAllowed()
+	}
+	return nil
+}
+
+// elevationNotAllowed is the InvalidArguments error of a password sent for
+// an operation that is not privileged. It carries the field name, never
+// the password.
+func elevationNotAllowed() error {
+	return herrors.New(herrors.InvalidArguments,
+		"the request carries an elevation password for an operation that is not privileged",
+		map[string]any{"errors": []any{map[string]any{
+			"path":    "elevation",
+			"rule":    "forbidden",
+			"message": "only a privileged operation accepts an elevation password",
+		}}})
 }
 
 // conflict returns the active operation that the concurrency setting

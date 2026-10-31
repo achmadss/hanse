@@ -147,6 +147,7 @@ func (s *server) validateOperation(w http.ResponseWriter, r *http.Request) {
 		Operation:  body.Operation,
 		Arguments:  body.Arguments,
 		Executor:   body.Executor,
+		Elevation:  elevationOf(body.Elevation),
 	})
 	if err != nil {
 		writeError(w, err)
@@ -336,8 +337,13 @@ func finalError(rec operations.Record) error {
 		return herrors.New(herrors.Cancelled, "", details)
 	}
 	if rec.Failure != nil {
-		if rec.Failure.Code == herrors.Timeout.Name() {
+		switch rec.Failure.Code {
+		case herrors.Timeout.Name():
 			return herrors.New(herrors.Timeout, rec.Failure.Message, details)
+		case herrors.ElevationRequired.Name():
+			return herrors.New(herrors.ElevationRequired, rec.Failure.Message, details)
+		case herrors.ElevationDenied.Name():
+			return herrors.New(herrors.ElevationDenied, rec.Failure.Message, details)
 		}
 		details["code"] = rec.Failure.Code
 		details["message"] = rec.Failure.Message

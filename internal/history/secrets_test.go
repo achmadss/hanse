@@ -51,6 +51,26 @@ operations:
           type: string
         note:
           type: string
+
+  elevated:
+    description: Run with a secret argument and an elevation password
+    mode: sync
+    privileged: true
+    secrets: [ssh_key]
+    arguments:
+      type: object
+      required: [target, token]
+      additionalProperties: false
+      properties:
+        target:
+          type: string
+        token:
+          type: string
+          writeOnly: true
+        ssh_key:
+          type: string
+        note:
+          type: string
 `
 
 // The values the test proves absent from the database file.
@@ -134,7 +154,7 @@ func TestSecretsNeverReachTheDatabase(t *testing.T) {
 	}
 	rec, err := manager.Submit(operations.Request{
 		Capability: "demo",
-		Operation:  "secret",
+		Operation:  "elevated",
 		Arguments:  arguments,
 		Requester:  "tester",
 		Elevation:  &operations.Elevation{Password: secretPassword},

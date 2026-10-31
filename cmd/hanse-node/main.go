@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/achmadss/hanse/internal/nodeagent"
 	"github.com/achmadss/hanse/internal/version"
 )
 
@@ -61,6 +62,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return runJoin(fs.Args()[1:], stdout, stderr, stateDir)
 		case "run":
 			return runAgent(fs.Args()[1:], stderr, configPath)
+		case "supervise":
+			// The root supervisor of one privileged handler. The node
+			// agent starts it through sudo; an operator never runs it.
+			return nodeagent.Supervise(fs.Args()[1:], os.Stdin, stdout, stderr)
 		}
 		usage(stderr)
 		return exitUse
@@ -78,4 +83,5 @@ func usage(w io.Writer) {
 	printf(w, "usage: hanse-node [--version] [--config <path>] [--state-dir <path>]\n")
 	printf(w, "       hanse-node run [--config <path>]\n")
 	printf(w, "       hanse-node join <gateway-url> <join-token> [--state-dir <path>] [--config <path>]\n")
+	printf(w, "       hanse-node supervise ...  (started by the agent through sudo)\n")
 }

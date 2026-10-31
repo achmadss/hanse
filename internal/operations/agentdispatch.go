@@ -91,15 +91,18 @@ func (d *AgentDispatcher) Execute(ctx context.Context, call *Call) (runtime.Resp
 		GracePeriod: operation.GracePeriod,
 	})
 	return d.hub.Execute(ctx, &agentconn.Call{
-		RunID:       req.ID,
-		Node:        nodeID,
-		Capability:  req.Capability,
-		Operation:   req.Operation,
-		Option:      req.Kind == runtime.KindOptions,
-		Bundle:      capability.BundleHash,
-		Entry:       entry,
-		Request:     envelope,
-		Privileged:  operation.Privileged,
+		RunID:      req.ID,
+		Node:       nodeID,
+		Capability: req.Capability,
+		Operation:  req.Operation,
+		Option:     req.Kind == runtime.KindOptions,
+		Bundle:     capability.BundleHash,
+		Entry:      entry,
+		Request:    envelope,
+		// An option provider never runs with administrator rights, even
+		// for a privileged operation (docs/handler-contract.md section
+		// 4.5).
+		Privileged:  operation.Privileged && req.Kind != runtime.KindOptions,
 		Password:    passwordOf(call.Elevation),
 		GracePeriod: effective.GracePeriod,
 	})

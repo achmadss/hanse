@@ -34,6 +34,7 @@ import (
 	"github.com/achmadss/hanse/internal/bundle"
 	"github.com/achmadss/hanse/internal/config"
 	herrors "github.com/achmadss/hanse/internal/errors"
+	"github.com/achmadss/hanse/internal/runner"
 	"github.com/achmadss/hanse/internal/version"
 )
 
@@ -93,6 +94,16 @@ type Config struct {
 	BufferLimit int64
 	// EnvAllow lists extra environment variables passed to handlers.
 	EnvAllow []string
+	// Elevation holds the node's privileged-operation settings
+	// (docs/configuration.md section 7.1).
+	Elevation Elevation
+	// VerifyCredential checks one elevation password. Nil uses the
+	// platform check. Tests inject a fake so no real password is needed.
+	VerifyCredential func(account, password string) error
+	// SupervisorCommand is the command prefix that starts the root
+	// supervisor of a privileged POSIX run. Nil means this executable
+	// with the `supervise` subcommand. Windows ignores it.
+	SupervisorCommand []string
 	// AgentVersion is reported in hello. Empty means version.Version.
 	AgentVersion string
 	// OS and Arch are reported in hello. Empty means the running binary's
@@ -140,6 +151,9 @@ type Agent struct {
 	journal *journal
 	tls     *tls.Config
 	workDir string
+	// elevation decides every privileged run (docs/architecture.md
+	// section 8.5).
+	elevation *elevationGate
 
 	mu       sync.Mutex
 	runs     map[string]*run
@@ -236,11 +250,25 @@ func New(cfg Config) (*Agent, error) {
 			Client:           cfg.HTTPClient,
 			MaxUnpackedBytes: cfg.MaxUnpackedBytes,
 		},
-		journal: j,
-		tls:     tlsConfig,
-		workDir: workDir,
-		runs:    map[string]*run{},
+		journal:   j,
+		tls:       tlsConfig,
+		workDir:   workDir,
+		elevation: newElevationGate(cfg.Elevation, cfg.Now, passwordVerifier(cfg)),
+		runs:      map[string]*run{},
 	}, nil
+}
+
+// passwordVerifier returns the node's password check. A configured check
+// wins; otherwise the platform check runs the same supervisor command the
+// launch uses, so sudo needs permission for exactly one command.
+func passwordVerifier(cfg Config) func(account, password string) error {
+	if cfg.VerifyCredential != nil {
+		return cfg.VerifyCredential
+	}
+	supervisor := append([]string(nil), cfg.SupervisorCommand...)
+	return func(account, password string) error {
+		return runner.VerifyCredential(account, password, supervisor...)
+	}
 }
 
 // tlsConfigFor builds the Gateway TLS configuration, with the extra CA
