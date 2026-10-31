@@ -91,6 +91,11 @@ func TestRunnerHelper(_ *testing.T) {
 			"HANSE_CONTRACT", "HANSE_CALL_ID", "HANSE_WORK_DIR", "HANSE_CANCEL_FILE",
 			"HANSE_PRIVILEGED", "PATH", "HOME", "USERPROFILE", "TMPDIR", "TEMP", "TMP",
 			"LANG", "RUNNER_TEST_ALLOWED", "RUNNER_TEST_HIDDEN",
+			// The Windows baseline variables of docs/handler-contract.md
+			// section 4.2. They are empty on other systems.
+			"PSModulePath", "windir", "SystemRoot", "SystemDrive", "ComSpec", "PATHEXT",
+			"ProgramData", "ProgramFiles", "ProgramFiles(x86)", "CommonProgramFiles",
+			"APPDATA", "LOCALAPPDATA", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
 		} {
 			fmt.Fprintf(os.Stderr, "ENV %s=%s\n", name, os.Getenv(name))
 		}

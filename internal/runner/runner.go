@@ -565,6 +565,37 @@ func resolveEntry(dir string, entry []string) []string {
 	return out
 }
 
+// windowsBaselineVars are the Windows variables that every handler receives
+// in addition to the contract's own variables. PSModulePath matters most: a
+// Windows PowerShell that cannot see it rebuilds its module search path and
+// searches for modules on the first cmdlet use, which took 18 to 27 seconds
+// on the CI runner instead of 0.3 seconds (issue #85). The other variables
+// tell a program where its installation, its per-user cache, the command
+// processor, and the processor layout are, so it needs no slow search of the
+// registry or the disk for them either.
+//
+// Every value is copied from the agent's own environment, so a handler sees
+// the same paths as the agent and a service account's own profile. A name
+// that the agent does not hold is left out. None of these variables is a
+// secret; credentials never travel through the environment
+// (docs/handler-contract.md section 2.2).
+var windowsBaselineVars = []string{
+	"PSModulePath",
+	"windir",
+	"SystemDrive",
+	"ComSpec",
+	"PATHEXT",
+	"ProgramData",
+	"ProgramFiles",
+	"ProgramFiles(x86)",
+	"CommonProgramFiles",
+	"APPDATA",
+	"LOCALAPPDATA",
+	"NUMBER_OF_PROCESSORS",
+	"PROCESSOR_ARCHITECTURE",
+	"OS",
+}
+
 // buildEnv builds the handler environment of docs/handler-contract.md
 // section 4.2: the HANSE_* variables, the documented per-OS variables, and
 // only the allow-listed extra variables.
@@ -603,6 +634,11 @@ func buildEnv(req *runtime.Request, workDir, cancelFile string, allow []string, 
 		set("TEMP", workDir)
 		set("TMP", workDir)
 		set("SystemRoot", os.Getenv("SystemRoot"))
+		for _, name := range windowsBaselineVars {
+			if value, ok := os.LookupEnv(name); ok && value != "" {
+				set(name, value)
+			}
+		}
 	} else {
 		set("HOME", os.Getenv("HOME"))
 		set("TMPDIR", workDir)
