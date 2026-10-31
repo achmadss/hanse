@@ -31,6 +31,12 @@ func configureProcess(cmd *exec.Cmd, privileged bool) (*processOptions, error) {
 	if privileged {
 		return nil, nil
 	}
+	// An agent that is not an administrator has no administrator rights to
+	// remove, and CreateProcessAsUser would need a privilege it does not
+	// hold, so its handler runs with the agent's own token.
+	if administrator, err := currentProcessIsAdministrator(); err == nil && !administrator {
+		return nil, nil
+	}
 	token, err := restrictedToken()
 	if err != nil {
 		return nil, err

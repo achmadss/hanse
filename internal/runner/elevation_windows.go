@@ -46,10 +46,35 @@ type localGroupUsersInfo0 struct {
 	name *uint16
 }
 
+// currentProcessIsAdministrator reports whether the agent's own token holds
+// the Administrators group. A standard user or a UAC-filtered process does
+// not, so its handlers already run without administrator rights.
+func currentProcessIsAdministrator() (bool, error) {
+	administrators, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		return false, err
+	}
+	return windows.GetCurrentProcessToken().IsMember(administrators)
+}
+
 // restrictedToken builds a restricted copy of the agent's token. The
 // Administrators group is disabled, so the handler fails every
 // administrator check even when the service is an administrator.
+//
+// The agent's own token is a real handle here, not the pseudo-handle that
+// GetCurrentProcessToken returns: CreateRestrictedToken needs a real token
+// handle, and the restricted token is then the primary token that starts
+// the handler. The access rights cover CreateRestrictedToken and the
+// CreateProcessAsUser call that Go makes for SysProcAttr.Token.
 func restrictedToken() (windows.Token, error) {
+	var process windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(),
+		windows.TOKEN_DUPLICATE|windows.TOKEN_ASSIGN_PRIMARY|windows.TOKEN_QUERY|
+			windows.TOKEN_ADJUST_DEFAULT|windows.TOKEN_ADJUST_SESSIONID,
+		&process); err != nil {
+		return 0, err
+	}
+	defer func() { _ = process.Close() }()
 	administrators, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
 	if err != nil {
 		return 0, err
@@ -57,7 +82,7 @@ func restrictedToken() (windows.Token, error) {
 	disabled := []windows.SIDAndAttributes{{Sid: administrators, Attributes: 0}}
 	var out windows.Token
 	result, _, callErr := procCreateRestricted.Call(
-		uintptr(windows.GetCurrentProcessToken()),
+		uintptr(process),
 		uintptr(disableMaxPrivilege),
 		uintptr(len(disabled)),
 		uintptr(unsafe.Pointer(&disabled[0])),

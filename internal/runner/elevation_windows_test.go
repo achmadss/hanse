@@ -30,6 +30,22 @@ func requireElevatedTestProcess(t *testing.T) {
 	}
 }
 
+// TestOrdinaryHandlerStartsWithARestrictedToken proves that the restricted
+// token is a valid primary token for CreateProcessAsUser, so an ordinary
+// handler starts on every Windows runner, and that it holds no
+// administrator rights.
+func TestOrdinaryHandlerStartsWithARestrictedToken(t *testing.T) {
+	helperWantMode(t, "rights")
+	logs := &logCollector{}
+	spec := helperSpec(t, "rights", logs.log)
+	if _, err := newTestRunner(t).Run(context.Background(), spec); err != nil {
+		t.Fatalf("ordinary run: %v", err)
+	}
+	if !logs.contains("RIGHTS admin=false") {
+		t.Errorf("the ordinary handler holds administrator rights: %v", logs.all())
+	}
+}
+
 // TestPrivilegedHandlerRunsWithFullRights proves the Windows elevation
 // behavior of docs/architecture.md section 8.4: a privileged handler keeps
 // the service's full rights, so it starts with no UAC prompt, and an
