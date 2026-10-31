@@ -41,10 +41,8 @@ func helperReportRights() {
 		fmt.Fprintf(os.Stderr, "RIGHTS error=%v\n", err)
 		return
 	}
-	restricted, err := token.IsRestricted()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "RIGHTS error=%v\n", err)
-		return
-	}
-	fmt.Fprintf(os.Stderr, "RIGHTS admin=%t restricted=%t\n", member, restricted)
+	// TokenIsRestricted reports restricting SIDs, which this token does not
+	// use: the Administrators group is disabled instead, so IsMember says
+	// whether the handler can act as an administrator.
+	fmt.Fprintf(os.Stderr, "RIGHTS admin=%t\n", member)
 }

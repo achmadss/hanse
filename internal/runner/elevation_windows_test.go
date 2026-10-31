@@ -44,7 +44,7 @@ func TestPrivilegedHandlerRunsWithFullRights(t *testing.T) {
 	if _, err := newTestRunner(t).Run(context.Background(), spec); err != nil {
 		t.Fatalf("privileged run: %v", err)
 	}
-	if !logs.contains("RIGHTS admin=true restricted=false") {
+	if !logs.contains("RIGHTS admin=true") {
 		t.Errorf("the privileged handler lacks administrator rights: %v", logs.all())
 	}
 
@@ -53,7 +53,7 @@ func TestPrivilegedHandlerRunsWithFullRights(t *testing.T) {
 	if _, err := newTestRunner(t).Run(context.Background(), spec); err != nil {
 		t.Fatalf("ordinary run: %v", err)
 	}
-	if !ordinary.contains("RIGHTS admin=false restricted=true") {
+	if !ordinary.contains("RIGHTS admin=false") {
 		t.Errorf("the ordinary handler kept administrator rights: %v", ordinary.all())
 	}
 }
