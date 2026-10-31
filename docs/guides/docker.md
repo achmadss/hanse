@@ -78,6 +78,13 @@ Leave `node` out. The example file starts with `node: gateway`, so delete or
 comment that line: the Gateway then runs no handler in its own process. Every
 `exec` handler runs on a node agent, including the handlers of the host.
 
+The example also sets TLS with files under `/etc/hanse/tls` and listens on
+`0.0.0.0:8443`. Either mount a certificate and key there, or, for a first run
+behind a TLS proxy, comment the `tls` block out and set
+`allow_insecure_http: true`. See
+[Serve TLS from the container](#serve-tls-from-the-container) and
+[Run the Gateway behind a TLS reverse proxy](reverse-proxy.md).
+
 List the host as a node in `nodes.yaml`:
 
 ```yaml
