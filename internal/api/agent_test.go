@@ -162,6 +162,9 @@ func TestJoinAgentRefusesEmbeddedNode(t *testing.T) {
 	if !strings.Contains(string(body), "embedded agent") {
 		t.Errorf("body = %s, want it to name the embedded agent", body)
 	}
+	if !strings.Contains(string(body), "embedded_agent: false") {
+		t.Errorf("body = %s, want it to name the setting that allows the enrollment", body)
+	}
 	// A Gateway without `node` accepts the same token afterwards: the
 	// refusal consumed nothing.
 	open := New(newFixture(t), nil, service)

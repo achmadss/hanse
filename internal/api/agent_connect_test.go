@@ -209,6 +209,9 @@ func TestAgentConnectRefusesEmbeddedNode(t *testing.T) {
 		if code := codeOf(t, body); code != "forbidden" {
 			t.Errorf("code = %q, want forbidden", code)
 		}
+		if !strings.Contains(string(body), "embedded_agent: false") {
+			t.Errorf("body = %s, want it to name the setting that allows the connection", body)
+		}
 	}
 	// The refusal happened before the upgrade, so the node never came
 	// online.

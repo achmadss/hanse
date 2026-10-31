@@ -313,6 +313,31 @@ func TestResolveNoFallback(t *testing.T) {
 	}
 }
 
+// TestResolveHTTPExecutorNeedsNoConnection proves an http capability resolves
+// on an offline executor, because the Gateway calls the handler endpoint
+// itself. A disabled executor is still refused.
+func TestResolveHTTPExecutorNeedsNoConnection(t *testing.T) {
+	c := capability("ping", &registry.OperationRouting{
+		Executors:       []string{"gateway", "node-d"},
+		DefaultExecutor: "gateway",
+	})
+	c.Manifest = &registry.Manifest{Handler: registry.HandlerSpec{Kind: registry.KindHTTP}}
+	r := New(fakeCapabilities{"pc": c}, fakeNodes{
+		"gateway": offlineNode("gateway"),
+		"node-d":  disabledNode("node-d"),
+	})
+	got, err := r.Resolve("pc", "ping", "")
+	if err != nil {
+		t.Fatalf("Resolve returned %v, want the offline host node", err)
+	}
+	if want := (Resolution{Executor: "gateway", Source: SourceDefault}); got != want {
+		t.Fatalf("Resolve returned %+v, want %+v", got, want)
+	}
+	if _, err := r.Resolve("pc", "ping", "node-d"); !errors.Is(err, herrors.ExecutorUnavailable) {
+		t.Fatalf("Resolve on a disabled executor = %v, want %s", err, herrors.ExecutorUnavailable.Name())
+	}
+}
+
 // TestResolveNodeRegistry proves resolution against the real node registry:
 // the Gateway host node is online from construction, every other node
 // starts offline, and a default that is not the host fails with

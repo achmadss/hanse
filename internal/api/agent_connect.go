@@ -38,7 +38,7 @@ func (s *server) refuseEmbeddedNode(r *http.Request) error {
 		return nil
 	}
 	return herrors.New(herrors.Forbidden,
-		fmt.Sprintf("node %q is the Gateway host and runs its handlers in the Gateway's embedded agent; remove `node` from gateway.yaml to connect it as a node agent",
+		fmt.Sprintf("node %q is the Gateway host and runs its handlers in the Gateway's embedded agent; set embedded_agent: false in gateway.yaml to connect it as a node agent",
 			nodeID),
 		map[string]any{"node": nodeID})
 }

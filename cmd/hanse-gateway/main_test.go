@@ -45,11 +45,10 @@ func TestRunCheckConfigValidExitsZero(t *testing.T) {
 	}
 }
 
-// TestRunCheckConfigWithoutNode requires `node` to be optional: a Gateway
-// that runs no embedded agent validates like any other.
-func TestRunCheckConfigWithoutNode(t *testing.T) {
-	dir := t.TempDir()
-	writeNoNodeTree(t, dir, filepath.Join(dir, "ran-in-process"))
+// TestRunCheckConfigEmbeddedAgentFalse requires embedded_agent: false to be
+// a valid configuration: `node` still names the host node.
+func TestRunCheckConfigEmbeddedAgentFalse(t *testing.T) {
+	dir := configFixture(t, "embedded_agent: false\n")
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"--check-config", "--config", filepath.Join(dir, "gateway.yaml")}, &stdout, &stderr)
 	if code != exitOK {
@@ -60,8 +59,22 @@ func TestRunCheckConfigWithoutNode(t *testing.T) {
 	}
 }
 
-// TestRunCheckConfigUnknownNode keeps the reference check: an optional
-// `node` that names no node in nodes.yaml is still a problem.
+// TestRunCheckConfigEmbeddedAgentNotBoolean requires a non-boolean value to
+// be a configuration problem.
+func TestRunCheckConfigEmbeddedAgentNotBoolean(t *testing.T) {
+	dir := configFixture(t, "embedded_agent: 3\n")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--check-config", "--config", filepath.Join(dir, "gateway.yaml")}, &stdout, &stderr)
+	if code != exitFail {
+		t.Fatalf("exit = %d, want %d", code, exitFail)
+	}
+	if !strings.Contains(stderr.String(), "cannot unmarshal") || !strings.Contains(stderr.String(), "into bool") {
+		t.Errorf("stderr = %q, want the boolean decode problem", stderr.String())
+	}
+}
+
+// TestRunCheckConfigUnknownNode keeps the reference check: `node` must name
+// a node in nodes.yaml.
 func TestRunCheckConfigUnknownNode(t *testing.T) {
 	dir := configFixture(t, "")
 	path := filepath.Join(dir, "gateway.yaml")

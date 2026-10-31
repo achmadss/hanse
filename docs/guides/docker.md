@@ -7,11 +7,13 @@ the image, the volumes, and the Compose example.
 The recommended layout puts the Gateway in a container and runs handlers on
 the real host:
 
-- The Gateway container sets no `node` in `gateway.yaml`. It runs no embedded
-  agent and no handler in its own process.
-- The host runs `hanse-node` as a systemd service, enrolls it with
-  `hanse-gateway node enroll`, and connects it to the published loopback port
-  or through the TLS proxy.
+- The Gateway container sets `node` to the host node ID and
+  `embedded_agent: false`. It builds no embedded agent, so it runs none of the
+  host node's `exec` handlers in its own process. `http` handlers still run in
+  the Gateway process, which calls their endpoint itself.
+- The host runs `hanse-node` for that same node as a systemd service, enrolls
+  it with `hanse-gateway node enroll`, and connects it to the published
+  loopback port or through the TLS proxy.
 - The host node is listed in `nodes.yaml` and in `routes.yaml` like any other
   node.
 
@@ -74,9 +76,17 @@ auth:
   tokens_file: /var/lib/hanse/tokens.json
 ```
 
-Leave `node` out. The example file starts with `node: gateway`, so delete or
-comment that line: the Gateway then runs no handler in its own process. Every
-`exec` handler runs on a node agent, including the handlers of the host.
+Set `node` to the host node ID and set `embedded_agent` to `false`. The
+example file starts with `node: gateway` and `embedded_agent: true`; rename
+the node and change the flag:
+
+```yaml
+node: gateway-host
+embedded_agent: false
+```
+
+The Gateway then runs none of the host node's `exec` handlers in its own
+process; they run on the host's `hanse-node` agent.
 
 The example also sets TLS with files under `/etc/hanse/tls` and listens on
 `0.0.0.0:8443`. Either mount a certificate and key there, or, for a first run
@@ -114,9 +124,9 @@ capabilities:
     default_executor: gateway-host
 ```
 
-An `http` capability needs the Gateway host node, which a Gateway without
-`node` does not have. The Gateway refuses to start when `routes.yaml` routes
-one; run `http` capabilities on a Gateway that sets `node`.
+An `http` capability still routes to the Gateway host node and runs in the
+Gateway process in this layout, so it needs no node agent. `embedded_agent`
+changes only where the `exec` handlers run.
 
 The state directory must be writable by uid 10001. When you use a bind mount
 instead of a named volume, set the owner:
@@ -280,8 +290,9 @@ join token for gateway-host (one use, expires 2026-10-31T12:15:00Z):
 Run that command on the node. This token is shown only once.
 ```
 
-The command refuses whenever `gateway.yaml` sets `node` to the same ID: that
-Gateway host already runs its handlers in its embedded agent.
+The command refuses while `embedded_agent` is `true`, because that Gateway
+host already runs its handlers in its embedded agent. The guide sets it to
+`false`, so the host node enrolls like any other node.
 
 The printed command uses `public_url`. The Gateway host can use the published
 loopback port instead, which avoids the proxy for this one step; the next
@@ -362,7 +373,7 @@ it run their handlers on the host.
 |---|---|---|
 | `/etc/hanse` | read-only | `gateway.yaml`, `nodes.yaml`, `routes.yaml`, `capabilities/`, `credentials/`, `tls/` |
 | `/var/lib/hanse` | read-write | History database, enrollment database, `tokens.json` |
-| `/tmp` | tmpfs (Compose example) | Nothing persistent; a Gateway without `node` starts no handler process. |
+| `/tmp` | tmpfs (Compose example) | Nothing persistent; with `embedded_agent: false` the Gateway starts no handler process. |
 
 Run the image with `read_only: true` as the example does. The only paths the
 Gateway writes are inside `/var/lib/hanse`, which the state volume mounts.
@@ -405,7 +416,7 @@ abandoned as the agent protocol defines.
 | Container exits 1 with `configuration problem(s)` | The file is invalid; the message names the file and the field. Run `--check-config`. |
 | `refusing to listen on ... without TLS` | `listen` is not loopback and `allow_insecure_http` is false. |
 | Health check fails but the log says `gateway listening` | The health check uses the wrong address or scheme. Probe the configured listen address; with TLS, use `https` and `--no-check-certificate`. See section 4. |
-| An `exec` run fails with `executor_unavailable` | The executor's node agent is not connected. Check `systemctl status hanse-node` and the URL in `agent.yaml`. A Gateway without `node` never runs the handler itself. |
-| `node ... is the Gateway host` when enrolling | `gateway.yaml` still sets `node`. Remove it to run every `exec` handler on a node agent. |
+| An `exec` run fails with `executor_unavailable` | The executor's node agent is not connected. Check `systemctl status hanse-node` and the URL in `agent.yaml`. With `embedded_agent: false` the Gateway never runs the handler itself. |
+| `node ... is the Gateway host` when enrolling | `gateway.yaml` still sets `embedded_agent: true`. Set it to `false` to run the host node's `exec` handlers on its node agent. |
 | Wake-on-LAN does nothing | In this layout the magic packet comes from `hanse-node` on the host, so check that service first. Bridge networking of the container no longer matters; host networking is needed only by an embedded agent that sends the packet itself. |
 | A `hanse-node` on the host cannot reach the joined URL | The port is published only on loopback; use `127.0.0.1`, or enroll through the TLS proxy. |

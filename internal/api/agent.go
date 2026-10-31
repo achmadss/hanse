@@ -10,12 +10,12 @@ import (
 	herrors "github.com/achmadss/hanse/internal/errors"
 )
 
-// WithEmbeddedNode sets the node ID the Gateway runs handlers for inside
-// its own process, from gateway.yaml's `node`. A node agent may not enroll
-// or connect for that node, because one node never has two executors
-// (docs/architecture.md §8.1). An empty ID is the layout without `node`:
-// every exec handler then runs on a node agent, including the handlers of
-// the machine the Gateway runs on.
+// WithEmbeddedNode sets the node ID whose exec handlers the Gateway runs
+// inside its own process, from gateway.yaml's `node` while embedded_agent
+// is true. A node agent may not enroll or connect for that node, because one
+// node never has two executors (docs/architecture.md §8.1). An empty ID is
+// the `embedded_agent: false` layout: the host node enrolls and connects
+// like any other node.
 func WithEmbeddedNode(nodeID string) Option {
 	return func(s *server) { s.embeddedNode = nodeID }
 }
@@ -83,7 +83,7 @@ func (s *server) joinAgent(w http.ResponseWriter, r *http.Request) {
 func (s *server) checkNodeEntry(nodeID, osName, arch string) error {
 	if s.embeddedNode != "" && nodeID == s.embeddedNode {
 		return herrors.New(herrors.Forbidden,
-			fmt.Sprintf("node %q is the Gateway host and runs its handlers in the Gateway's embedded agent; remove `node` from gateway.yaml to run its handlers on a node agent",
+			fmt.Sprintf("node %q is the Gateway host and runs its handlers in the Gateway's embedded agent; set embedded_agent: false in gateway.yaml to enroll it as a node agent",
 				nodeID),
 			map[string]any{"node": nodeID})
 	}

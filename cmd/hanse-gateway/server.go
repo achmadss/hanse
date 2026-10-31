@@ -129,12 +129,14 @@ func startGateway(ctx context.Context, configPath string, opts startOptions) (*g
 	}
 
 	timeouts := timeoutsOf(&cfg.Gateway)
-	// The embedded agent exists only when gateway.yaml names the host node.
-	// Without it the Gateway runs no handler in its own process: every exec
-	// run, including one for the machine the Gateway runs on, goes to that
-	// node's agent (docs/architecture.md §8).
+	// The embedded agent runs the host node's exec handlers in this process.
+	// With embedded_agent: false the Gateway runs none of them: they go to
+	// the host node's hanse-node agent like any other node's, and http
+	// capabilities still run here because the Gateway makes those calls
+	// itself (docs/architecture.md §8).
+	embeddedAgent := cfg.Gateway.EmbeddedAgentEnabled()
 	var embedded *agent.Agent
-	if cfg.Gateway.Node != "" {
+	if embeddedAgent {
 		embedded, err = agent.New(agent.Config{
 			Node:           embeddedNode(cfg),
 			Registry:       reg,
@@ -194,6 +196,7 @@ func startGateway(ctx context.Context, configPath string, opts startOptions) (*g
 	dispatch := &dispatcher{
 		registry: reg,
 		host:     cfg.Gateway.Node,
+		embedded: embeddedAgent,
 		exec:     execDispatch,
 		http:     httpDispatch,
 		agent:    agentDispatcher,
@@ -242,9 +245,16 @@ func startGateway(ctx context.Context, configPath string, opts startOptions) (*g
 		grace:  grace,
 		done:   make(chan error, 1),
 	}
+	// The API refuses a node agent for the host node only when the embedded
+	// agent owns that node's exec handlers. With embedded_agent: false the
+	// host node enrolls and connects like any other node.
+	embeddedNodeID := ""
+	if embeddedAgent {
+		embeddedNodeID = cfg.Gateway.Node
+	}
 	handler := api.New(reg, manager, enrollService,
 		api.WithAgentHub(hub),
-		api.WithEmbeddedNode(cfg.Gateway.Node),
+		api.WithEmbeddedNode(embeddedNodeID),
 		// Exec option providers follow the same executor routing as an
 		// operation, so they run in process only for the embedded node and
 		// on the executor's agent otherwise (docs/handler-contract.md §8).
@@ -293,7 +303,7 @@ func startGateway(ctx context.Context, configPath string, opts startOptions) (*g
 		slog.String("address", g.Addr),
 		slog.String("public_url", cfg.Gateway.PublicURL),
 		slog.String("host_node", cfg.Gateway.Node),
-		slog.Bool("embedded_agent", embedded != nil),
+		slog.Bool("embedded_agent", embeddedAgent),
 		slog.Bool("tls", useTLS))
 
 	go func() {

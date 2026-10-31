@@ -21,9 +21,9 @@ The unit is in the repository at
 
 ## 1. Create the service account
 
-The Gateway needs no privilege. It listens on an unprivileged port and, when
-`gateway.yaml` sets `node`, starts handler processes as its own user, so a
-dedicated system account is enough:
+The Gateway needs no privilege. It listens on an unprivileged port and, with
+the default `embedded_agent: true`, starts handler processes as its own user,
+so a dedicated system account is enough:
 
 ```console
 $ sudo useradd --system --no-create-home --home-dir /var/lib/hanse \
@@ -64,9 +64,9 @@ $ sudo install -d -o hanse -g hanse -m 0750 /etc/hanse/capabilities /etc/hanse/c
 
 Change the values in `gateway.yaml` to the absolute paths under `/etc/hanse`
 and `/var/lib/hanse`. Set `node` to the node ID in `nodes.yaml` that is this
-host: the Gateway then runs this host's `exec` handlers in its embedded agent,
-which is the simplest layout without containers. Then validate before the
-first start:
+host. Keep `embedded_agent: true`, its default: the Gateway then runs this
+host's `exec` handlers in its embedded agent, which is the simplest layout
+without containers. Then validate before the first start:
 
 ```console
 $ sudo -u hanse hanse-gateway --check-config --config /etc/hanse/gateway.yaml
@@ -79,9 +79,10 @@ configuration change.
 
 ### The Gateway host without an embedded agent
 
-To run this host's handlers in a node agent instead, leave `node` out of
-`gateway.yaml` and install `hanse-node` on the same machine. The Gateway then
-starts no embedded agent, and this host is an ordinary executor:
+To run this host's `exec` handlers in a node agent instead, set
+`embedded_agent: false` in `gateway.yaml` and install `hanse-node` on the
+same machine. The Gateway then starts no embedded agent, and this host is an
+ordinary executor:
 
 1. List the host in `nodes.yaml` and in `routes.yaml`, like any other node.
 2. Enroll it: `sudo -u hanse hanse-gateway node enroll gateway`.
@@ -91,11 +92,11 @@ starts no embedded agent, and this host is an ordinary executor:
 The [Docker guide](docker.md#5-enroll-and-run-the-host-node) walks through
 the agent installation and its systemd unit, and the same steps apply here.
 Use `https://gateway.example.com`, or a loopback URL when the Gateway listens
-on `127.0.0.1`. With `node` set, the Gateway refuses a `hanse-node`
-enrollment or connection for that same ID, because one node never has two
-executors.
+on `127.0.0.1`. With the default `embedded_agent: true`, the Gateway refuses
+a `hanse-node` enrollment or connection for that same ID, because one node
+never has two executors.
 
-An `http` capability needs the `node` layout, because the Gateway makes those
+`http` capabilities work in both layouts, because the Gateway makes those
 calls itself.
 
 ### TLS or a reverse proxy
@@ -180,10 +181,10 @@ stops the whole control group. The unit keeps `KillMode=control-group`, which
 is systemd's default: after the main process exits, systemd sends `SIGTERM`
 to every remaining process in the unit and then `SIGKILL` after
 `TimeoutStopSec`. The handler therefore never outlives the service. This
-applies only with `node` set. Without it the Gateway starts no handler; a
-handler on a node agent, including `hanse-node` on this host, is unaffected:
-its own agent still owns the process tree and stops the run on its own
-schedule.
+applies only with `embedded_agent: true`. With `false` the Gateway starts no
+handler; a handler on a node agent, including `hanse-node` on this host, is
+unaffected: its own agent still owns the process tree and stops the run on
+its own schedule.
 
 A configuration error makes the process exit 1 and `Restart=on-failure`
 retries it every two seconds. Fix the file, run `--check-config`, then
@@ -213,7 +214,7 @@ the Gateway never needs the capability it removes.
 | `RestrictNamespaces=yes`, `RestrictRealtime=yes`, `RestrictSUIDSGID=yes` | No new namespaces, no realtime scheduling, no setuid or setgid files. |
 | `LockPersonality=yes`, `MemoryDenyWriteExecute=yes` | No execution-personality change and no writable, executable memory. |
 | `SystemCallFilter=@system-service`, `SystemCallErrorNumber=EPERM` | Only the system-service system calls; anything else gets `EPERM`. |
-| `KillMode=control-group` | On stop, systemd also stops a handler process that outlived the Gateway. This matters only with `node` set. The default is kept explicitly. |
+| `KillMode=control-group` | On stop, systemd also stops a handler process that outlived the Gateway. This matters only with `embedded_agent: true`. The default is kept explicitly. |
 | `UMask=0077` | Every file the Gateway creates is private. |
 
 If an `exec` capability needs to run a program that the filter blocks, add the

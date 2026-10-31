@@ -252,7 +252,10 @@ func TestLoadValidationRules(t *testing.T) {
 		// winSkip marks a scenario that only exercises the POSIX mode
 		// checks, which are skipped on Windows.
 		winSkip bool
-		want    []string
+		// check inspects the loaded configuration after a scenario with no
+		// problems.
+		check func(t *testing.T, cfg *Config)
+		want  []string
 	}{
 		{
 			name: "valid base loads with no problems",
@@ -547,13 +550,48 @@ func TestLoadValidationRules(t *testing.T) {
 			},
 		},
 		{
-			name: "gateway node is optional",
+			name: "gateway node is required",
 			files: func() map[string]entry {
 				f := baseFiles()
 				f["gateway.yaml"] = entry{content: strings.Replace(gwBase, "node: gateway\n", "", 1)}
 				return f
 			},
+			want: []string{"gateway.yaml: node: is required"},
+		},
+		{
+			name: "embedded_agent defaults to true",
+			files: func() map[string]entry {
+				return baseFiles()
+			},
 			want: nil,
+			check: func(t *testing.T, cfg *Config) {
+				if !cfg.Gateway.EmbeddedAgentEnabled() {
+					t.Error("embedded_agent = false by default, want true")
+				}
+			},
+		},
+		{
+			name: "embedded_agent false is valid",
+			files: func() map[string]entry {
+				f := baseFiles()
+				f["gateway.yaml"] = entry{content: gwBase + "embedded_agent: false\n"}
+				return f
+			},
+			want: nil,
+			check: func(t *testing.T, cfg *Config) {
+				if cfg.Gateway.EmbeddedAgentEnabled() {
+					t.Error("embedded_agent = true, want false")
+				}
+			},
+		},
+		{
+			name: "embedded_agent must be a boolean",
+			files: func() map[string]entry {
+				f := baseFiles()
+				f["gateway.yaml"] = entry{content: gwBase + "embedded_agent: 3\n"}
+				return f
+			},
+			want: []string{"gateway.yaml: file: line 12: cannot unmarshal !!int `3` into bool"},
 		},
 		{
 			name: "gateway node names an unknown node",
@@ -866,7 +904,14 @@ func TestLoadValidationRules(t *testing.T) {
 			if tc.after != nil {
 				tc.after(t, dir)
 			}
-			assertProblems(t, runLoad(t, dir), tc.want)
+			cfg, problems, err := Load(filepath.Join(dir, "gateway.yaml"))
+			if err != nil {
+				t.Fatalf("Load: unexpected hard error: %v", err)
+			}
+			assertProblems(t, problems, tc.want)
+			if tc.check != nil && len(problems) == 0 {
+				tc.check(t, cfg)
+			}
 		})
 	}
 }
