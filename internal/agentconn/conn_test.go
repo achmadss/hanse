@@ -950,6 +950,56 @@ func TestFinishedRunIsForgotten(t *testing.T) {
 	waitRunForgotten(t, f, "op_done")
 }
 
+// TestOversizedResultReportsHandlerOutputTooLarge covers a node agent that
+// reports stdout over the limit: the Gateway maps the result to the handler
+// contract's handler_output_too_large with the run's limit, never to
+// handler_output_invalid (docs/handler-contract.md section 5).
+func TestOversizedResultReportsHandlerOutputTooLarge(t *testing.T) {
+	f := newFixture(t, nil)
+	credential := f.credential(t, "node-a")
+	ws, _ := f.connect(t, credential, hello("node-a"))
+	call := testCall("op_flood")
+	call.ResponseBytes = 1024
+	done := make(chan dispatchResult, 1)
+	go func() {
+		response, err := f.hub.Execute(context.Background(), call)
+		done <- dispatchResult{response: response, err: err}
+	}()
+	msg := readMessage(t, ws)
+	run, ok := msg.(*agentproto.Run)
+	if !ok {
+		t.Fatalf("message %T, want run", msg)
+	}
+	if run.Limits.ResponseBytes != 1024 {
+		t.Errorf("run response limit %d, want 1024", run.Limits.ResponseBytes)
+	}
+	stopReason, outputError := agentproto.StopOutputTooLarge, agentproto.OutputTooLarge
+	writeMessage(t, ws, &agentproto.Result{
+		Type:        agentproto.TypeResult,
+		RunID:       "op_flood",
+		Seq:         1,
+		TS:          agentproto.Timestamp(time.Now()),
+		StopReason:  &stopReason,
+		OutputError: &outputError,
+		DurationMS:  5,
+	})
+	_ = readMessage(t, ws)
+	result := <-done
+	if !errors.Is(result.err, herrors.HandlerOutputTooLarge) {
+		t.Fatalf("execute error %v, want handler_output_too_large", result.err)
+	}
+	var apiErr *herrors.Error
+	if !errors.As(result.err, &apiErr) {
+		t.Fatalf("execute error is %T, want *herrors.Error", result.err)
+	}
+	if got := apiErr.Details["limit"]; got != int64(1024) {
+		t.Errorf("limit detail %v, want 1024", got)
+	}
+	if code := herrors.ExitCode(result.err); code != 49 {
+		t.Errorf("exit code %d, want 49", code)
+	}
+}
+
 // TestRejectedRunFails covers the rejected message mapping.
 func TestRejectedRunFails(t *testing.T) {
 	f := newFixture(t, nil)
