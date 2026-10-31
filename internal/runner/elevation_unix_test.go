@@ -108,12 +108,23 @@ func (f *fakeSudo) recorded(t *testing.T, name string) string {
 	return string(data)
 }
 
+// withoutNoNewPrivileges points the no_new_privs check at a missing file,
+// so a test machine that itself runs with no_new_privs does not change the
+// outcome of a test about sudo. It restores the path when the test ends.
+func withoutNoNewPrivileges(t *testing.T) {
+	t.Helper()
+	original := noNewPrivsFile
+	noNewPrivsFile = filepath.Join(t.TempDir(), "missing-status")
+	t.Cleanup(func() { noNewPrivsFile = original })
+}
+
 // TestVerifyCredentialUsesNoTimestamp covers the private stdin rule of
 // docs/agent-protocol.md section 9 and the no-timestamp rule of the
 // elevation section: sudo is called with `-k` and a command, never with
 // `-v` or `-n`, and the password arrives on the first stdin line and
 // nowhere else.
 func TestVerifyCredentialUsesNoTimestamp(t *testing.T) {
+	withoutNoNewPrivileges(t)
 	const password = "placeholder-good-password"
 	sudo := newFakeSudo(t, "accept")
 	if err := VerifyCredential("", password, sudo.checkCommand()...); err != nil {
@@ -141,6 +152,7 @@ func TestVerifyCredentialUsesNoTimestamp(t *testing.T) {
 // wrong password. Only a check where sudo asked for a password and
 // rejected it counts; a policy refusal or a missing sudo does not.
 func TestVerifyCredentialClassifiesFailures(t *testing.T) {
+	withoutNoNewPrivileges(t)
 	const password = "placeholder-good-password"
 	rejecting := newFakeSudo(t, "reject")
 	if err := VerifyCredential("", password, rejecting.checkCommand()...); !errors.Is(err, ErrPasswordRejected) {
@@ -164,6 +176,7 @@ func TestVerifyCredentialClassifiesFailures(t *testing.T) {
 // any password would look valid. The check fails closed and does not count
 // as a wrong password.
 func TestVerifyCredentialFailsClosedWithoutAPasswordPrompt(t *testing.T) {
+	withoutNoNewPrivileges(t)
 	const password = "placeholder-any-password"
 	sudo := newFakeSudo(t, "nopasswd")
 	err := VerifyCredential("", password, sudo.checkCommand()...)
@@ -175,6 +188,54 @@ func TestVerifyCredentialFailsClosedWithoutAPasswordPrompt(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "NOPASSWD") {
 		t.Errorf("err = %v, want a reason that names the sudoers rule", err)
+	}
+}
+
+// TestVerifyCredentialRefusesNoNewPrivileges covers an agent unit that
+// sets NoNewPrivileges=yes: sudo cannot gain root, so the check fails
+// with a message that names the setting, and sudo never runs.
+func TestVerifyCredentialRefusesNoNewPrivileges(t *testing.T) {
+	const password = "placeholder-good-password"
+	sudo := newFakeSudo(t, "accept")
+	status := filepath.Join(t.TempDir(), "status")
+	content := "Name:\thanse-node\nNoNewPrivs:\t1\nSeccomp:\t0\n"
+	if err := os.WriteFile(status, []byte(content), 0o600); err != nil {
+		t.Fatalf("write the status fixture: %v", err)
+	}
+	original := noNewPrivsFile
+	noNewPrivsFile = status
+	t.Cleanup(func() { noNewPrivsFile = original })
+
+	err := VerifyCredential("", password, sudo.checkCommand()...)
+	if !errors.Is(err, ErrNoNewPrivileges) {
+		t.Fatalf("err = %v, want ErrNoNewPrivileges", err)
+	}
+	if !strings.Contains(err.Error(), "NoNewPrivileges") {
+		t.Errorf("err = %v, want a message that names the unit setting", err)
+	}
+	if argv := sudo.recorded(t, "argv"); argv != "" {
+		t.Errorf("sudo ran under no_new_privs: %q", argv)
+	}
+}
+
+// TestParseNoNewPrivs covers the Linux status file parse: only a
+// NoNewPrivs line with the value 1 means the flag is set.
+func TestParseNoNewPrivs(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		want   bool
+	}{
+		{name: "set", status: "Name:\thanse-node\nNoNewPrivs:\t1\nSeccomp:\t0\n", want: true},
+		{name: "clear", status: "Name:\thanse-node\nNoNewPrivs:\t0\n", want: false},
+		{name: "missing", status: "Name:\thanse-node\n", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseNoNewPrivs(tc.status); got != tc.want {
+				t.Errorf("parseNoNewPrivs(%q) = %v, want %v", tc.status, got, tc.want)
+			}
+		})
 	}
 }
 
