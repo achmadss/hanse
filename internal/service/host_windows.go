@@ -115,6 +115,9 @@ func (h *windowsHost) RemoveFile(path string) error {
 // Run is a POSIX step: Windows uses the service manager API.
 func (h *windowsHost) Run([]string) error { return errUnsupported }
 
+// RunQuiet is a POSIX step: Windows uses the service manager API.
+func (h *windowsHost) RunQuiet([]string) error { return errUnsupported }
+
 // RegisterService creates the service, or updates its definition when it
 // already exists, so a second install succeeds.
 func (h *windowsHost) RegisterService(spec Spec) error {

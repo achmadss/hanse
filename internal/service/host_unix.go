@@ -117,12 +117,24 @@ func (h *unixHost) RemoveFile(path string) error {
 
 // Run runs a service manager command and passes its output through.
 func (h *unixHost) Run(args []string) error {
+	return runCommand(args, h.stdout, h.stderr)
+}
+
+// RunQuiet runs a service manager command and discards its output. It is
+// what a step uses when it expects to find nothing to do, such as
+// unloading the daemon on the first install.
+func (h *unixHost) RunQuiet(args []string) error {
+	return runCommand(args, io.Discard, io.Discard)
+}
+
+// runCommand runs one service manager command with the given writers.
+func runCommand(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("the command is empty")
 	}
 	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Stdout = h.stdout
-	cmd.Stderr = h.stderr
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	return cmd.Run()
 }
 

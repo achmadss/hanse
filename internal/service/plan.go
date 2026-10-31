@@ -60,6 +60,10 @@ type Step struct {
 	// removing a service that is not installed, so a second install or
 	// uninstall still succeeds.
 	IgnoreFailure bool
+	// Quiet keeps a step out of the progress report and discards the
+	// output of its command. It marks a step that usually finds nothing
+	// to do, such as unloading a daemon that was never loaded.
+	Quiet bool
 	// Service is the definition of a [StepRegisterService].
 	Service *Spec
 	// Group is the local group's SID in a group membership step.
@@ -95,18 +99,21 @@ func (p Plan) Apply(h Host, progress func(Step)) error {
 	for _, step := range p.Steps {
 		if err := step.apply(h); err != nil {
 			if step.IgnoreFailure {
-				if progress != nil {
-					progress(step)
-				}
+				report(step, progress)
 				continue
 			}
 			return fmt.Errorf("%s: %w", step.Description, err)
 		}
-		if progress != nil {
-			progress(step)
-		}
+		report(step, progress)
 	}
 	return nil
+}
+
+// report tells the caller that a step succeeded, unless the step is quiet.
+func report(step Step, progress func(Step)) {
+	if progress != nil && !step.Quiet {
+		progress(step)
+	}
 }
 
 // apply carries out one step through the host.
@@ -121,6 +128,9 @@ func (s Step) apply(h Host) error {
 	case StepRemoveFile:
 		return h.RemoveFile(s.Target)
 	case StepRun:
+		if s.Quiet {
+			return h.RunQuiet(s.Args)
+		}
 		return h.Run(s.Args)
 	case StepRegisterService:
 		if s.Service == nil {

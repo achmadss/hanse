@@ -364,6 +364,11 @@ func (f *fakeHost) RemoveFile(path string) error { return f.record("remove %s", 
 // Run records the service manager command.
 func (f *fakeHost) Run(args []string) error { return f.record("run %s", strings.Join(args, " ")) }
 
+// RunQuiet records a service manager command whose output is discarded.
+func (f *fakeHost) RunQuiet(args []string) error {
+	return f.record("run-quiet %s", strings.Join(args, " "))
+}
+
 // RegisterService records the service definition.
 func (f *fakeHost) RegisterService(spec Spec) error {
 	return f.record("register %s account=%s recovery=%d command=%q",

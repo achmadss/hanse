@@ -151,7 +151,7 @@ hanse-node: created /usr/local/etc/hanse-node
 hanse-node: wrote the default /usr/local/etc/hanse-node/agent.yaml when there was none, and set its owner and mode
 hanse-node: created the state directory /var/lib/hanse-node
 hanse-node: gave the node credential in /var/lib/hanse-node to hanse-node
-hanse-node: unloaded an earlier dev.hanse.node
+hanse-node: wrote /var/log/hanse-node.log when there was none, and set its owner and mode
 hanse-node: wrote the launchd daemon /Library/LaunchDaemons/dev.hanse.node.plist
 hanse-node: loaded dev.hanse.node into launchd
 hanse-node: enabled dev.hanse.node at boot
@@ -162,7 +162,17 @@ hanse-node: it starts at boot without a login
 
 The daemon runs as the account from `--user`. `RunAtLoad` starts it at boot,
 and `KeepAlive` with `SuccessfulExit` false restarts it after a crash and
-leaves a clean stop alone. Its output goes to `/var/log/hanse-node.log`.
+leaves a clean stop alone.
+
+launchd opens the daemon's standard output and standard error as the service
+account, so `install` creates `/var/log/hanse-node.log` as root, gives it to
+that account, and sets mode `0600` before it loads the daemon. Without the
+file, launchd stops the spawn with `EX_CONFIG` (exit code 78), the daemon
+never starts, and the log says `posix_spawn(...): Permission denied`.
+
+A re-install keeps the log's content and repairs its owner and mode, so a
+file created by hand, or by an earlier version, is fixed. `uninstall` keeps
+the log, so the last lines of a removed daemon stay readable.
 
 ### Windows
 
@@ -205,6 +215,7 @@ windows on the logged-in user's desktop.
 | `agent.yaml` | `0640`, root with the agent's group; on Windows an access control list for Administrators and SYSTEM to write, and the service account to read | The agent's settings. Written only when the file does not exist. |
 | State directory | `0700`, the service account; on Windows the same access control list | The credential, the run journal, the handler cache, and scratch directories. |
 | The credential inside it | `0600`, the service account | Written by `hanse-node join`. |
+| `/var/log/hanse-node.log` | `0600`, the service account | macOS only: the daemon's standard output and standard error. `install` creates it before launchd loads the daemon, and a re-install repairs its owner and mode. |
 | The unit or plist | `0644`, root | The service definition. |
 
 Only the node's administrator can change `agent.yaml`. The agent refuses to
@@ -337,7 +348,6 @@ hanse-node: removed /etc/systemd/system/hanse-node.service; /etc/hanse-node/agen
 ```console
 # macOS
 $ sudo hanse-node uninstall
-hanse-node: unloaded dev.hanse.node
 hanse-node: removed /Library/LaunchDaemons/dev.hanse.node.plist
 hanse-node: removed /Library/LaunchDaemons/dev.hanse.node.plist; /usr/local/etc/hanse-node/agent.yaml and the node credential in /var/lib/hanse-node are kept
 ```
@@ -355,10 +365,12 @@ A second uninstall is safe: every service step treats a missing service,
 unit, or group membership as already done, and the command reports the same
 removal.
 
-Uninstall keeps `agent.yaml` and the credential, so a later install needs no
-new enrollment. It removes the Windows service and the account's membership
+Uninstall keeps `agent.yaml`, the credential, and the macOS log, so a later
+install needs no new enrollment and the last lines of the removed daemon
+stay readable. It removes the Windows service and the account's membership
 of the Administrators group. To remove the node's data as well, delete the
-state directory by hand, and remove the service account on Linux and macOS:
+state directory by hand, delete `/var/log/hanse-node.log` on macOS, and
+remove the service account on Linux and macOS:
 
 ```console
 $ sudo userdel hanse-node
@@ -423,6 +435,11 @@ runs a handler, and comes back after the agent is killed.
   when the credential is missing. The reason is in the log, which is
   `journalctl -u hanse-node` on Linux, `/var/log/hanse-node.log` on macOS,
   and `<state_dir>\hanse-node.log` on Windows.
+- macOS: `launchctl print system/dev.hanse.node` shows `state = spawn
+  scheduled` with `last exit code = 78: EX_CONFIG`, and the daemon never
+  starts. launchd could not open `/var/log/hanse-node.log` as the service
+  account. Run `sudo hanse-node install` again: it repairs the file's owner
+  and mode, then loads the daemon.
 - `elevation denied ... cannot be checked`: the sudoers rule is missing, has
   the wrong path, or uses `NOPASSWD`. Check it with `sudo visudo -cf`.
 - The node stays offline on the Gateway: check that the node's OS and
