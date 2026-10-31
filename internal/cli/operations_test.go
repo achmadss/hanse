@@ -67,6 +67,30 @@ const fixtureOperationFailed = `{
   }
 }`
 
+// fixtureOperationCapabilityCode is a failed operation whose final-state
+// code belongs to the capability, not to the shared set of internal/errors.
+const fixtureOperationCapabilityCode = `{
+  "id": "op_01J9Z7",
+  "capability": "audit",
+  "operation": "sweep",
+  "requester": "dave",
+  "executor": "node-d",
+  "executor_source": "default",
+  "status": "failed",
+  "mode": "sync",
+  "created_at": "2026-10-30T05:00:00Z",
+  "started_at": "2026-10-30T05:00:01Z",
+  "finished_at": "2026-10-30T05:00:02Z",
+  "summary": "the audit log is unreadable",
+  "error": {
+    "code": "audit_unreadable",
+    "message": "the audit log is unreadable",
+    "details": {
+      "path": "/var/log/audit.log"
+    }
+  }
+}`
+
 const fixtureOperationCancelled = `{
   "id": "op_01J9Z3",
   "capability": "pc",
@@ -146,6 +170,8 @@ func newOperationsGateway(t *testing.T) (*httptest.Server, *operationsGateway) {
 			_, _ = w.Write([]byte(`{"operation":` + fixtureOperationCompleted + `}`))
 		case r.URL.Path == "/v1/operations/op_01J9Z6":
 			_, _ = w.Write([]byte(`{"operation":` + fixtureOperationFailed + `}`))
+		case r.URL.Path == "/v1/operations/op_01J9Z7":
+			_, _ = w.Write([]byte(`{"operation":` + fixtureOperationCapabilityCode + `}`))
 		case r.URL.Path == "/v1/operations/op_01J9Z3/cancel" && r.Method == http.MethodPost:
 			_, _ = w.Write([]byte(fixtureOperationCancelled))
 		case r.URL.Path == "/v1/operations/op_01J9Z4/cancel" && r.Method == http.MethodPost:
@@ -174,6 +200,7 @@ func TestOperationsGoldenJSON(t *testing.T) {
 		golden    string
 		args      []string
 		wantQuery string
+		wantCode  int
 	}{
 		{
 			golden:    "operations",
@@ -189,9 +216,11 @@ func TestOperationsGoldenJSON(t *testing.T) {
 			wantQuery: "capability=demo&executor=node-b&operation=clean&requester=bob&status=completed",
 		},
 		{
+			// A known final-state code keeps its own exit code.
 			golden:    "operation",
 			args:      []string{"operations", "show", "op_01J9Z6"},
 			wantQuery: "",
+			wantCode:  38,
 		},
 		{
 			golden:    "operation_cancel",
@@ -204,10 +233,10 @@ func TestOperationsGoldenJSON(t *testing.T) {
 			gw.reset()
 			args := append(append([]string{}, tc.args...), "--format", "json")
 			stdout, stderr, code := runCLI(t, args, configPath)
-			if code != 0 {
-				t.Fatalf("%v: exit code %d, stderr %s", args, code, stderr)
+			if code != tc.wantCode {
+				t.Fatalf("%v: exit code %d, want %d; stderr %s", args, code, tc.wantCode, stderr)
 			}
-			if stderr != "" {
+			if tc.wantCode == 0 && stderr != "" {
 				t.Errorf("%v: unexpected stderr %q", args, stderr)
 			}
 			if strings.Contains(stdout, "\x1b[") {
@@ -228,9 +257,10 @@ func TestOperationsTextOutput(t *testing.T) {
 	writeTestConfig(t, configPath, srv.URL, testToken)
 
 	cases := []struct {
-		name string
-		args []string
-		want []string
+		name     string
+		args     []string
+		want     []string
+		wantCode int
 	}{
 		{
 			name: "list",
@@ -241,6 +271,8 @@ func TestOperationsTextOutput(t *testing.T) {
 			name: "show with error",
 			args: []string{"operations", "show", "op_01J9Z6"},
 			want: []string{"Status:", "failed", "Code:", "handler_exit", "Message:", "2026-10-30T06:00:03Z"},
+			// The known code keeps its own exit code.
+			wantCode: 38,
 		},
 		{
 			name: "show with result",
@@ -256,8 +288,8 @@ func TestOperationsTextOutput(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			stdout, stderr, code := runCLI(t, tc.args, configPath)
-			if code != 0 {
-				t.Fatalf("%v: exit code %d, stderr %s", tc.args, code, stderr)
+			if code != tc.wantCode {
+				t.Fatalf("%v: exit code %d, want %d; stderr %s", tc.args, code, tc.wantCode, stderr)
 			}
 			if strings.Contains(stdout, "\x1b[") {
 				t.Errorf("%v: text output contains a terminal escape", tc.args)
@@ -266,6 +298,33 @@ func TestOperationsTextOutput(t *testing.T) {
 				if !strings.Contains(stdout, want) {
 					t.Errorf("%v: output does not contain %q:\n%s", tc.args, want, stdout)
 				}
+			}
+		})
+	}
+}
+
+// TestOperationsShowCapabilityErrorCode requires a failed operation whose
+// final-state code is not one of the shared codes to exit with
+// handler_failed, while the record still shows the handler's own code,
+// message, and details.
+func TestOperationsShowCapabilityErrorCode(t *testing.T) {
+	srv, _ := newOperationsGateway(t)
+	configPath := filepath.Join(t.TempDir(), "hanse", "config.json")
+	writeTestConfig(t, configPath, srv.URL, testToken)
+
+	for _, format := range []string{"text", "json"} {
+		t.Run(format, func(t *testing.T) {
+			stdout, stderr, code := runCLI(t, []string{"operations", "show", "op_01J9Z7", "--format", format}, configPath)
+			if code != 33 {
+				t.Fatalf("show: exit code %d, want 33; stderr %s", code, stderr)
+			}
+			for _, want := range []string{"audit_unreadable", "the audit log is unreadable", "/var/log/audit.log"} {
+				if !strings.Contains(stdout, want) {
+					t.Errorf("show: output does not contain %q:\n%s", want, stdout)
+				}
+			}
+			if !strings.Contains(stderr, "handler_failed") || !strings.Contains(stderr, "audit_unreadable") {
+				t.Errorf("show: stderr %q, want handler_failed and the handler's code", stderr)
 			}
 		})
 	}

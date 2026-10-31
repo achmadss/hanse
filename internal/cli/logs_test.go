@@ -94,6 +94,11 @@ func (g *logsGateway) serveLogs(w http.ResponseWriter, r *http.Request) {
 		writeFixtureSSE(w, 1, "log", fixtureLogLine(1, "cancelling operation"))
 		writeFixtureSSE(w, 0, "status", `{"operation_id":"op_cancelled","status":"cancelled",`+
 			`"error":{"code":"cancelled","message":"cancelled by the client"}}`)
+	case "op_handler_code":
+		writeFixtureSSE(w, 1, "log", fixtureLogLine(1, "the audit log is unreadable"))
+		writeFixtureSSE(w, 0, "status", `{"operation_id":"op_handler_code","status":"failed",`+
+			`"error":{"code":"audit_unreadable","message":"the audit log is unreadable",`+
+			`"details":{"path":"/var/log/audit.log"}}}`)
 	case "op_drop":
 		if attempt == 1 {
 			// Drop the connection after one line, as a proxy timeout
@@ -211,6 +216,8 @@ func TestLogsFollowExitCodes(t *testing.T) {
 		{"op_done", 0, ""},
 		{"op_fail", 38, "handler_exit"},
 		{"op_cancelled", 35, "cancelled"},
+		// A capability-defined final-state code maps to handler_failed.
+		{"op_handler_code", 33, "audit_unreadable"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
@@ -274,6 +281,45 @@ func TestLogsFollowJSON(t *testing.T) {
 	}
 	if status.Error == nil || status.Error.Code != "handler_exit" {
 		t.Errorf("logs -f: status error %+v, want handler_exit", status.Error)
+	}
+}
+
+// TestLogsFollowCapabilityErrorCode requires the final status object of a
+// followed log to keep a capability-defined code, message, and details,
+// while the exit code is handler_failed.
+func TestLogsFollowCapabilityErrorCode(t *testing.T) {
+	_, configPath := newLogsConfig(t)
+
+	stdout, stderr, code := runCLI(t, []string{"logs", "op_handler_code", "-f", "--format", "json"}, configPath)
+	if code != 33 {
+		t.Fatalf("logs -f: exit code %d, want 33; stderr %s", code, stderr)
+	}
+	if !strings.Contains(stderr, "handler_failed") || !strings.Contains(stderr, "audit_unreadable") {
+		t.Errorf("logs -f: stderr %q, want handler_failed and the handler's code", stderr)
+	}
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	if len(lines) == 0 {
+		t.Fatal("logs -f: no output")
+	}
+	var status struct {
+		Status string `json:"status"`
+		Error  *struct {
+			Code    string         `json:"code"`
+			Message string         `json:"message"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &status); err != nil {
+		t.Fatalf("logs -f: the last line is not JSON: %v", err)
+	}
+	if status.Status != "failed" || status.Error == nil {
+		t.Fatalf("logs -f: status %+v", status)
+	}
+	if status.Error.Code != "audit_unreadable" || status.Error.Message != "the audit log is unreadable" {
+		t.Errorf("logs -f: error %+v, want the handler's code and message", status.Error)
+	}
+	if status.Error.Details["path"] != "/var/log/audit.log" {
+		t.Errorf("logs -f: details %v, want the handler's details", status.Error.Details)
 	}
 }
 

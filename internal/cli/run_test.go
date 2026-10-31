@@ -119,6 +119,9 @@ type runFixture struct {
 	cancels   int
 	logs      int
 	afterRun  func()
+	// submitFailure, when set, is the body of a rejected submit, which is
+	// how a failed synchronous operation answers.
+	submitFailure string
 }
 
 // newRunFixture starts a Gateway for run. privileged marks hvac.set as
@@ -215,7 +218,13 @@ func (f *runFixture) recordSubmit(t *testing.T, w http.ResponseWriter, r *http.R
 	}
 	f.mu.Lock()
 	f.submits = append(f.submits, body)
+	failure := f.submitFailure
 	f.mu.Unlock()
+	if failure != "" {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(failure))
+		return
+	}
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write([]byte(runRecord("op_hvac_1", "running", "")))
 	if f.afterRun != nil {
@@ -775,6 +784,54 @@ func TestRunFailedOperation(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "op_hvac_1") {
 		t.Errorf("run: stdout %q, want the operation record", stdout)
+	}
+}
+
+// TestRunCapabilityErrorCode requires a failed operation whose final-state
+// code the CLI does not know to exit with handler_failed, while the record
+// still shows the handler's own code, message, and details.
+func TestRunCapabilityErrorCode(t *testing.T) {
+	failed := `{"id": "op_hvac_1", "capability": "hvac", "operation": "set", ` +
+		`"requester": "alice", "executor": "node-a", "executor_source": "default", ` +
+		`"status": "failed", "mode": "async", "created_at": "2026-10-31T08:00:00Z", ` +
+		`"started_at": "2026-10-31T08:00:01Z", "finished_at": "2026-10-31T08:00:02Z", ` +
+		`"summary": "the audit log is unreadable", ` +
+		`"error": {"code": "audit_unreadable", "message": "the audit log is unreadable", ` +
+		`"details": {"path": "/var/log/audit.log"}}}`
+	_, configPath := newRunFixture(t, false, failed)
+
+	stdout, stderr, code := runCLI(t, []string{"run", "hvac", "set", "--zone", "loft"}, configPath)
+	if code != 33 {
+		t.Fatalf("run: exit code %d, want 33; stderr %s", code, stderr)
+	}
+	for _, want := range []string{"audit_unreadable", "the audit log is unreadable", "/var/log/audit.log"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("run: stdout %q does not contain %q", stdout, want)
+		}
+	}
+	if !strings.Contains(stderr, "handler_failed") || !strings.Contains(stderr, "audit_unreadable") {
+		t.Errorf("run: stderr %q, want handler_failed and the handler's code", stderr)
+	}
+}
+
+// TestRunSyncCapabilityErrorCode covers a synchronous run, whose failure
+// arrives as the Gateway's handler_failed error with the handler's own code
+// inside the details. It exits with the same handler_failed code.
+func TestRunSyncCapabilityErrorCode(t *testing.T) {
+	fixture, configPath := newRunFixture(t, false)
+	fixture.submitFailure = `{"code": "handler_failed", "message": "the operation failed", ` +
+		`"details": {"operation_id": "op_hvac_1", "code": "audit_unreadable", ` +
+		`"message": "the audit log is unreadable", "details": {"path": "/var/log/audit.log"}}}`
+
+	stdout, stderr, code := runCLI(t, []string{"run", "hvac", "set", "--zone", "loft"}, configPath)
+	if code != 33 {
+		t.Fatalf("run: exit code %d, want 33; stderr %s", code, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("run: stdout %q, want no output", stdout)
+	}
+	if !strings.Contains(stderr, "audit_unreadable") || !strings.Contains(stderr, "the audit log is unreadable") {
+		t.Errorf("run: stderr %q, want the handler's code and message", stderr)
 	}
 }
 
