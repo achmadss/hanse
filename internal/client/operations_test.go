@@ -91,8 +91,27 @@ func TestOperationList(t *testing.T) {
 		}
 	})
 
+	t.Run("keeps the gateway order", func(t *testing.T) {
+		// The Gateway sends the list newest first, and the client does not
+		// re-sort it. The completed record was created an hour earlier.
+		srv := newTestServer(t, map[string]http.HandlerFunc{
+			"/v1/operations": jsonRoute(`{"operations":[` + fixtureOperationRunning + `,` + fixtureOperationCompleted + `]}`),
+		})
+		list, err := newTestClient(t, srv).Operations(context.Background(), OperationFilter{})
+		if err != nil {
+			t.Fatalf("operations: %v", err)
+		}
+		if len(list.Operations) != 2 {
+			t.Fatalf("operations: got %d records, want 2", len(list.Operations))
+		}
+		if list.Operations[0].ID != "op_01J9Z3" || list.Operations[1].ID != "op_01J9Z4" {
+			t.Errorf("operations: got %s then %s, want the Gateway order",
+				list.Operations[0].ID, list.Operations[1].ID)
+		}
+	})
+
 	t.Run("every filter", func(t *testing.T) {
-		want := "capability=pc&executor=node-a&operation=up&requester=alice&status=running"
+		want := "capability=pc&executor=node-a&limit=5&operation=up&requester=alice&status=running"
 		srv := newTestServer(t, map[string]http.HandlerFunc{
 			"/v1/operations": func(w http.ResponseWriter, r *http.Request) {
 				if got := r.URL.Query().Encode(); got != want {
@@ -109,6 +128,7 @@ func TestOperationList(t *testing.T) {
 			Executor:   "node-a",
 			Status:     "running",
 			Requester:  "alice",
+			Limit:      5,
 		})
 		if err != nil {
 			t.Fatalf("operations: %v", err)

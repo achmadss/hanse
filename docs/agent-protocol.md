@@ -333,7 +333,7 @@ The Gateway assigns the operation log's own sequence numbers. The protocol's `se
 | `output_error` | `null` when `response` holds a JSON object. Otherwise `missing` for empty stdout, `invalid` for stdout that is not one JSON object, or `too_large` for stdout over the limit. |
 | `duration_ms` | The time from process start to process end. |
 
-The agent does not judge the response. The Gateway validates `response` against the handler contract schema and decides the final state with the contract's [exit code table](handler-contract.md#5-exit-codes-and-final-states).
+The agent does not judge the response. The Gateway validates `response` against the handler contract schema and decides the final state with the contract's [exit code table](handler-contract.md#5-exit-codes-and-final-states). An `output_error` of `too_large`, or a `stop_reason` of `output_too_large`, fails the operation with `handler_output_too_large` and the run's response limit as the `limit` detail, the same way the Gateway's own agent reports it.
 
 ### 4.8 ack
 

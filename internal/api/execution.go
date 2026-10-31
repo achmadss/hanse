@@ -3,8 +3,10 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/achmadss/hanse/internal/auth"
@@ -12,6 +14,32 @@ import (
 	"github.com/achmadss/hanse/internal/operations"
 	"github.com/achmadss/hanse/internal/registry"
 )
+
+// The size of the operation list: the default and the largest a caller may
+// ask for with the limit query parameter (docs/architecture.md section 11).
+const (
+	defaultListLimit = 100
+	maxListLimit     = 1000
+)
+
+// operationListLimit reads the limit query parameter. A missing value is
+// the default, and anything outside 1 to maxListLimit is the
+// InvalidArguments code, HTTP 422.
+func operationListLimit(raw string) (int, error) {
+	if raw == "" {
+		return defaultListLimit, nil
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 || limit > maxListLimit {
+		message := fmt.Sprintf("must be an integer from 1 to %d", maxListLimit)
+		return 0, herrors.New(herrors.InvalidArguments,
+			"the limit query parameter is not valid",
+			map[string]any{"errors": []any{map[string]any{
+				"path": "limit", "rule": "range", "message": message,
+			}}})
+	}
+	return limit, nil
+}
 
 // submitInput is the body of POST /v1/operations and
 // POST /v1/operations/validate (docs/architecture.md section 11).
@@ -188,7 +216,10 @@ func (s *server) getOperation(w http.ResponseWriter, r *http.Request) {
 
 // listOperations answers GET /v1/operations. The filters are the query
 // parameters capability, operation, executor, status, and requester. The
-// list drops every operation the token's allow list does not cover.
+// list is newest first, by creation time and then ID, holds at most the
+// limit query parameter, 100 by default and 1000 at most, and drops every
+// operation the token's allow list does not cover
+// (docs/architecture.md section 11.1).
 func (s *server) listOperations(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.identity(w, r)
 	if !ok {
@@ -199,6 +230,11 @@ func (s *server) listOperations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
+	limit, err := operationListLimit(query.Get("limit"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	filter := operations.Filter{
 		Capability: query.Get("capability"),
 		Operation:  query.Get("operation"),
@@ -215,15 +251,23 @@ func (s *server) listOperations(w http.ResponseWriter, r *http.Request) {
 			}}}))
 		return
 	}
+	if len(id.Allow()) == 0 {
+		// No record is dropped after the read, so the store can return
+		// only the newest limit records.
+		filter.Limit = limit
+	}
 	records, err := ops.List(filter)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	out := operationsResponse{Operations: make([]operationView, 0, len(records))}
+	out := operationsResponse{Operations: make([]operationView, 0, min(limit, len(records)))}
 	for _, rec := range records {
 		if err := id.Authorize(rec.Capability, rec.Operation); err != nil {
 			continue
+		}
+		if len(out.Operations) >= limit {
+			break
 		}
 		out.Operations = append(out.Operations, operationViewOf(rec))
 	}

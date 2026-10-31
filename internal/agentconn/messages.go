@@ -172,7 +172,7 @@ func (h *Hub) receiveResult(c *conn, m *agentproto.Result) {
 	if !fresh {
 		return
 	}
-	resp, err := resultResponse(m)
+	resp, err := resultResponse(m, r.message.Limits.ResponseBytes)
 	r.finish(resp, err)
 	h.remove(r)
 }
@@ -197,7 +197,15 @@ func (h *Hub) receiveRejected(m *agentproto.Rejected) {
 // resultResponse turns a result message into the runtime response the
 // operation manager records. A result without a valid response envelope
 // fails with a handler code, per docs/handler-contract.md section 5.
-func resultResponse(m *agentproto.Result) (runtime.Response, error) {
+// responseLimit is the limit of the run message, which the failure of an
+// oversized response reports as its `limit` detail.
+func resultResponse(m *agentproto.Result, responseLimit int) (runtime.Response, error) {
+	if m.OutputError != nil && *m.OutputError == agentproto.OutputTooLarge ||
+		m.StopReason != nil && *m.StopReason == agentproto.StopOutputTooLarge {
+		return runtime.Response{}, resultFailure(herrors.HandlerOutputTooLarge,
+			fmt.Sprintf("the handler response exceeded the %d byte limit", responseLimit),
+			map[string]any{"limit": int64(responseLimit)})
+	}
 	if len(m.Response) > 0 && string(m.Response) != "null" {
 		var envelope struct {
 			Status  string          `json:"status"`
@@ -211,7 +219,7 @@ func resultResponse(m *agentproto.Result) (runtime.Response, error) {
 		}
 		if err := json.Unmarshal(m.Response, &envelope); err != nil {
 			return runtime.Response{}, resultFailure(herrors.HandlerOutputInvalid,
-				"the handler response is not one JSON object")
+				"the handler response is not one JSON object", nil)
 		}
 		resp := runtime.Response{
 			Status:  envelope.Status,
@@ -231,14 +239,14 @@ func resultResponse(m *agentproto.Result) (runtime.Response, error) {
 		case runtime.StatusError:
 			if resp.Err == nil {
 				return runtime.Response{}, resultFailure(herrors.HandlerOutputInvalid,
-					"the handler reported an error without an error object")
+					"the handler reported an error without an error object", nil)
 			}
 			return resp, nil
 		case runtime.StatusCancelled:
 			return resp, nil
 		default:
 			return runtime.Response{}, resultFailure(herrors.HandlerOutputInvalid,
-				fmt.Sprintf("the handler returned status %q", envelope.Status))
+				fmt.Sprintf("the handler returned status %q", envelope.Status), nil)
 		}
 	}
 	if m.StopReason != nil && *m.StopReason == agentproto.StopCancel {
@@ -246,19 +254,19 @@ func resultResponse(m *agentproto.Result) (runtime.Response, error) {
 	}
 	if m.OutputError != nil {
 		return runtime.Response{}, resultFailure(herrors.HandlerOutputInvalid,
-			"the handler produced no valid response: "+*m.OutputError)
+			"the handler produced no valid response: "+*m.OutputError, nil)
 	}
 	if m.ExitCode != nil && *m.ExitCode != 0 {
 		return runtime.Response{}, resultFailure(herrors.HandlerExit,
-			fmt.Sprintf("the handler exited with code %d", *m.ExitCode))
+			fmt.Sprintf("the handler exited with code %d", *m.ExitCode), nil)
 	}
 	return runtime.Response{}, resultFailure(herrors.HandlerOutputInvalid,
-		"the handler produced no response")
+		"the handler produced no response", nil)
 }
 
 // resultFailure builds a dispatch error with the run's protocol details.
-func resultFailure(code *herrors.Code, message string) error {
-	return herrors.New(code, message, nil)
+func resultFailure(code *herrors.Code, message string, details map[string]any) error {
+	return herrors.New(code, message, details)
 }
 
 // rejectedCode maps a rejected code to the shared code set. An unknown

@@ -318,8 +318,10 @@ func (m *Manager) Get(id string) (Record, error) {
 	return rec, nil
 }
 
-// List returns the operations that satisfy f, sorted by operation ID. A
-// store read failure is an error, never an empty list.
+// List returns the operations that satisfy f. The store orders them newest
+// first: by creation time descending, then by ID descending, and a positive
+// f.Limit keeps only the newest records (docs/architecture.md section
+// 11.1). A store read failure is an error, never an empty list.
 func (m *Manager) List(f Filter) ([]Record, error) {
 	records, err := m.store.List(f)
 	if err != nil {

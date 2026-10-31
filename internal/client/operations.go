@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	herrors "github.com/achmadss/hanse/internal/errors"
@@ -95,13 +96,15 @@ type OperationRecordEnvelope struct {
 }
 
 // OperationFilter holds the query filters of GET /v1/operations, the same
-// five the Gateway accepts. An empty field is not sent.
+// five the Gateway accepts plus the list size. An empty field is not sent,
+// and a zero Limit leaves the Gateway default.
 type OperationFilter struct {
 	Capability string
 	Operation  string
 	Executor   string
 	Status     string
 	Requester  string
+	Limit      int
 }
 
 // query renders the filter as request query parameters. url.Values sorts
@@ -123,10 +126,15 @@ func (f OperationFilter) query() url.Values {
 	if f.Requester != "" {
 		query.Set("requester", f.Requester)
 	}
+	if f.Limit > 0 {
+		query.Set("limit", strconv.Itoa(f.Limit))
+	}
 	return query
 }
 
-// Operations returns GET /v1/operations.
+// Operations returns GET /v1/operations. The Gateway sends the list newest
+// first: by creation time descending, then by ID descending. The client
+// keeps the Gateway order.
 func (c *Client) Operations(ctx context.Context, filter OperationFilter) (OperationList, error) {
 	var out OperationList
 	err := c.do(ctx, http.MethodGet, &out, filter.query(), nil, "v1", "operations")

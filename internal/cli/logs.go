@@ -39,16 +39,15 @@ func (a *app) logsCommand(ctx context.Context, args []string) error {
 		return err
 	}
 	if !follow {
-		logs, err := c.Logs(ctx, operationID, 0)
-		if err != nil {
-			return err
-		}
-		for _, entry := range logs.Logs {
-			if err := a.writeLogEntry(fm, entry); err != nil {
-				return err
+		// The stored log is read through the event stream, so a log larger
+		// than the JSON response cap still prints whole
+		// (docs/architecture.md section 10).
+		return c.StreamLogs(ctx, operationID, 0, func(event client.LogEvent) error {
+			if event.Event != client.EventLog {
+				return nil
 			}
-		}
-		return nil
+			return a.writeLogEntry(fm, event.Entry)
+		})
 	}
 
 	record, err := a.followLogs(ctx, c, operationID, fm)

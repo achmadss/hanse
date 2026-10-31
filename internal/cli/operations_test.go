@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -171,15 +172,20 @@ func newOperationsGateway(t *testing.T) (*httptest.Server, *operationsGateway) {
 			_, _ = w.Write([]byte(fixtureVersionBody))
 		case r.URL.Path == "/v1/operations" && r.Method == http.MethodGet:
 			gw.remember(r)
+			records := []string{fixtureOperationRunning, fixtureOperationCompleted}
 			switch r.URL.Query().Get("status") {
 			case "":
-				_, _ = w.Write([]byte(`{"operations":[` + fixtureOperationRunning + `,` + fixtureOperationCompleted + `]}`))
 			case "completed":
-				_, _ = w.Write([]byte(`{"operations":[` + fixtureOperationCompleted + `]}`))
+				records = []string{fixtureOperationCompleted}
 			default:
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				_, _ = w.Write([]byte(`{"code":"invalid_arguments","message":"the status filter is not a known operation state"}`))
+				return
 			}
+			if limit, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && limit > 0 && len(records) > limit {
+				records = records[:limit]
+			}
+			_, _ = w.Write([]byte(`{"operations":[` + strings.Join(records, ",") + `]}`))
 		case r.URL.Path == "/v1/operations/op_01J9Z3":
 			_, _ = w.Write([]byte(`{"operation":` + fixtureOperationRunning + `}`))
 		case r.URL.Path == "/v1/operations/op_01J9Z4":
@@ -223,15 +229,16 @@ func TestOperationsGoldenJSON(t *testing.T) {
 		{
 			golden:    "operations",
 			args:      []string{"operations"},
-			wantQuery: "",
+			wantQuery: "limit=100",
 		},
 		{
 			golden: "operations_filtered",
 			args: []string{
 				"operations", "--capability", "demo", "--operation", "clean",
 				"--executor", "node-b", "--status", "completed", "--requester", "bob",
+				"--limit", "5",
 			},
-			wantQuery: "capability=demo&executor=node-b&operation=clean&requester=bob&status=completed",
+			wantQuery: "capability=demo&executor=node-b&limit=5&operation=clean&requester=bob&status=completed",
 		},
 		{
 			// A query exits 0 whatever the operation's final state.
@@ -321,6 +328,28 @@ func TestOperationsTextOutput(t *testing.T) {
 	}
 }
 
+// TestOperationsLimit forwards the list size and prints at most that many
+// operations, newest first.
+func TestOperationsLimit(t *testing.T) {
+	srv, gw := newOperationsGateway(t)
+	configPath := filepath.Join(t.TempDir(), "hanse", "config.json")
+	writeTestConfig(t, configPath, srv.URL, testToken)
+
+	stdout, stderr, code := runCLI(t, []string{"operations", "--limit", "1"}, configPath)
+	if code != 0 {
+		t.Fatalf("operations --limit 1: exit code %d, stderr %s", code, stderr)
+	}
+	if got := gw.last(); got != "limit=1" {
+		t.Errorf("operations --limit 1: list query %q, want limit=1", got)
+	}
+	if !strings.Contains(stdout, "op_01J9Z3") {
+		t.Errorf("operations --limit 1: output has no newest operation:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "op_01J9Z4") {
+		t.Errorf("operations --limit 1: output has the older operation:\n%s", stdout)
+	}
+}
+
 // TestOperationsShowCapabilityErrorCode requires a failed operation whose
 // final-state code is not one of the shared codes to print the handler's own
 // code, message, and details, and to exit 0 because the query succeeded.
@@ -402,10 +431,14 @@ func TestOperationsErrors(t *testing.T) {
 		{"unknown cancel", []string{"operations", "cancel", "op_99ZZZZ"}, 21, "unknown_operation"},
 		{"operation conflict", []string{"operations", "cancel", "op_01J9Z5"}, 32, "operation_conflict"},
 		{"unknown status filter", []string{"operations", "--status", "bogus"}, 22, "invalid_arguments"},
+		{"limit out of range", []string{"operations", "--limit", "0"}, 2, "--limit must be from 1 to 1000"},
+		{"limit too large", []string{"operations", "--limit", "1001"}, 2, "--limit must be from 1 to 1000"},
+		{"limit not a number", []string{"operations", "--limit", "many"}, 2, "invalid value"},
 		{"hostile id", []string{"operations", "show", "../version"}, 22, "not a valid identifier"},
 		{"missing id", []string{"operations", "show"}, 2, "usage: hanse operations"},
 		{"unknown subcommand", []string{"operations", "bogus"}, 2, "usage: hanse operations"},
 		{"filter on show", []string{"operations", "show", "op_01J9Z3", "--status", "running"}, 2, "list only"},
+		{"limit on show", []string{"operations", "show", "op_01J9Z3", "--limit", "5"}, 2, "list only"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
