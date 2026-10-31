@@ -759,6 +759,9 @@ func TestRunConflict(t *testing.T) {
 	if !strings.Contains(stderr, "op_running") || !strings.Contains(stderr, "already running") {
 		t.Errorf("run: stderr %q, want the running operation's ID", stderr)
 	}
+	if strings.Contains(stderr, "operation_id:") {
+		t.Errorf("run: stderr %q repeats the conflict operation ID", stderr)
+	}
 	if stdout != "" {
 		t.Errorf("run: stdout %q, want no output", stdout)
 	}

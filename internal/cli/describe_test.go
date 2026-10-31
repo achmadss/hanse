@@ -334,12 +334,14 @@ func TestValidateInvalidRequests(t *testing.T) {
 		args   []string
 		code   int
 		stderr []string
+		absent []string
 	}{
 		{
 			name:   "invalid arguments",
 			args:   []string{"validate", "pc", "up", "--args-json", `{"node":"node-z"}`, "--format", "json"},
 			code:   22,
 			stderr: []string{"invalid_arguments", "problem: /node: format", "known node"},
+			absent: []string{"errors: ["},
 		},
 		{
 			name:   "wrong type",
@@ -372,6 +374,11 @@ func TestValidateInvalidRequests(t *testing.T) {
 			for _, want := range tc.stderr {
 				if !strings.Contains(stderr, want) {
 					t.Errorf("%v: stderr %q, want %q", tc.args, stderr, want)
+				}
+			}
+			for _, absent := range tc.absent {
+				if strings.Contains(stderr, absent) {
+					t.Errorf("%v: stderr %q repeats %q", tc.args, stderr, absent)
 				}
 			}
 		})
