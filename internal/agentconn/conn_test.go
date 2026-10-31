@@ -358,7 +358,8 @@ func (f *fixture) waitStatus(t *testing.T, node string, want registry.NodeStatus
 	}
 }
 
-// testCall is one valid run the hub can send.
+// testCall is one valid run the hub can send. The short grace period keeps
+// the stop tests fast; the agent applies it to its own stop steps.
 func testCall(runID string) *Call {
 	return &Call{
 		RunID:      runID,
@@ -368,6 +369,8 @@ func testCall(runID string) *Call {
 		Bundle:     "sha256:" + strings.Repeat("a", 64),
 		Entry:      []string{"sh", "handler.sh"},
 		Request:    json.RawMessage(`{"contract":"hanse.handler/v1","kind":"operation","id":"` + runID + `"}`),
+
+		GracePeriod: 50 * time.Millisecond,
 	}
 }
 
@@ -827,9 +830,11 @@ func TestNodeRemovedClosesConnection(t *testing.T) {
 	f.waitStatus(t, "node-a", registry.StatusOffline)
 }
 
-// TestCancelledRunIsForgottenAfterResult drops a cancelled run when the
-// agent sends the result it still owed.
-func TestCancelledRunIsForgottenAfterResult(t *testing.T) {
+// TestCancelledRunReportsTheAgentResult keeps the run going after the stop
+// request until the agent reports how its handler ended, so a handler that
+// finishes ok during the grace period ends completed
+// (docs/handler-contract.md section 5).
+func TestCancelledRunReportsTheAgentResult(t *testing.T) {
 	f := newFixture(t, nil)
 	credential := f.credential(t, "node-a")
 	ws, _ := f.connect(t, credential, hello("node-a"))
@@ -847,18 +852,28 @@ func TestCancelledRunIsForgottenAfterResult(t *testing.T) {
 	if msg := readMessage(t, ws); msg.MessageType() != agentproto.TypeCancel {
 		t.Fatalf("next message is %q, want cancel", msg.MessageType())
 	}
-	if result := <-done; !errors.Is(result.err, context.Canceled) {
-		t.Fatalf("execute error %v, want context.Canceled", result.err)
+	select {
+	case result := <-done:
+		t.Fatalf("execute returned %+v before the agent's result", result)
+	default:
 	}
 	writeMessage(t, ws, resultMessage("op_cancel_result", 1))
 	if ack := readMessage(t, ws); ack.MessageType() != agentproto.TypeAck {
 		t.Fatalf("next message is %q, want ack", ack.MessageType())
 	}
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("execute error %v, want the handler's ok result", result.err)
+	}
+	if result.response.Status != runtime.StatusOK {
+		t.Errorf("response status %q, want ok", result.response.Status)
+	}
 	waitRunForgotten(t, f, "op_cancel_result")
 }
 
 // TestCancelledRunIsForgottenAfterWindow drops a cancelled run whose agent
-// never answers once the reconnect window passes.
+// never answers once the reconnect window passes. Execute waits for the
+// grace period before it reports the cancellation.
 func TestCancelledRunIsForgottenAfterWindow(t *testing.T) {
 	f := newFixture(t, func(cfg *Config) {
 		cfg.ReconnectWindow = 50 * time.Millisecond
@@ -879,9 +894,47 @@ func TestCancelledRunIsForgottenAfterWindow(t *testing.T) {
 	if msg := readMessage(t, ws); msg.MessageType() != agentproto.TypeCancel {
 		t.Fatalf("next message is %q, want cancel", msg.MessageType())
 	}
-	<-done
+	start := time.Now()
+	result := <-done
+	if !errors.Is(result.err, context.Canceled) {
+		t.Fatalf("execute error %v, want context.Canceled", result.err)
+	}
+	if waited := time.Since(start); waited < 50*time.Millisecond {
+		t.Errorf("execute returned after %s, before the grace period ended", waited)
+	}
 	_ = ws.Close()
 	waitRunForgotten(t, f, "op_cancel_window")
+}
+
+// TestDeadlineStopNamesTheDeadline requires a stop that the operation
+// deadline caused to name the deadline, not a client cancellation.
+func TestDeadlineStopNamesTheDeadline(t *testing.T) {
+	f := newFixture(t, nil)
+	credential := f.credential(t, "node-a")
+	ws, _ := f.connect(t, credential, hello("node-a"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	done := make(chan dispatchResult, 1)
+	go func() {
+		response, err := f.hub.Execute(ctx, testCall("op_deadline"))
+		done <- dispatchResult{response: response, err: err}
+	}()
+	if run := readMessage(t, ws); run.MessageType() != agentproto.TypeRun {
+		t.Fatalf("first message is %q, want run", run.MessageType())
+	}
+	if msg := readMessage(t, ws); msg.MessageType() != agentproto.TypeCancel {
+		t.Fatalf("next message is %q, want the stop request", msg.MessageType())
+	}
+	if result := <-done; !errors.Is(result.err, context.DeadlineExceeded) {
+		t.Fatalf("execute error %v, want context.DeadlineExceeded", result.err)
+	}
+	if len(f.logs.find("reached its deadline")) == 0 {
+		t.Errorf("logs %+v do not name the deadline", f.logs.lines)
+	}
+	if len(f.logs.find("client cancelled")) != 0 {
+		t.Errorf("logs %+v call a deadline stop a client cancellation", f.logs.lines)
+	}
 }
 
 // TestReconnectWindowUsesInjectedClock proves that the reconnect timer

@@ -24,6 +24,11 @@ import (
 // stdout, 1 MiB, docs/handler-contract.md section 11.
 const DefaultResponseLimit int64 = 1 << 20
 
+// KilledLine is the system log entry of a handler that outlived its grace
+// period, so the agent killed its process tree
+// (docs/handler-contract.md section 6).
+const KilledLine = "the handler did not stop in the grace period; the agent killed it"
+
 // Runner runs exec handlers. The zero value uses the documented defaults.
 // A Runner holds no per-call state, so one value serves concurrent calls.
 type Runner struct {
@@ -101,6 +106,10 @@ type Outcome struct {
 	StopReason string
 	// OutputError is "", "missing", "invalid", or "too_large".
 	OutputError string
+	// Killed reports that the handler did not exit during the grace
+	// period, so the runner killed its process tree
+	// (docs/handler-contract.md section 6).
+	Killed bool
 }
 
 // stopReason is why the runner stopped a handler.
@@ -273,7 +282,7 @@ func (r *Runner) Run(ctx context.Context, spec Spec) (runtime.Response, error) {
 		exited <- waitResult{state: cmd.ProcessState, err: waitErr}
 	}()
 
-	reason, waited := waitForExit(ctx, spec.Request.Deadline, grace, tree, exited, cancelFile, oversized)
+	reason, waited, killed := waitForExit(ctx, spec.Request.Deadline, grace, tree, exited, cancelFile, oversized)
 	// In every stop path the process is gone, so the readers see EOF. The
 	// oversized reader has already returned.
 	out := <-stdoutDone
@@ -297,6 +306,7 @@ func (r *Runner) Run(ctx context.Context, spec Spec) (runtime.Response, error) {
 	}
 	if spec.Outcome != nil {
 		*spec.Outcome = outcomeDetails(reason, started, out, exitCode, signalName, valid)
+		spec.Outcome.Killed = killed
 	}
 	return outcome(reason, resp, valid, exitCode, signalName, limit, out.err)
 }
@@ -336,8 +346,9 @@ func outcomeDetails(reason stopReason, started time.Time, out stdoutResult, exit
 // waitForExit waits for the process to exit or for a stop condition. It
 // returns stopNone when the process exited on its own; otherwise it carries
 // out the stop steps of docs/handler-contract.md sections 6 and 7 and
-// returns the process's wait result.
-func waitForExit(ctx context.Context, deadline time.Time, grace time.Duration, tree *processTree, exited <-chan waitResult, cancelFile string, oversized <-chan struct{}) (stopReason, waitResult) {
+// returns the process's wait result. killed reports that the handler did not
+// exit within the grace period, so the runner killed it.
+func waitForExit(ctx context.Context, deadline time.Time, grace time.Duration, tree *processTree, exited <-chan waitResult, cancelFile string, oversized <-chan struct{}) (stopReason, waitResult, bool) {
 	var deadlineCh <-chan time.Time
 	var timer *time.Timer
 	if !deadline.IsZero() {
@@ -348,17 +359,20 @@ func waitForExit(ctx context.Context, deadline time.Time, grace time.Duration, t
 	for {
 		select {
 		case waited := <-exited:
-			return stopNone, waited
+			return stopNone, waited, false
 		case <-deadlineCh:
-			return stopTimeout, stopHandler(tree, grace, exited, cancelFile)
+			waited, killed := stopHandler(tree, grace, exited, cancelFile)
+			return stopTimeout, waited, killed
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) || deadlinePassed(deadline) {
-				return stopTimeout, stopHandler(tree, grace, exited, cancelFile)
+				waited, killed := stopHandler(tree, grace, exited, cancelFile)
+				return stopTimeout, waited, killed
 			}
-			return stopCancelled, stopHandler(tree, grace, exited, cancelFile)
+			waited, killed := stopHandler(tree, grace, exited, cancelFile)
+			return stopCancelled, waited, killed
 		case <-oversized:
 			tree.kill()
-			return stopOversized, <-exited
+			return stopOversized, <-exited, false
 		}
 	}
 }
@@ -366,8 +380,9 @@ func waitForExit(ctx context.Context, deadline time.Time, grace time.Duration, t
 // stopHandler carries out the stop steps: create the cancel file, send the
 // platform's stop signal, wait the grace period, then kill the process
 // tree. It also kills leftover children when the handler itself exited
-// first.
-func stopHandler(tree *processTree, grace time.Duration, exited <-chan waitResult, cancelFile string) waitResult {
+// first. killed reports that the grace period ended before the handler
+// exited.
+func stopHandler(tree *processTree, grace time.Duration, exited <-chan waitResult, cancelFile string) (waitResult, bool) {
 	_ = writeCancelFile(cancelFile)
 	tree.terminate()
 	timer := time.NewTimer(grace)
@@ -375,10 +390,10 @@ func stopHandler(tree *processTree, grace time.Duration, exited <-chan waitResul
 	select {
 	case waited := <-exited:
 		tree.kill()
-		return waited
+		return waited, false
 	case <-timer.C:
 		tree.kill()
-		return <-exited
+		return <-exited, true
 	}
 }
 

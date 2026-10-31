@@ -231,7 +231,10 @@ func (s *server) listOperations(w http.ResponseWriter, r *http.Request) {
 }
 
 // cancelOperation answers POST /v1/operations/{id}/cancel. The token is
-// authorized against the stored record before anything changes.
+// authorized against the stored record before anything changes. The
+// response is the operation's current state: cancelled for a queued
+// operation, and the state after the grace period for a running one, which
+// may still be running (docs/architecture.md section 9.5).
 func (s *server) cancelOperation(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.identity(w, r)
 	if !ok {

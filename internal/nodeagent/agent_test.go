@@ -14,6 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/achmadss/hanse/internal/agentproto"
+	"github.com/achmadss/hanse/internal/runner"
 )
 
 // fakeGateway is a minimal Gateway side: it upgrades, reads hello, answers
@@ -87,6 +88,45 @@ func newTestAgent(t *testing.T, gatewayURL string, configure func(*Config)) *Age
 		t.Fatalf("new agent: %v", err)
 	}
 	return agent
+}
+
+// TestRecordResultLogsTheKill requires a handler that outlived the grace
+// period to have a system entry for the kill, queued before the result so a
+// follower sees it before the final state.
+func TestRecordResultLogsTheKill(t *testing.T) {
+	agent := newTestAgent(t, "http://127.0.0.1:1", nil)
+	r := &run{id: "op_killed"}
+	agent.mu.Lock()
+	agent.runs[r.id] = r
+	agent.mu.Unlock()
+
+	exit := 0
+	agent.recordResult(r, &runner.Outcome{Started: true, Killed: true, ExitCode: &exit, StopReason: "cancel"})
+
+	agent.mu.Lock()
+	pending := append([]*pendingMessage(nil), r.pending...)
+	agent.mu.Unlock()
+	killLine := runner.KilledLine
+	killIndex, resultIndex := -1, -1
+	for i, pm := range pending {
+		switch message := pm.message.(type) {
+		case *agentproto.Log:
+			if message.Line == killLine {
+				killIndex = i
+			}
+		case *agentproto.Result:
+			resultIndex = i
+		}
+	}
+	if killIndex < 0 {
+		t.Fatalf("no kill entry in the log: %+v", pending)
+	}
+	if resultIndex < 0 {
+		t.Fatal("no result message")
+	}
+	if killIndex > resultIndex {
+		t.Errorf("the kill entry is after the result: kill %d, result %d", killIndex, resultIndex)
+	}
 }
 
 // TestReconnectDelayBounds covers the doubling and the jitter bound of

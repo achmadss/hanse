@@ -16,6 +16,7 @@ package agentconn
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -262,9 +263,10 @@ func (h *Hub) Online(nodeID string) bool {
 
 // Execute sends one run and waits for its result. A node without a
 // connection fails with ExecutorUnavailable, so the request never silently
-// runs elsewhere. A cancelled context sends a cancel message, or, when the
-// agent is disconnected, records the run for an abandon answer on
-// reconnect, and returns the context's error.
+// runs elsewhere. A cancelled context sends a cancel message and then waits
+// for the agent's result, so a handler that finishes during the grace
+// period reports its own final state. A disconnected agent has the run
+// recorded for an abandon answer on reconnect.
 func (h *Hub) Execute(ctx context.Context, call *Call) (runtime.Response, error) {
 	if h == nil {
 		return runtime.Response{}, herrors.New(herrors.Internal,
@@ -318,28 +320,62 @@ func (h *Hub) Execute(ctx context.Context, call *Call) (runtime.Response, error)
 	case <-r.done:
 		return r.result()
 	case <-ctx.Done():
-		h.stop(r)
-		return runtime.Response{}, ctx.Err()
+		h.stop(r, ctx.Err())
+		// The agent runs the handler's grace period and then reports how
+		// it ended. Wait for that result, so a handler that returns ok
+		// during the grace period ends completed
+		// (docs/handler-contract.md section 5), and the operation stays
+		// running until then (docs/architecture.md section 9.5).
+		select {
+		case <-r.done:
+			return r.result()
+		case <-h.after(stopWait(msg)):
+			return runtime.Response{}, ctx.Err()
+		}
 	}
 }
 
+// stopWait is how long the Gateway waits for the agent's result after it
+// sends the stop request: the handler's grace period plus time for the
+// result message to travel back. The agent starts its own grace timer when
+// the cancel message arrives, so the extra time covers that hop.
+func stopWait(msg *agentproto.Run) time.Duration {
+	grace := time.Duration(msg.GracePeriod) * time.Millisecond
+	return grace + stopResultSlack
+}
+
+// stopResultSlack is the allowance after the grace period for the agent's
+// result message.
+const stopResultSlack = 250 * time.Millisecond
+
 // stop cancels one run. A connected agent gets a cancel message; a
 // disconnected one has the run marked for abandon, so the agent stops it
-// after it reconnects (docs/agent-protocol.md sections 7 and 8.2).
-func (h *Hub) stop(r *run) {
+// after it reconnects (docs/agent-protocol.md sections 7 and 8.2). cause is
+// the dispatch context's error, which names whether a client cancelled the
+// run or its deadline passed.
+func (h *Hub) stop(r *run, cause error) {
 	h.mu.Lock()
 	c := h.conns[r.node]
 	h.mu.Unlock()
+	deadline := errors.Is(cause, context.DeadlineExceeded)
 	if c != nil && c.enqueue(&agentproto.Cancel{Type: agentproto.TypeCancel, RunID: r.id}) {
 		// The client asked to stop the run, so a reconnect must not
 		// resume it even if the agent's result never arrives.
 		r.markAbandoned()
 		h.forgetAfter(r)
-		h.system(r.id, "the client cancelled the operation; a stop request was sent to the agent")
+		if deadline {
+			h.system(r.id, "the operation reached its deadline; a stop request was sent to the agent")
+		} else {
+			h.system(r.id, "the client cancelled the operation; a stop request was sent to the agent")
+		}
 		return
 	}
 	r.markAbandoned()
 	h.forgetAfter(r)
+	if deadline {
+		h.system(r.id, "the agent is disconnected: the operation reached its deadline and the agent is told to abandon it after it reconnects")
+		return
+	}
 	h.system(r.id, "the agent is disconnected: the operation is cancelled and the agent is told to abandon it after it reconnects")
 }
 
