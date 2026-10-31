@@ -37,3 +37,24 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make cross
+
+  release-archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Installs the prebuilt GoReleaser binary: compiling it with `go run`
+      # costs several minutes on a cold module cache.
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "v2.19.0"
+          install-only: true
+      # Builds a GoReleaser snapshot and asserts the hanse-gateway archive
+      # carries capabilities/ and config/, with handler scripts still
+      # executable in the tar.gz.
+      - run: ./scripts/check-release-archive.sh
+        env:
+          GORELEASER: goreleaser

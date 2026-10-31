@@ -94,6 +94,13 @@ archives:
           - zip
     files:
       - LICENSE
+      # The bundled capabilities keep their directory layout and file modes
+      # (handler scripts stay executable) so a Gateway can run them after
+      # unpacking the archive.
+      - src: capabilities
+        dst: capabilities
+      - src: config/*.example.yaml
+        dst: config
 
   - id: hanse-node
     ids:
