@@ -117,6 +117,7 @@ type runFixture struct {
 	polls     []string
 	pollCount int
 	cancels   int
+	logs      int
 	afterRun  func()
 }
 
@@ -187,6 +188,8 @@ func newRunFixture(t *testing.T, privileged bool, polls ...string) (*runFixture,
 			fixture.cancels++
 			fixture.mu.Unlock()
 			_, _ = w.Write([]byte(runRecord("op_hvac_1", "cancelled", "")))
+		case strings.HasPrefix(r.URL.Path, "/v1/operations/") && strings.HasSuffix(r.URL.Path, "/logs"):
+			fixture.answerLogs(t, w, r)
 		case strings.HasPrefix(r.URL.Path, "/v1/operations/") && r.Method == http.MethodGet:
 			fixture.answerPoll(t, w)
 		default:
@@ -217,6 +220,26 @@ func (f *runFixture) recordSubmit(t *testing.T, w http.ResponseWriter, r *http.R
 	_, _ = w.Write([]byte(runRecord("op_hvac_1", "running", "")))
 	if f.afterRun != nil {
 		f.afterRun()
+	}
+}
+
+// answerLogs answers one followed log of the fixture operation. It streams
+// one line and the completed status, and it records the request.
+func (f *runFixture) answerLogs(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	t.Helper()
+	f.mu.Lock()
+	f.logs++
+	f.mu.Unlock()
+	if r.URL.Query().Get("follow") != "true" {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":"invalid_arguments","message":"this fixture follows only"}`))
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	_, _ = w.Write([]byte("id: 1\nevent: log\ndata: " + fixtureLogLine(1, "setting zone loft") + "\n\n"))
+	_, _ = w.Write([]byte("event: status\ndata: {\"operation_id\":\"op_hvac_1\",\"status\":\"completed\"}\n\n"))
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
 	}
 }
 
@@ -383,6 +406,56 @@ func TestRunDetach(t *testing.T) {
 	}
 }
 
+// TestRunFollow streams the log while the command waits, then prints the
+// record and exits with the operation's exit code.
+func TestRunFollow(t *testing.T) {
+	fixture, configPath := newRunFixture(t, false, completedRunRecord)
+
+	stdout, stderr, code := runCLI(t, []string{
+		"run", "hvac", "set", "--zone", "loft", "--follow",
+	}, configPath)
+	if code != 0 {
+		t.Fatalf("run --follow: exit code %d, stderr %s", code, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("run --follow: unexpected stderr %q", stderr)
+	}
+	if !strings.Contains(stdout, "stderr: setting zone loft") {
+		t.Errorf("run --follow: the streamed log is missing:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "op_hvac_1") || !strings.Contains(stdout, "completed") {
+		t.Errorf("run --follow: the record is missing:\n%s", stdout)
+	}
+	fixture.mu.Lock()
+	logs := fixture.logs
+	fixture.mu.Unlock()
+	if logs != 1 {
+		t.Errorf("run --follow: %d log requests, want 1", logs)
+	}
+}
+
+// TestRunFollowAndDetachConflict requires the two flags to be mutually
+// exclusive, before any request.
+func TestRunFollowAndDetachConflict(t *testing.T) {
+	fixture, configPath := newRunFixture(t, false, completedRunRecord)
+
+	stdout, stderr, code := runCLI(t, []string{
+		"run", "hvac", "set", "--zone", "loft", "--follow", "--detach",
+	}, configPath)
+	if code != 2 {
+		t.Fatalf("run --follow --detach: exit code %d, want 2; stderr %s", code, stderr)
+	}
+	if !strings.Contains(stderr, "cannot be used together") {
+		t.Errorf("run --follow --detach: stderr %q, want the conflict", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("run --follow --detach: stdout %q, want no output", stdout)
+	}
+	if got := fixture.submitCount(); got != 0 {
+		t.Errorf("run --follow --detach: %d submit requests, want none", got)
+	}
+}
+
 // TestRunExecutorFlag requires --executor in the request.
 func TestRunExecutorFlag(t *testing.T) {
 	fixture, configPath := newRunFixture(t, false, completedRunRecord)
@@ -542,6 +615,7 @@ func TestRunHelp(t *testing.T) {
 		"--tags string", "repeat the flag for each value",
 		"--executor id",
 		"--detach",
+		"--follow",
 		"--args-json object",
 		"--args-file path",
 		"overrides the key of the same name",
@@ -746,6 +820,7 @@ func TestComplete(t *testing.T) {
 		want []string
 	}{
 		{"command", []string{"__complete", "ru"}, []string{"run"}},
+		{"logs command", []string{"__complete", "lo"}, []string{"logs"}},
 		{"capability", []string{"__complete", "run", "h"}, []string{"hvac"}},
 		{"operation", []string{"__complete", "run", "hvac", ""}, []string{"set"}},
 		{"flags", []string{"__complete", "run", "hvac", "set", "--"}, []string{"--zone", "--detach", "--executor", "--args-json"}},

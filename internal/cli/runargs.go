@@ -42,6 +42,8 @@ var reservedFlagNames = map[string]bool{
 	"executor":  true,
 	"password":  true,
 	"detach":    true,
+	"follow":    true,
+	"f":         true,
 	"format":    true,
 	"args-json": true,
 	"args-file": true,
@@ -63,6 +65,7 @@ type runFlags struct {
 	executor    *string
 	password    *string
 	detach      *bool
+	follow      *bool
 	argsJSON    *string
 	argsFile    *string
 	arguments   []runArgument
@@ -83,6 +86,8 @@ func newRunFlags(describe client.Describe) (*runFlags, error) {
 		"file holding the arguments as a JSON object, or - for standard input")
 	rf.detach = fs.Bool("detach", false,
 		"print the operation ID and return without waiting for the result")
+	rf.follow = fs.Bool("follow", false,
+		"stream the operation's log while waiting for it to finish")
 	rf.password = fs.String("password", "",
 		"password of a privileged operation; it is visible in the shell history")
 
@@ -129,6 +134,7 @@ func flagValueNames() map[string]string {
 		"args-json": "object",
 		"detach":    "",
 		"executor":  "id",
+		"follow":    "",
 		"format":    "text|json",
 		"password":  "value",
 	}

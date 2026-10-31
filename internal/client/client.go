@@ -34,6 +34,8 @@ type Client struct {
 	baseURL *url.URL
 	token   string
 	http    *http.Client
+	// follow holds the timings of FollowLogs. A test may replace it.
+	follow followTuning
 }
 
 // Config describes a client. BaseURL is the Gateway root, such as
@@ -81,7 +83,7 @@ func New(cfg Config) (*Client, error) {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: defaultTimeout}
 	}
-	return &Client{baseURL: u, token: cfg.Token, http: cfg.HTTPClient}, nil
+	return &Client{baseURL: u, token: cfg.Token, http: cfg.HTTPClient, follow: defaultFollowTuning()}, nil
 }
 
 // BaseURL returns the Gateway root the client talks to.
@@ -172,6 +174,12 @@ func (c *Client) get(ctx context.Context, out any, segments ...string) error {
 // endpoint validates every path segment, so an ID such as "../version"
 // cannot reach another endpoint.
 func (c *Client) do(ctx context.Context, method string, out any, query url.Values, body any, segments ...string) error {
+	return c.doWithHeader(ctx, method, out, query, body, nil, segments...)
+}
+
+// doWithHeader performs one request like do and adds header, which is nil
+// for every request that needs none.
+func (c *Client) doWithHeader(ctx context.Context, method string, out any, query url.Values, body any, header http.Header, segments ...string) error {
 	endpoint, err := c.endpoint(segments)
 	if err != nil {
 		return err
@@ -196,6 +204,11 @@ func (c *Client) do(ctx context.Context, method string, out any, query url.Value
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	for name, values := range header {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
