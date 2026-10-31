@@ -19,21 +19,29 @@ func (n *NodeRegistry) addBuiltinCapability(c *Capability) error {
 	if n == nil || c == nil {
 		return nil
 	}
+	// The node set is read before capsMu is taken, so the lock order stays
+	// statesMu then capsMu, the same order a reload uses.
+	known := make(map[string]bool, len(n.states))
+	for _, id := range n.nodeIDs() {
+		known[id] = true
+	}
+	isKnown := func(id string) bool { return known[id] }
 	n.capsMu.Lock()
 	defer n.capsMu.Unlock()
-	return n.addBuiltinCapabilityLocked(c)
+	return n.addBuiltinCapabilityLocked(c, isKnown)
 }
 
-// addBuiltinCapabilityLocked is addBuiltinCapability with capsMu held. A
-// registry reload calls it while it replaces the mapping.
-func (n *NodeRegistry) addBuiltinCapabilityLocked(c *Capability) error {
+// addBuiltinCapabilityLocked is addBuiltinCapability with capsMu held. known
+// reports whether a node ID is configured. A registry reload calls it while
+// it replaces the mapping, against the node set it is about to install.
+func (n *NodeRegistry) addBuiltinCapabilityLocked(c *Capability, known func(string) bool) error {
 	if n == nil || c == nil {
 		return nil
 	}
 	// nodeOps keeps the same shape nodeCapabilitiesSorted expects,
 	// pre-merged over everything the node already has.
 	nodeOps := map[string]map[string]map[string]bool{}
-	for _, nodeID := range n.listNodeIDs() {
+	for nodeID := range n.capabilities {
 		for _, nc := range n.capabilities[nodeID] {
 			ops, ok := nodeOps[nodeID]
 			if !ok {
@@ -52,7 +60,7 @@ func (n *NodeRegistry) addBuiltinCapabilityLocked(c *Capability) error {
 	}
 	for opID, routing := range c.Routing {
 		for _, nodeID := range routing.Executors {
-			if _, ok := n.states[nodeID]; !ok {
+			if !known(nodeID) {
 				return herrors.New(herrors.Internal,
 					fmt.Sprintf("nodes: builtin capability %q routes operation %q to unknown node %q",
 						c.ID, opID, nodeID), nil)
@@ -74,13 +82,4 @@ func (n *NodeRegistry) addBuiltinCapabilityLocked(c *Capability) error {
 		n.capabilities[nodeID] = nodeCapabilitiesSorted(caps)
 	}
 	return nil
-}
-
-// listNodeIDs returns every node ID, in an unspecified order.
-func (n *NodeRegistry) listNodeIDs() []string {
-	ids := make([]string, 0, len(n.states))
-	for id := range n.states {
-		ids = append(ids, id)
-	}
-	return ids
 }

@@ -812,6 +812,21 @@ func TestDisabledNodeClosesConnection(t *testing.T) {
 	f.waitStatus(t, "node-a", registry.StatusOffline)
 }
 
+// TestNodeRemovedClosesConnection requires a configuration reload that
+// removed the node to close its agent connection with the node-mismatch
+// close code, because the node is no longer in nodes.yaml.
+func TestNodeRemovedClosesConnection(t *testing.T) {
+	f := newFixture(t, nil)
+	credential := f.credential(t, "node-a")
+	ws, _ := f.connect(t, credential, hello("node-a"))
+	closed := readCloseAsync(ws)
+	f.hub.NodeRemoved("node-a")
+	if code := <-closed; code != closeNodeMismatch {
+		t.Errorf("close code %d, want %d", code, closeNodeMismatch)
+	}
+	f.waitStatus(t, "node-a", registry.StatusOffline)
+}
+
 // TestCancelledRunIsForgottenAfterResult drops a cancelled run when the
 // agent sends the result it still owed.
 func TestCancelledRunIsForgottenAfterResult(t *testing.T) {

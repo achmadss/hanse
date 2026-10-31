@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,6 +59,183 @@ func TestReloadAddsAndDropsCapabilities(t *testing.T) {
 		t.Errorf("gateway capabilities after remove = %+v, want no weather", caps)
 	}
 }
+
+// TestReloadReadsFreshNodesAndRoutes reloads with a ReloadInput that adds a
+// node and a route, the way the Gateway re-reads nodes.yaml and routes.yaml.
+// The new node and the new routing reach the live registry.
+func TestReloadReadsFreshNodesAndRoutes(t *testing.T) {
+	root := t.TempDir()
+	writeCapability(t, root, "pc", pcManifest)
+	input := baseInput()
+	input.Routes.Capabilities = map[string]CapabilityRoute{}
+	current := input
+	reg, _, err := Load(Options{
+		Dirs:        []string{root},
+		Input:       input,
+		ReloadInput: func() (Input, error) { return current, nil },
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	pc, ok := reg.Capability("pc")
+	if !ok {
+		t.Fatal("pc did not load")
+	}
+	if routing, _ := pc.RoutingOf("up"); len(routing.Executors) != 0 {
+		t.Fatalf("pc started routed: %+v", routing)
+	}
+
+	current = baseInput()
+	current.Nodes = append(current.Nodes, Node{ID: "node-e", OS: "linux", Arch: "amd64", Enabled: true})
+	current.Routes.Capabilities["pc"] = CapabilityRoute{Executors: []string{"node-e"}, DefaultExecutor: "node-e"}
+	if _, err := reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if _, ok := reg.Nodes.Get("node-e"); !ok {
+		t.Fatal("the reload did not add node-e")
+	}
+	reloaded, ok := reg.Capability("pc")
+	if !ok {
+		t.Fatal("pc disappeared after the reload")
+	}
+	routing, ok := reloaded.RoutingOf("up")
+	if !ok || len(routing.Executors) != 1 || routing.Executors[0] != "node-e" {
+		t.Errorf("pc.up routing after reload = %+v, want node-e", routing)
+	}
+	if routing, _ := pc.RoutingOf("up"); len(routing.Executors) != 0 {
+		t.Errorf("the snapshot taken before the reload changed: %+v", routing)
+	}
+	if caps, ok := reg.Nodes.Capabilities("node-e"); !ok || !hasCapability(caps, "pc") {
+		t.Errorf("node-e capabilities after reload = %+v, want pc", caps)
+	}
+}
+
+// TestReloadKeepsPresenceAndRemovesNodes keeps the presence of a node that
+// stays configured, including its agent version, and reports a node the new
+// nodes.yaml dropped through the removal hook.
+func TestReloadKeepsPresenceAndRemovesNodes(t *testing.T) {
+	root := t.TempDir()
+	writeCapability(t, root, "pc", pcManifest)
+	current := baseInput()
+	reg, _, err := Load(Options{
+		Dirs:        []string{root},
+		Input:       current,
+		ReloadInput: func() (Input, error) { return current, nil },
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := reg.Nodes.SetAgentPresence("node-a", StatusOnline, "1.2.3"); err != nil {
+		t.Fatalf("set presence: %v", err)
+	}
+	var removed []string
+	reg.SetNodeRemovedHook(func(id string) { removed = append(removed, id) })
+
+	// node-a stays, node-b and node-c disappear from nodes.yaml.
+	kept := baseInput()
+	kept.Nodes = []Node{
+		{ID: "gateway", OS: "linux", Arch: "amd64", Enabled: true},
+		{ID: "node-a", Name: "renamed", OS: "linux", Arch: "arm64", Enabled: true},
+		{ID: "node-d", OS: "linux", Arch: "amd64", Enabled: false},
+	}
+	current = kept
+	if _, err := reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	view, ok := reg.Nodes.Get("node-a")
+	if !ok {
+		t.Fatal("node-a disappeared from the reloaded registry")
+	}
+	if view.Status != StatusOnline || view.AgentVersion != "1.2.3" {
+		t.Errorf("node-a presence after reload = %s/%q, want online/1.2.3", view.Status, view.AgentVersion)
+	}
+	if view.Name != "renamed" {
+		t.Errorf("node-a name after reload = %q, want the new nodes.yaml value", view.Name)
+	}
+	if _, ok := reg.Nodes.Get("node-b"); ok {
+		t.Error("node-b is still configured after the reload dropped it")
+	}
+	if len(removed) != 2 || removed[0] != "node-b" || removed[1] != "node-c" {
+		t.Errorf("removed nodes = %v, want [node-b node-c]", removed)
+	}
+	if status, ok := reg.Nodes.Status("gateway"); !ok || status != StatusOnline {
+		t.Errorf("the Gateway host is %s after reload, want online", status)
+	}
+	if disabled, ok := reg.Nodes.Get("node-d"); !ok || disabled.Enabled {
+		t.Errorf("node-d after reload = %+v, want a configured disabled node", disabled)
+	}
+}
+
+// TestReloadHostWithoutEmbeddedAgentStaysOffline checks the other Gateway
+// layout: with embedded_agent: false the host node keeps the presence its
+// agent connection gave it, and a host with no connection stays offline.
+func TestReloadHostWithoutEmbeddedAgentStaysOffline(t *testing.T) {
+	root := t.TempDir()
+	writeCapability(t, root, "pc", pcManifest)
+	input := baseInput()
+	input.GatewayHostNoEmbeddedAgent = true
+	current := input
+	reg, _, err := Load(Options{
+		Dirs:        []string{root},
+		Input:       input,
+		ReloadInput: func() (Input, error) { return current, nil },
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, err := reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if status, ok := reg.Nodes.Status("gateway"); !ok || status != StatusOffline {
+		t.Errorf("the host node is %s with no agent, want offline", status)
+	}
+	if err := reg.Nodes.SetAgentPresence("gateway", StatusOnline, "2.0.0"); err != nil {
+		t.Fatalf("set host presence: %v", err)
+	}
+	if _, err := reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	view, ok := reg.Nodes.Get("gateway")
+	if !ok || view.Status != StatusOnline || view.AgentVersion != "2.0.0" {
+		t.Errorf("the host node after reload = %+v, want the agent's presence", view)
+	}
+}
+
+// TestReloadFailureKeepsState requires a reload that cannot read the new
+// configuration to report the problem and leave the running state alone.
+func TestReloadFailureKeepsState(t *testing.T) {
+	root := t.TempDir()
+	writeCapability(t, root, "pc", pcManifest)
+	current := baseInput()
+	fail := false
+	reg, _, err := Load(Options{
+		Dirs:  []string{root},
+		Input: current,
+		ReloadInput: func() (Input, error) {
+			if fail {
+				return Input{}, errReloadInput
+			}
+			return current, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	fail = true
+	if _, err := reg.Reload(); !errors.Is(err, errReloadInput) {
+		t.Fatalf("Reload error = %v, want the ReloadInput error", err)
+	}
+	if _, ok := reg.Capability("pc"); !ok {
+		t.Fatal("a failed reload dropped a loaded capability")
+	}
+	if _, ok := reg.Nodes.Get("node-a"); !ok {
+		t.Fatal("a failed reload dropped a configured node")
+	}
+}
+
+// errReloadInput is the failure a ReloadInput returns in the tests.
+var errReloadInput = errors.New("nodes.yaml is unreadable")
 
 // hasCapability reports whether the node capability list holds id.
 func hasCapability(caps []NodeCapability, id string) bool {

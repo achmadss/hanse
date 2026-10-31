@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -35,24 +36,50 @@ func Load(path string) (*Config, Problems, error) {
 		// gateway.yaml must load at all for anything else to be checkable.
 		return nil, problems, nil
 	}
+	cfg := loadNodesRoutes(g, path, &problems)
+	checkPermissions(g, path, &problems)
+	return cfg, problems, nil
+}
 
+// LoadNodesRoutes re-reads nodes.yaml and routes.yaml from the paths g names
+// and validates them with the same checks Load runs on those two files. It
+// does not read gateway.yaml again: a configuration reload keeps the
+// Gateway settings and the file paths loaded at startup
+// (docs/architecture.md section 11.2).
+//
+// g is the gateway.yaml configuration the Gateway loaded at startup, with
+// its default values filled and its paths resolved. A problem in either
+// file is reported in problems; the returned configuration is then not
+// usable.
+func LoadNodesRoutes(g *GatewayConfig) (*Config, Problems, error) {
+	if g == nil {
+		return nil, nil, errors.New("config: the reload needs the loaded gateway.yaml configuration")
+	}
+	problems := Problems{}
+	return loadNodesRoutes(g, g.Paths.Nodes, &problems), problems, nil
+}
+
+// loadNodesRoutes reads and validates the nodes and routes files g names,
+// then runs the cross-file checks that need only these two files. file
+// names the gateway.yaml whose `node` field the host-node check reports on.
+func loadNodesRoutes(g *GatewayConfig, file string, problems *Problems) *Config {
 	nodes := &NodesConfig{}
 	nodesLoaded := false
 	if g.Paths.Nodes != "" {
-		if loaded, ok := loadNodes(g.Paths.Nodes, &problems); ok {
+		if loaded, ok := loadNodes(g.Paths.Nodes, problems); ok {
 			nodes = loaded
 			finalizeNodes(nodes)
-			checkNodes(nodes, g.Paths.Nodes, &problems)
+			checkNodes(nodes, g.Paths.Nodes, problems)
 			nodesLoaded = true
 		}
 	}
 	routes := &RoutesConfig{}
 	routesLoaded := false
 	if g.Paths.Routes != "" {
-		if loaded, ok := loadRoutes(g.Paths.Routes, &problems); ok {
+		if loaded, ok := loadRoutes(g.Paths.Routes, problems); ok {
 			finalizeRoutes(loaded)
 			routes = loaded
-			checkRoutes(routes, g.Paths.Routes, &problems)
+			checkRoutes(routes, g.Paths.Routes, problems)
 			routesLoaded = true
 		}
 	}
@@ -61,14 +88,13 @@ func Load(path string) (*Config, Problems, error) {
 	// checks would then only report noise, so they run against files that
 	// did load.
 	if nodesLoaded {
-		checkGatewayNodes(g, nodes, path, &problems)
+		checkGatewayNodes(g, nodes, file, problems)
 	}
 	if routesLoaded && nodesLoaded {
-		checkRouting(routes, nodes, g.Paths.Routes, &problems)
+		checkRouting(routes, nodes, g.Paths.Routes, problems)
 	}
-	checkPermissions(g, path, &problems)
 
-	return &Config{Gateway: *g, Nodes: *nodes, Routes: *routes}, problems, nil
+	return &Config{Gateway: *g, Nodes: *nodes, Routes: *routes}
 }
 
 // loadGateway reads and decodes gateway.yaml, fills its defaults and

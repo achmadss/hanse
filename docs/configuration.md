@@ -16,6 +16,7 @@ Read the [architecture document](architecture.md) first. The [handler contract](
 8. [Secrets and credential references](#8-secrets-and-credential-references)
 9. [Routing: the single source of truth](#9-routing-the-single-source-of-truth)
 10. [Validation](#10-validation)
+11. [Reloading configuration](#11-reloading-configuration)
 
 ## 1. Files
 
@@ -187,6 +188,8 @@ With `embedded_agent: false`, the Gateway host node is an ordinary executor: it 
 
 Attributes must not hold secrets, because every handler that targets the node receives them.
 
+The Gateway reads `nodes.yaml` at startup and again on a [configuration reload](architecture.md#112-reloading-configuration). A reload keeps the presence of every node that stays in the file, disconnects a node the file removed, and refuses new runs on a node the file disabled.
+
 ### 4.2 Example
 
 ```yaml
@@ -255,6 +258,8 @@ nodes:
 - The Gateway makes `http` handler calls itself, so an `http` capability's list may contain only the Gateway host node, named by `node` in `gateway.yaml`. `"*"` means that node only. This holds in both layouts: `embedded_agent` changes only where `exec` handlers run.
 - A capability that `routes.yaml` does not mention has no eligible executors. The Gateway logs a warning at startup, and every request for it fails with `Executor not eligible`.
 - A request can run an operation only on a node from its eligible list. A request that names any other node fails with `Executor not eligible`, even if that node runs an agent.
+
+`routes.yaml` is read at startup and again on a [configuration reload](architecture.md#112-reloading-configuration). A reload validates it with `nodes.yaml` and the capability manifests, and keeps the running routing when anything is wrong.
 
 ### 5.3 Example
 
@@ -547,3 +552,23 @@ The checks include:
 - `heartbeat_timeout` is at least twice `heartbeat_interval`.
 
 A capability directory with an invalid manifest stops startup too. Skipping it silently could make the Gateway run without operations that clients depend on.
+
+## 11. Reloading configuration
+
+`gateway.yaml` is read once, at startup, and never again while the Gateway runs. A configuration reload re-reads these files:
+
+- `nodes.yaml`;
+- `routes.yaml`;
+- the capability directories that `gateway.yaml`'s `paths.capabilities` names.
+
+The reload applies the same validation as startup to the new files, together. If any file has a problem, the reload reports every problem it found and keeps the running configuration, so the Gateway keeps serving with the previous nodes, routes, and capabilities. `gateway.yaml` itself, `agent.yaml` on each node, the tokens file, and the state databases are not part of a reload; change them with a restart.
+
+Trigger a reload with `POST /v1/capabilities/reload`, with `hanse capabilities install`, or with `SIGHUP` on POSIX:
+
+```console
+$ sudo systemctl kill --signal=SIGHUP hanse-gateway
+```
+
+The reload keeps the presence of every node that stays in `nodes.yaml`, disconnects a node that the file removed, and refuses new runs on a node that the file disabled. Running operations keep the capability snapshot they started with.
+
+[Reloading configuration](architecture.md#112-reloading-configuration) describes the behavior in the architecture document.

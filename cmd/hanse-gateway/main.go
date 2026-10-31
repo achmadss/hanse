@@ -85,7 +85,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 // runServe runs the Gateway until it receives SIGINT or SIGTERM, then shuts
-// it down gracefully. A configuration problem, an unsafe transport, or a
+// it down gracefully. On POSIX systems SIGHUP reloads the configuration
+// without a restart. A configuration problem, an unsafe transport, or a
 // store or registry failure keeps the server from starting at all.
 func runServe(stderr io.Writer, path string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -95,6 +96,8 @@ func runServe(stderr io.Writer, path string) int {
 		printf(stderr, "hanse-gateway: %v\n", err)
 		return exitFail
 	}
+	stopReload := handleReloadSignals(g)
+	defer stopReload()
 	if err := <-g.Done(); err != nil {
 		printf(stderr, "hanse-gateway: %v\n", err)
 		return exitFail

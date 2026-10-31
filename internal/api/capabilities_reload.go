@@ -21,14 +21,18 @@ type reloadResponse struct {
 	Warnings     []reloadWarningView `json:"warnings"`
 }
 
-// reloadCapabilities answers POST /v1/capabilities/reload. It rescans the
-// configured capability directories and swaps the result into the live
-// registry, so an install or a removal reaches the Gateway without a
-// restart.
+// reloadCapabilities answers POST /v1/capabilities/reload. It re-reads
+// nodes.yaml and routes.yaml, rescans the configured capability
+// directories, validates everything, and swaps the result into the live
+// registry, so an install, a removal, or a routing change reaches the
+// Gateway without a restart (docs/architecture.md section 11.2).
+// gateway.yaml is not re-read: its settings and file paths stay those the
+// Gateway loaded at startup.
 //
-// Only a token without an allow list, which has full access, may call it: a
-// restricted token must not change what the Gateway runs. A restricted token
-// answers the Forbidden code, HTTP 403.
+// A problem in any file fails the reload, reports every problem, and keeps
+// the running configuration. Only a token without an allow list, which has
+// full access, may call it: a restricted token must not change what the
+// Gateway runs. A restricted token answers the Forbidden code, HTTP 403.
 func (s *server) reloadCapabilities(w http.ResponseWriter, r *http.Request) {
 	id := auth.IdentityFrom(r)
 	if id == nil {
@@ -47,7 +51,7 @@ func (s *server) reloadCapabilities(w http.ResponseWriter, r *http.Request) {
 	}
 	warnings, err := s.reg.Reload()
 	if err != nil {
-		writeError(w, herrors.New(herrors.Internal, "cannot reload capabilities: "+err.Error(), nil))
+		writeError(w, herrors.New(herrors.Internal, "cannot reload the configuration: "+err.Error(), nil))
 		return
 	}
 	caps := s.reg.Capabilities()

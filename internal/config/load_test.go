@@ -918,6 +918,58 @@ func TestLoadValidationRules(t *testing.T) {
 
 // TestLoadDefaultPathsMissing checks the missing-outmost-file case: when
 // gateway.yaml itself is unreadable, the loader reports exactly that.
+// TestLoadNodesRoutesReloadsTheFiles checks the reload helper: it re-reads
+// nodes.yaml and routes.yaml from the paths the startup gateway.yaml
+// resolved, reports a problem in either file, and leaves the configuration
+// it was given untouched.
+func TestLoadNodesRoutesReloadsTheFiles(t *testing.T) {
+	dir := loadValidBaseline(t)
+	cfg, problems, err := Load(filepath.Join(dir, "gateway.yaml"))
+	if err != nil || len(problems) > 0 {
+		t.Fatalf("Load: %v, %v", err, problems)
+	}
+
+	// The reload sees a route that startup did not have.
+	routes := "version: 1\ncapabilities:\n  demo:\n    executors: \"*\"\n    default_executor: gateway\n" +
+		"  pc:\n    executors: [node-a]\n    default_executor: node-a\n"
+	if err := os.WriteFile(filepath.Join(dir, "routes.yaml"), []byte(routes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nodes := "version: 1\nnodes:\n  gateway:\n    os: linux\n    arch: amd64\n  node-a:\n    os: linux\n    arch: amd64\n"
+	if err := os.WriteFile(filepath.Join(dir, "nodes.yaml"), []byte(nodes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, problems, err := LoadNodesRoutes(&cfg.Gateway)
+	if err != nil {
+		t.Fatalf("LoadNodesRoutes: %v", err)
+	}
+	if len(problems) > 0 {
+		t.Fatalf("LoadNodesRoutes problems: %s", problems.Error())
+	}
+	if _, ok := reloaded.Routes.Capabilities["pc"]; !ok {
+		t.Error("the reload did not read the new routes.yaml")
+	}
+	if _, ok := reloaded.Nodes.Nodes["node-b"]; ok {
+		t.Error("the reload did not read the new nodes.yaml")
+	}
+
+	// An unknown node in routes.yaml is reported, not silently accepted.
+	routes = "version: 1\ncapabilities:\n  pc:\n    executors: [node-missing]\n    default_executor: node-missing\n"
+	if err := os.WriteFile(filepath.Join(dir, "routes.yaml"), []byte(routes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, problems, err = LoadNodesRoutes(&cfg.Gateway)
+	if err != nil {
+		t.Fatalf("LoadNodesRoutes: %v", err)
+	}
+	if len(problems) == 0 {
+		t.Fatal("LoadNodesRoutes accepted an unknown node in routes.yaml")
+	}
+	if _, ok := cfg.Routes.Capabilities["pc"]; !ok {
+		t.Error("the failed reload changed the configuration it was given")
+	}
+}
+
 func TestLoadMissingGatewayFile(t *testing.T) {
 	dir := t.TempDir()
 	problems := runLoad(t, dir)

@@ -168,6 +168,28 @@ $ sudo systemctl stop hanse-gateway
 $ sudo systemctl restart hanse-gateway
 ```
 
+### Reload without a restart
+
+A capability package, `nodes.yaml`, or `routes.yaml` change does not need a
+restart. `POST /v1/capabilities/reload` and `SIGHUP` re-read the capability
+directories, `nodes.yaml`, and `routes.yaml`, validate them together, and
+apply them to the running Gateway. `gateway.yaml` itself is not re-read, so
+change its settings, including the listen address, TLS, timeouts, and the
+host `node`, with a restart.
+
+Send the signal to the service:
+
+```console
+$ sudo systemctl kill --signal=SIGHUP hanse-gateway
+$ journalctl -u hanse-gateway --since "1 minute ago"
+```
+
+The result is logged. A reload with an invalid file reports every problem,
+keeps the old configuration running, and does not stop the service. See
+[Reloading configuration](../configuration.md#11-reloading-configuration).
+
+### Stop and shutdown
+
 On `SIGTERM` the Gateway stops accepting connections, waits for in-flight
 requests up to `timeouts.grace_period`, marks the operations that were still
 queued or running as failed with the reason `gateway_restart`
@@ -228,9 +250,10 @@ SystemCallFilter=~@mount
 
 `ProtectSystem=strict` makes `/etc/hanse` read-only, which is what the
 Gateway expects. Do not add it to `ReadWritePaths`; replace a capability
-package or a secret on disk and use `POST /v1/capabilities/reload` for the
-capability packages. Secret files are read on every use, so a replaced file
-needs no restart.
+package, `nodes.yaml`, or `routes.yaml` on disk and reload: use
+`POST /v1/capabilities/reload`, `hanse capabilities install`, or
+`systemctl kill --signal=SIGHUP hanse-gateway`. Secret files are read on
+every use, so a replaced file needs no restart.
 
 ## 9. Upgrade
 

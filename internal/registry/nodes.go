@@ -69,7 +69,10 @@ type nodeState struct {
 type NodeRegistry struct {
 	gatewayHost                string
 	gatewayHostNoEmbeddedAgent bool
-	states                     map[string]*nodeState
+	// statesMu guards the states map, which a registry reload replaces.
+	// Presence bits live in nodeState, which has its own lock.
+	statesMu sync.RWMutex
+	states   map[string]*nodeState
 	// capsMu guards capabilities, which a registry reload replaces.
 	capsMu sync.RWMutex
 	// capabilities maps a node ID to its executable capabilities, sorted.
@@ -152,8 +155,8 @@ func (n *NodeRegistry) Get(id string) (NodeView, bool) {
 	if n == nil {
 		return NodeView{}, false
 	}
-	state, ok := n.states[id]
-	if !ok {
+	state := n.state(id)
+	if state == nil {
 		return NodeView{}, false
 	}
 	state.mu.RLock()
@@ -169,14 +172,18 @@ func (n *NodeRegistry) List() []NodeView {
 	if n == nil {
 		return nil
 	}
+	n.statesMu.RLock()
 	ids := make([]string, 0, len(n.states))
-	for id := range n.states {
+	states := make(map[string]*nodeState, len(n.states))
+	for id, state := range n.states {
 		ids = append(ids, id)
+		states[id] = state
 	}
+	n.statesMu.RUnlock()
 	sort.Strings(ids)
 	out := make([]NodeView, 0, len(ids))
 	for _, id := range ids {
-		state := n.states[id]
+		state := states[id]
 		state.mu.RLock()
 		out = append(out, NodeView{Node: copyNode(state.node), Status: state.status, AgentVersion: state.agentVersion})
 		state.mu.RUnlock()
@@ -190,6 +197,8 @@ func (n *NodeRegistry) state(id string) *nodeState {
 	if n == nil {
 		return nil
 	}
+	n.statesMu.RLock()
+	defer n.statesMu.RUnlock()
 	return n.states[id]
 }
 
@@ -281,7 +290,7 @@ func (n *NodeRegistry) Capabilities(id string) ([]NodeCapability, bool) {
 	if n == nil {
 		return nil, false
 	}
-	if _, ok := n.states[id]; !ok {
+	if n.state(id) == nil {
 		return nil, false
 	}
 	n.capsMu.RLock()
@@ -292,6 +301,20 @@ func (n *NodeRegistry) Capabilities(id string) ([]NodeCapability, bool) {
 		return []NodeCapability{}, true
 	}
 	return copyCapabilities(caps), true
+}
+
+// nodeIDs returns every node ID, in an unspecified order.
+func (n *NodeRegistry) nodeIDs() []string {
+	if n == nil {
+		return nil
+	}
+	n.statesMu.RLock()
+	defer n.statesMu.RUnlock()
+	ids := make([]string, 0, len(n.states))
+	for id := range n.states {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // copyNode deep-copies one node's slice and map fields.
