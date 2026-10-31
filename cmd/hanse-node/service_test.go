@@ -31,9 +31,11 @@ func newTestPaths(t *testing.T) testInstallPaths {
 	}
 }
 
-// testArgs builds the arguments of install or uninstall.
+// testArgs builds the arguments of install or uninstall. --user is empty,
+// as it is when an operator names no account: install then uses the
+// documented default on POSIX and the virtual service account on Windows.
 func testArgs(paths testInstallPaths) serviceArgs {
-	return serviceArgs{user: "hanse-node", configPath: paths.config, stateDir: paths.state}
+	return serviceArgs{configPath: paths.config, stateDir: paths.state}
 }
 
 // serviceFake records the calls of an install or uninstall. It is the
