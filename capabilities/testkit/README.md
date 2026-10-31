@@ -14,6 +14,9 @@ real nodes.
 - Every log line and every response comes from the real handler. The
   operations cover synchronous and asynchronous runs, logs, cancellation,
   timeouts, output limits, option providers, concurrency, and elevation.
+- Both handlers follow the same output conventions. A boolean in a result,
+  a log line, or a summary is lowercase `true` or `false`. The `os` field is
+  the lowercase Go name of the platform: `linux`, `darwin`, or `windows`.
 
 | Operation | Mode | What it covers |
 |---|---|---|
@@ -178,8 +181,9 @@ use `--executor node-mac`, and `--node node-mac` where the step passes
   elevation password without echoing it. The result shows
   `hanse_privileged: "1"`, `privileged: true`, and `admin: true`. With a wrong
   password, the run fails with `elevation_denied` before the handler starts.
-  Under the embedded agent the same run fails with `elevation_denied` and
-  `the embedded agent does not elevate handlers`.
+  Under the embedded agent the CLI fails the same way, with `elevation_denied`
+  and `the embedded agent does not elevate handlers`, before it prompts for a
+  password.
 - [ ] **privileged, Windows.** In `agent.yaml` on `node-win`, set
   `elevation.enabled: true` and `elevation.account: <admin account>`, the
   administrator account whose password authorizes the run
@@ -197,7 +201,7 @@ use `--executor node-mac`, and `--node node-mac` where the step passes
   password of the `hanse-node` account without echoing it. The log holds
   `privileged: HANSE_PRIVILEGED=1 admin=true user=root`, and the result shows
   `hanse_privileged: "1"`, `privileged: true`, `admin: true`, and
-  `os: Darwin`.
+  `os: darwin`.
 - [ ] **history.** `hanse operations` lists every run above with its final
   state, and `hanse operations show <id>` keeps the arguments and the
   executor.
