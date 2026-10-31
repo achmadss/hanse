@@ -79,6 +79,12 @@ const runSchema = `{
 
 // runDescribe is the describe response of hvac.set.
 func runDescribe(privileged bool) string {
+	return runDescribeWithElevation(privileged, true)
+}
+
+// runDescribeWithElevation is runDescribe with a chosen can_elevate value
+// for the one executor.
+func runDescribeWithElevation(privileged, canElevate bool) string {
 	return fmt.Sprintf(`{
   "capability": "hvac",
   "operation": "set",
@@ -100,12 +106,13 @@ func runDescribe(privileged bool) string {
     {
       "id": "node-a",
       "status": "online",
-      "default": true
+      "default": true,
+      "can_elevate": %t
     }
   ],
   "default_executor": "node-a",
   "executor_required": false
-}`, privileged, runSchema)
+}`, privileged, runSchema, canElevate)
 }
 
 // runFixture is a Gateway fixture for run. It records every submit and
@@ -129,8 +136,14 @@ type runFixture struct {
 // order.
 func newRunFixture(t *testing.T, privileged bool, polls ...string) (*runFixture, string) {
 	t.Helper()
+	return newRunFixtureWithDescribe(t, runDescribe(privileged), polls...)
+}
+
+// newRunFixtureWithDescribe is newRunFixture with a chosen describe body, so
+// a test can set one executor field such as can_elevate.
+func newRunFixtureWithDescribe(t *testing.T, describeBody string, polls ...string) (*runFixture, string) {
+	t.Helper()
 	fixture := &runFixture{polls: polls}
-	describeBody := runDescribe(privileged)
 	nodesBody := `{
   "nodes": [
     {"id": "node-a", "os": "linux", "arch": "amd64", "roles": ["server"], "attributes": {}, "enabled": true, "status": "online"},
@@ -709,6 +722,48 @@ func TestRunPrivileged(t *testing.T) {
 		elevation, ok := fixture.submitted(t)["elevation"].(map[string]any)
 		if !ok || elevation["password"] != runTestPassword {
 			t.Errorf("run: elevation %v, want the prompted password", elevation)
+		}
+	})
+
+	t.Run("executor that cannot elevate", func(t *testing.T) {
+		for _, args := range [][]string{
+			{"run", "hvac", "set", "--zone", "loft"},
+			{"run", "hvac", "set", "--zone", "loft", "--executor", "node-a"},
+		} {
+			fixture, configPath := newRunFixtureWithDescribe(t, runDescribeWithElevation(true, false), completedRunRecord)
+			var out, errOut bytes.Buffer
+			prompts := 0
+			code := Run(context.Background(), args, Options{
+				Stdin:           strings.NewReader(""),
+				StdinIsTerminal: true,
+				ReadPassword: func(int) ([]byte, error) {
+					prompts++
+					return []byte(runTestPassword), nil
+				},
+				Stdout:     &out,
+				Stderr:     &errOut,
+				ConfigPath: configPath,
+			})
+			if code != 31 {
+				t.Fatalf("run %v: exit code %d, want 31; stderr %s", args, code, errOut.String())
+			}
+			if prompts != 0 {
+				t.Errorf("run %v: prompted %d times, want no prompt", args, prompts)
+			}
+			if strings.Contains(errOut.String(), "Password:") {
+				t.Errorf("run %v: stderr %q holds a prompt", args, errOut.String())
+			}
+			for _, want := range []string{"elevation_denied", "the embedded agent does not elevate handlers"} {
+				if !strings.Contains(errOut.String(), want) {
+					t.Errorf("run %v: stderr %q does not contain %q", args, errOut.String(), want)
+				}
+			}
+			if got := fixture.submitCount(); got != 0 {
+				t.Errorf("run %v: %d submit requests, want none", args, got)
+			}
+			if wrote := out.String(); wrote != "" {
+				t.Errorf("run %v: stdout %q, want no output", args, wrote)
+			}
 		}
 	})
 

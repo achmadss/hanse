@@ -48,11 +48,15 @@ type DescribeNodeFilter struct {
 
 // DescribeExecutor is one eligible executor. Status is the node's current
 // connection state and is omitted when the Gateway has no node registry for
-// it.
+// it. CanElevate is false when the Gateway will refuse elevation for a
+// privileged operation on this executor. It is nil when the Gateway did not
+// send the field, as a Gateway older than the field does: the client then
+// leaves the decision to the Gateway.
 type DescribeExecutor struct {
-	ID      string `json:"id"`
-	Status  string `json:"status,omitempty"`
-	Default bool   `json:"default"`
+	ID         string `json:"id"`
+	Status     string `json:"status,omitempty"`
+	Default    bool   `json:"default"`
+	CanElevate *bool  `json:"can_elevate,omitempty"`
 }
 
 // ValidateRequest is the body of POST /v1/operations/validate. The endpoint

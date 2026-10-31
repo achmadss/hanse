@@ -298,8 +298,10 @@ func runObjectArguments(describe client.Describe, rf *runFlags) []string {
 // --password value is used as given and warned about every time; otherwise
 // an interactive terminal is prompted without echo. With no terminal and no
 // flag, the command fails with elevation_required before it calls the API,
-// as docs/architecture.md section 12 requires. The value never reaches the
-// output or the error path.
+// as docs/architecture.md section 12 requires. A chosen executor that the
+// Gateway knows cannot elevate fails with elevation_denied at once, so the
+// user is not prompted for a password the Gateway would refuse. The value
+// never reaches the output or the error path.
 func (a *app) operationPassword(describe client.Describe, rf *runFlags) (string, error) {
 	if flagWasSet(rf.fs, "password") {
 		a.warnf("--password puts the password on the command line: the shell can save it in its history and other users of this machine can see it while the command runs")
@@ -311,6 +313,10 @@ func (a *app) operationPassword(describe client.Describe, rf *runFlags) (string,
 				describe.Capability+"."+describe.Operation)
 		}
 		return "", nil
+	}
+	if describeRefusesElevation(describe, *rf.executor) {
+		return "", herrors.New(herrors.ElevationDenied,
+			"the embedded agent does not elevate handlers", nil)
 	}
 	if password != "" {
 		return password, nil

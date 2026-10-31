@@ -113,7 +113,9 @@ raise its rights through `sudo`. With `embedded_agent: true` a privileged
 operation therefore cannot run on the Gateway host. The embedded agent never
 asks for an elevation password, and the run fails with HTTP 403, code
 `elevation_denied`, and the message `the embedded agent does not elevate
-handlers`.
+handlers`. The `hanse` CLI sees `can_elevate: false` for that executor in the
+`describe` response, so it fails the same way before it prompts for a
+password.
 
 Do not remove `NoNewPrivileges` from the Gateway unit to make a privileged
 operation work. Run the operation on an ordinary executor node instead, as

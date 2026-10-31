@@ -435,7 +435,7 @@ A capability object holds `id`, `name`, `description`, `contract`, `handler`, an
 
 A node object holds `id`, `os`, `arch`, `roles`, `attributes`, `enabled`, `status`, and `agent_version`. `status` is `online` while the node's agent connection is up and `offline` otherwise. `agent_version` is the release version the agent reported in its last `hello`, or an empty string before any agent has connected (docs/agent-protocol.md section 4.1).
 
-In `describe`, `required` lists the schema's required arguments, `options` lists the arguments with an option provider as `{field, provider}`, `node_filters` maps each `hanse:node` argument to its filter, and `executors` lists `{id, status, default}`. `executor_required` is `true` when no default executor is configured, so the request must name one.
+In `describe`, `required` lists the schema's required arguments, `options` lists the arguments with an option provider as `{field, provider}`, `node_filters` maps each `hanse:node` argument to its filter, and `executors` lists `{id, status, default, can_elevate}`. `executor_required` is `true` when no default executor is configured, so the request must name one. `can_elevate` is `false` when the Gateway knows that it will refuse elevation for that executor, as it does for the host node of its embedded agent. A remote node decides elevation locally, so the Gateway leaves `can_elevate` `true` for it and the node may still refuse the run.
 
 The error object keeps the shape of section 14: `{code, message, details}`, with `details` omitted when empty.
 
@@ -536,6 +536,7 @@ Behavior:
 - `run` waits for the operation to finish by default. `--detach` returns the operation ID at once. `--follow` streams the logs while waiting.
 - Pressing Ctrl+C while following stops the following only. It does not cancel the operation.
 - For a privileged operation, `run` prompts for the password without showing it. When the terminal is not interactive, the password must come from `--password`. Without it, `run` fails with `Elevation required`.
+- Before it prompts, `run` checks the chosen executor in the `describe` response. When `can_elevate` is `false`, as it is for the host node of the Gateway's embedded agent, `run` fails at once with `elevation_denied` and the Gateway's message. A client that sends a password anyway gets the same refusal from the Gateway.
 - `--password` puts the password on the command line. The shell can save it in its history, and other users of the same machine can see it while the command runs. The CLI prints a warning to stderr every time `--password` is used.
 - Every command accepts `--format text|json`. JSON output is deterministic and has no colors. Followed logs in JSON form print one object per line.
 - Exit codes map to the [error codes](#14-errors).
