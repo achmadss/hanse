@@ -14,6 +14,12 @@ func TestWindowsInstallPlan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
+	if plan.Service != WindowsName {
+		t.Errorf("service = %q, want %q", plan.Service, WindowsName)
+	}
+	if plan.Account != WindowsAccount {
+		t.Errorf("account = %q, want %q", plan.Account, WindowsAccount)
+	}
 	want := []StepKind{
 		StepMkdir, StepRegisterService, StepAddGroupMember,
 		StepWriteFile, StepGrant, StepMkdir, StepGrant, StepGrant, StepStartService,

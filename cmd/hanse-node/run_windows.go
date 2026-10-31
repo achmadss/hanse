@@ -40,13 +40,14 @@ type serviceHandler struct {
 }
 
 // Execute starts the agent and reports its state to the service manager.
-// Stop and Shutdown cancel the agent and wait for it to return, and a
-// non-zero agent exit reports a service failure, which runs the recovery
-// action that the installer configured.
+// Stop and Shutdown cancel the agent and wait for it to return, and that
+// stop is always reported as success, because the manager asked for it and
+// a failure would run the recovery restart. An agent that exits on its own
+// with a non-zero code is reported as a service failure.
 func (h *serviceHandler) Execute(_ []string, requests <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
 	run := h.run
 	if run == nil {
-		run = func(ctx context.Context) int { return agentRun(ctx, h.configPath, h.stderr) }
+		run = func(ctx context.Context) int { return agentRun(ctx, h.configPath, h.stderr, true) }
 	}
 	changes <- svc.Status{State: svc.StartPending}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -66,7 +67,13 @@ func (h *serviceHandler) Execute(_ []string, requests <-chan svc.ChangeRequest, 
 			case svc.Stop, svc.Shutdown:
 				changes <- svc.Status{State: svc.StopPending}
 				cancel()
-				return false, uint32(<-done)
+				<-done
+				// The agent returns a non-zero code for a cancelled context,
+				// but this stop was asked for, so the service stopped
+				// cleanly. A non-zero code here would be a failure that the
+				// recovery actions may act on, and a requested stop must
+				// never restart the agent.
+				return false, 0
 			}
 		}
 	}

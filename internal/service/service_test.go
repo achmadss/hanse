@@ -265,7 +265,7 @@ func TestApplyStopsAtTheFirstFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("a failing step was ignored")
 	}
-	if !strings.Contains(err.Error(), "write the default "+testConfig) {
+	if !strings.Contains(err.Error(), "wrote the default "+testConfig) {
 		t.Errorf("err = %v, want the failing step named", err)
 	}
 	for _, call := range host.calls {

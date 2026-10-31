@@ -19,7 +19,7 @@ const DarwinJobTarget = "system/" + DarwinLabel
 // darwinPlan is the install or uninstall of the launchd daemon
 // (docs/architecture.md section 8.4).
 func darwinPlan(o Options, acc Account) (Plan, error) {
-	plan := Plan{OS: o.OS, Action: o.Action}
+	plan := Plan{OS: o.OS, Action: o.Action, Service: DarwinPlistPath}
 	if o.Action == Uninstall {
 		// Unloading a daemon that is not loaded is not a failure. The
 		// configuration, the credential, and the state directory stay, so
@@ -27,31 +27,32 @@ func darwinPlan(o Options, acc Account) (Plan, error) {
 		plan.Steps = []Step{
 			{Kind: StepRun, Args: []string{"launchctl", "bootout", DarwinJobTarget},
 				IgnoreFailure: true,
-				Description:   "unload " + DarwinLabel},
+				Description:   "unloaded " + DarwinLabel},
 			{Kind: StepRemoveFile, Target: DarwinPlistPath, IgnoreFailure: true,
-				Description: "remove " + DarwinPlistPath},
+				Description: "removed " + DarwinPlistPath},
 		}
 		return plan, nil
 	}
+	plan.Account = acc.Name
 	plan.Steps = posixFileSteps(o, acc)
 	plan.Steps = append(plan.Steps,
 		// An installed daemon keeps the definition it was loaded with, so
 		// unload the old one before the new plist replaces it.
 		Step{Kind: StepRun, Args: []string{"launchctl", "bootout", DarwinJobTarget},
 			IgnoreFailure: true,
-			Description:   "unload an earlier " + DarwinLabel},
+			Description:   "unloaded an earlier " + DarwinLabel},
 		Step{Kind: StepWriteFile, Target: DarwinPlistPath, Content: darwinPlist(o, acc),
 			Mode: 0o644, Owner: rootOwner(),
-			Description: "write the launchd daemon " + DarwinPlistPath},
+			Description: "wrote the launchd daemon " + DarwinPlistPath},
 		Step{Kind: StepRun, Args: []string{"launchctl", "bootstrap", "system", DarwinPlistPath},
-			Description: "load " + DarwinLabel + " into launchd"},
+			Description: "loaded " + DarwinLabel + " into launchd"},
 		Step{Kind: StepRun, Args: []string{"launchctl", "enable", DarwinJobTarget},
-			Description: "enable " + DarwinLabel + " at boot"},
+			Description: "enabled " + DarwinLabel + " at boot"},
 	)
 	if o.Start {
 		plan.Steps = append(plan.Steps, Step{
 			Kind: StepRun, Args: []string{"launchctl", "kickstart", "-k", DarwinJobTarget},
-			Description: "start " + DarwinLabel,
+			Description: "started " + DarwinLabel,
 		})
 	}
 	return plan, nil

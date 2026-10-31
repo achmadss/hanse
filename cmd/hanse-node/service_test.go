@@ -170,7 +170,7 @@ func TestInstallAppliesThePlan(t *testing.T) {
 		!strings.Contains(host.callsText(), "grant "+credential) {
 		t.Errorf("calls:\n%s\nwant the credential handed to the service account", host.callsText())
 	}
-	if !strings.Contains(stdout.String(), "the service is running") {
+	if !strings.Contains(stdout.String(), "it is running now") {
 		t.Errorf("stdout = %q, want the running service reported", stdout.String())
 	}
 }
@@ -187,8 +187,44 @@ func TestInstallBeforeEnrollment(t *testing.T) {
 	if !strings.Contains(stdout.String(), "has not enrolled yet") {
 		t.Errorf("stdout = %q, want the enrollment step", stdout.String())
 	}
-	if strings.Contains(stdout.String(), "the service is running") {
+	if strings.Contains(stdout.String(), "it is running now") {
 		t.Fatal("the service was started before enrollment")
+	}
+}
+
+// TestInstallNamesTheServiceAndAccount covers the last lines of a
+// successful install: an operator who runs it on a real node must see what
+// was registered and for whom.
+func TestInstallNamesTheServiceAndAccount(t *testing.T) {
+	paths := newTestPaths(t)
+	writeTestCredential(t, paths.state, testCredential, "https://gateway.example.com")
+	host := &serviceFake{account: testNodeAccount(), administrator: true}
+	var stdout, stderr bytes.Buffer
+	if code := installService(host, testArgs(paths), &stdout, &stderr); code != exitOK {
+		t.Fatalf("exit code = %d, want %d: %s", code, exitOK, stderr.String())
+	}
+	summary := "installed " + planServicePath() + " for " + planAccount()
+	if !strings.Contains(stdout.String(), summary) {
+		t.Errorf("stdout = %q, want %q", stdout.String(), summary)
+	}
+}
+
+// TestUninstallRunsTwice covers a second uninstall on a node where nothing
+// is installed any more: every service step finds nothing to do, and the
+// command still succeeds.
+func TestUninstallRunsTwice(t *testing.T) {
+	paths := newTestPaths(t)
+	for run := 1; run <= 2; run++ {
+		// The second run meets a node whose service, group membership, and
+		// unit file are already gone, so every service step fails.
+		host := &serviceFake{administrator: true, failOn: "hanse"}
+		var stdout, stderr bytes.Buffer
+		if code := uninstallService(host, testArgs(paths), &stdout, &stderr); code != exitOK {
+			t.Fatalf("uninstall %d: exit code = %d, want %d: %s", run, code, exitOK, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "removed "+planServicePath()) {
+			t.Errorf("uninstall %d: stdout = %q, want the removal reported", run, stdout.String())
+		}
 	}
 }
 
@@ -205,7 +241,7 @@ func TestUninstallAppliesThePlan(t *testing.T) {
 			t.Errorf("uninstall touched %q", call)
 		}
 	}
-	if !strings.Contains(stdout.String(), "the service is removed") {
+	if !strings.Contains(stdout.String(), "removed "+planServicePath()) {
 		t.Errorf("stdout = %q, want the removal reported", stdout.String())
 	}
 }
@@ -219,7 +255,7 @@ func TestInstallFailsOnAStep(t *testing.T) {
 	if code := installService(host, testArgs(paths), &stdout, &stderr); code != exitFail {
 		t.Fatalf("exit code = %d, want %d", code, exitFail)
 	}
-	if !strings.Contains(stderr.String(), "write the default "+paths.config) {
+	if !strings.Contains(stderr.String(), "wrote the default "+paths.config) {
 		t.Errorf("stderr = %q, want the failing step named", stderr.String())
 	}
 }
@@ -298,6 +334,28 @@ func writeTestCredential(t *testing.T, stateDir, credential, gatewayURL string) 
 	if err := os.WriteFile(filepath.Join(stateDir, credentialFileName), data, 0o600); err != nil {
 		t.Fatalf("write the credential: %v", err)
 	}
+}
+
+// planServicePath is the service definition that install writes on the
+// operating system the test runs on.
+func planServicePath() string {
+	switch runtime.GOOS {
+	case "windows":
+		return service.WindowsName
+	case "darwin":
+		return service.DarwinPlistPath
+	default:
+		return service.LinuxUnitPath
+	}
+}
+
+// planAccount is the account that the service runs as on the operating
+// system the test runs on.
+func planAccount() string {
+	if runtime.GOOS == "windows" {
+		return service.WindowsAccount
+	}
+	return testNodeAccount().Name
 }
 
 // testNodeAccount is the account that runs the agent in these tests.

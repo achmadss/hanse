@@ -13,14 +13,15 @@ func posixFileSteps(o Options, acc Account) []Step {
 	configDir := dirPath(o.OS, o.ConfigPath)
 	return []Step{
 		{Kind: StepMkdir, Target: configDir, Mode: 0o755, Owner: rootOwner(),
-			Description: "create " + configDir},
+			Description: "created " + configDir},
 		{Kind: StepWriteFile, Target: o.ConfigPath, Content: agentYAML(o),
 			Mode: 0o640, Owner: &Owner{UID: 0, GID: acc.GID}, CreateOnly: true,
-			Description: "write the default " + o.ConfigPath + " when there is none"},
+			Description: "wrote the default " + o.ConfigPath +
+				" when there was none, and set its owner and mode"},
 		{Kind: StepMkdir, Target: o.StateDir, Mode: 0o700, Owner: accountOwner(acc),
-			Description: "create the state directory " + o.StateDir},
+			Description: "created the state directory " + o.StateDir},
 		{Kind: StepChown, Target: joinPath(o.OS, o.StateDir, credentialName),
 			Mode: 0o600, Owner: accountOwner(acc), IgnoreFailure: true,
-			Description: "give the node credential in " + o.StateDir + " to " + acc.Name},
+			Description: "gave the node credential in " + o.StateDir + " to " + acc.Name},
 	}
 }

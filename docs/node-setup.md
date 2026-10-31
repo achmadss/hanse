@@ -101,15 +101,16 @@ once.
 
 ```console
 $ sudo hanse-node install --user hanse-node
-hanse-node: create /etc/hanse-node
-hanse-node: write the default /etc/hanse-node/agent.yaml when there is none
-hanse-node: create the state directory /var/lib/hanse-node
-hanse-node: give the node credential in /var/lib/hanse-node to hanse-node
-hanse-node: write the systemd unit /etc/systemd/system/hanse-node.service
-hanse-node: reload the systemd manager configuration
-hanse-node: enable hanse-node.service at boot
-hanse-node: start hanse-node.service
-hanse-node: the service is running, and it starts at boot without a login
+hanse-node: created /etc/hanse-node
+hanse-node: wrote the default /etc/hanse-node/agent.yaml when there was none, and set its owner and mode
+hanse-node: created the state directory /var/lib/hanse-node
+hanse-node: gave the node credential in /var/lib/hanse-node to hanse-node
+hanse-node: wrote the systemd unit /etc/systemd/system/hanse-node.service
+hanse-node: reloaded the systemd manager configuration
+hanse-node: enabled hanse-node.service at boot
+hanse-node: started hanse-node.service
+hanse-node: installed /etc/systemd/system/hanse-node.service for hanse-node, and it is running now
+hanse-node: it starts at boot without a login
 ```
 
 The unit is a system unit, so it starts with nobody logged in. It runs as
@@ -132,16 +133,17 @@ Its hardening is deliberately light:
 
 ```console
 $ sudo hanse-node install --user hanse-node
-hanse-node: create /usr/local/etc/hanse-node
-hanse-node: write the default /usr/local/etc/hanse-node/agent.yaml when there is none
-hanse-node: create the state directory /var/lib/hanse-node
-hanse-node: give the node credential in /var/lib/hanse-node to hanse-node
-hanse-node: unload an earlier dev.hanse.node
-hanse-node: write the launchd daemon /Library/LaunchDaemons/dev.hanse.node.plist
-hanse-node: load dev.hanse.node into launchd
-hanse-node: enable dev.hanse.node at boot
-hanse-node: start dev.hanse.node
-hanse-node: the service is running, and it starts at boot without a login
+hanse-node: created /usr/local/etc/hanse-node
+hanse-node: wrote the default /usr/local/etc/hanse-node/agent.yaml when there was none, and set its owner and mode
+hanse-node: created the state directory /var/lib/hanse-node
+hanse-node: gave the node credential in /var/lib/hanse-node to hanse-node
+hanse-node: unloaded an earlier dev.hanse.node
+hanse-node: wrote the launchd daemon /Library/LaunchDaemons/dev.hanse.node.plist
+hanse-node: loaded dev.hanse.node into launchd
+hanse-node: enabled dev.hanse.node at boot
+hanse-node: started dev.hanse.node
+hanse-node: installed /Library/LaunchDaemons/dev.hanse.node.plist for hanse-node, and it is running now
+hanse-node: it starts at boot without a login
 ```
 
 The daemon runs as the account from `--user`. `RunAtLoad` starts it at boot,
@@ -154,16 +156,17 @@ Run from an elevated prompt:
 
 ```powershell
 PS> & 'C:\Program Files\Hanse\hanse-node.exe' install
-hanse-node: create C:\ProgramData\Hanse\node
-hanse-node: register the hanse-node service as NT SERVICE\hanse-node
-hanse-node: add NT SERVICE\hanse-node to the Administrators group
-hanse-node: write the default C:\ProgramData\Hanse\node\agent.yaml when there is none
-hanse-node: let NT SERVICE\hanse-node read C:\ProgramData\Hanse\node\agent.yaml
-hanse-node: create the state directory C:\ProgramData\Hanse\node\state
-hanse-node: give the state directory C:\ProgramData\Hanse\node\state to NT SERVICE\hanse-node
-hanse-node: give the node credential in C:\ProgramData\Hanse\node\state to NT SERVICE\hanse-node
-hanse-node: start the hanse-node service
-hanse-node: the service is running, and it starts at boot without a login
+hanse-node: created C:\ProgramData\Hanse\node
+hanse-node: registered the hanse-node service as NT SERVICE\hanse-node
+hanse-node: added NT SERVICE\hanse-node to the Administrators group
+hanse-node: wrote the default C:\ProgramData\Hanse\node\agent.yaml when there was none
+hanse-node: gave NT SERVICE\hanse-node read access to C:\ProgramData\Hanse\node\agent.yaml
+hanse-node: created the state directory C:\ProgramData\Hanse\node\state
+hanse-node: gave the state directory C:\ProgramData\Hanse\node\state to NT SERVICE\hanse-node
+hanse-node: gave the node credential in C:\ProgramData\Hanse\node\state to NT SERVICE\hanse-node
+hanse-node: started the hanse-node service
+hanse-node: installed hanse-node for NT SERVICE\hanse-node, and it is running now
+hanse-node: it starts at boot without a login
 ```
 
 The service starts automatically. It runs as `NT SERVICE\hanse-node`, which
@@ -172,8 +175,11 @@ operations work while nobody is at the screen. The installer finds the local
 Administrators group by its well-known SID `S-1-5-32-544`, because the
 group's name is localized.
 
-The service manager restarts the agent after a crash: 5 seconds after the
-first failure, then 10, then 30, and the count resets after a day.
+The service manager restarts the agent after a crash, or after an exit with
+a non-zero code that nobody asked for: 5 seconds after the first failure,
+then 10, then 30, and the count resets after a day. It never restarts the
+agent after `Stop-Service` or `sc stop`, because the agent reports a clean
+stop for those.
 
 A Windows service runs in its own session, so its handlers cannot open
 windows on the logged-in user's desktop.
@@ -226,12 +232,18 @@ $ sudo tail -f /var/log/hanse-node.log
 ```
 
 ```powershell
-# Windows: the service state, and the node's state in the Gateway
+# Windows: the service state and the agent's log
 PS> Get-Service hanse-node
+PS> Get-Content 'C:\ProgramData\Hanse\node\state\hanse-node.log' -Wait
 ```
 
-On Windows the service writes no log file yet. Use the service state above,
-and the Gateway's node list, to see whether the agent connected.
+A Windows service has no console, and the service manager discards its
+standard output and standard error, so the agent writes its own lines to
+`<state_dir>\hanse-node.log`. The file rotates to `hanse-node.log.1` when it
+reaches 10 MiB, and only that one old file is kept. It is created inside the
+state directory, so it has the state directory's access control list:
+Administrators and SYSTEM, and the service account. It never holds the node
+credential or an elevation password; the agent does not log either.
 
 From the Gateway host, the node is online while its agent stays connected:
 
@@ -302,24 +314,32 @@ elevation:
 ```console
 # Linux
 $ sudo hanse-node uninstall
-hanse-node: stop hanse-node.service and disable it at boot
-hanse-node: remove /etc/systemd/system/hanse-node.service
-hanse-node: reload the systemd manager configuration
-hanse-node: the service is removed; /etc/hanse-node/agent.yaml and the node credential in /var/lib/hanse-node are kept
+hanse-node: stopped hanse-node.service and disabled it at boot
+hanse-node: removed /etc/systemd/system/hanse-node.service
+hanse-node: reloaded the systemd manager configuration
+hanse-node: removed /etc/systemd/system/hanse-node.service; /etc/hanse-node/agent.yaml and the node credential in /var/lib/hanse-node are kept
 ```
 
 ```console
 # macOS
 $ sudo hanse-node uninstall
-hanse-node: unload dev.hanse.node
-hanse-node: remove /Library/LaunchDaemons/dev.hanse.node.plist
-hanse-node: the service is removed; /usr/local/etc/hanse-node/agent.yaml and the node credential in /var/lib/hanse-node are kept
+hanse-node: unloaded dev.hanse.node
+hanse-node: removed /Library/LaunchDaemons/dev.hanse.node.plist
+hanse-node: removed /Library/LaunchDaemons/dev.hanse.node.plist; /usr/local/etc/hanse-node/agent.yaml and the node credential in /var/lib/hanse-node are kept
 ```
 
 ```powershell
 # Windows, from an elevated prompt
 PS> & 'C:\Program Files\Hanse\hanse-node.exe' uninstall
+hanse-node: stopped the hanse-node service
+hanse-node: removed NT SERVICE\hanse-node from the Administrators group
+hanse-node: deleted the hanse-node service
+hanse-node: removed hanse-node; C:\ProgramData\Hanse\node\agent.yaml and the node credential in C:\ProgramData\Hanse\node\state are kept
 ```
+
+A second uninstall is safe: every service step treats a missing service,
+unit, or group membership as already done, and the command reports the same
+removal.
 
 Uninstall keeps `agent.yaml` and the credential, so a later install needs no
 new enrollment. It removes the Windows service and the account's membership
@@ -386,7 +406,9 @@ runs a handler, and comes back after the agent is killed.
   Windows, open a terminal as an administrator.
 - The service starts and stops at once: read the log. The agent refuses to
   start when `agent.yaml` has a problem, when `gateway_url` is missing, or
-  when the credential is missing. The reason is the first line of the log.
+  when the credential is missing. The reason is in the log, which is
+  `journalctl -u hanse-node` on Linux, `/var/log/hanse-node.log` on macOS,
+  and `<state_dir>\hanse-node.log` on Windows.
 - `elevation denied ... cannot be checked`: the sudoers rule is missing, has
   the wrong path, or uses `NOPASSWD`. Check it with `sudo visudo -cf`.
 - The node stays offline on the Gateway: check that the node's OS and

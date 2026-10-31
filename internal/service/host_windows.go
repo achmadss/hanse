@@ -152,20 +152,46 @@ func (h *windowsHost) RegisterService(spec Spec) error {
 	return setRecovery(service, spec)
 }
 
-// setRecovery makes the service manager restart the agent after a crash.
+// setRecovery makes the service manager restart the agent after a crash or
+// after an exit with a non-zero code that no one asked for.
+//
+// FailureActionsOnNonCrashFailures is set explicitly, so the behavior does
+// not depend on a definition an earlier install left behind. With it on,
+// the manager queues the recovery action when the agent's process ends
+// without reporting a stopped state (a crash), or when it reports stopped
+// with a non-zero code. The Run method returns 0 when the manager asked for
+// the stop, so `sc stop` and `Stop-Service` never restart the agent.
 func setRecovery(service *mgr.Service, spec Spec) error {
 	if len(spec.Recovery) == 0 {
 		return service.ResetRecoveryActions()
 	}
-	actions := make([]mgr.RecoveryAction, 0, len(spec.Recovery))
-	for _, delay := range spec.Recovery {
-		actions = append(actions, mgr.RecoveryAction{Type: mgr.ServiceRestart, Delay: delay})
-	}
-	reset := uint32(spec.RecoveryReset / time.Second)
-	if err := service.SetRecoveryActions(actions, reset); err != nil {
+	if err := service.SetRecoveryActions(recoveryActions(spec.Recovery),
+		recoveryResetSeconds(spec.RecoveryReset)); err != nil {
 		return fmt.Errorf("cannot set the recovery actions of the %s service: %v", spec.Name, err)
 	}
+	if err := service.SetRecoveryActionsOnNonCrashFailures(true); err != nil {
+		return fmt.Errorf("cannot set the recovery rules of the %s service: %v", spec.Name, err)
+	}
 	return nil
+}
+
+// recoveryActions turns the documented restart delays into the service
+// manager's action list. A failure repeats the last delay.
+func recoveryActions(delays []time.Duration) []mgr.RecoveryAction {
+	actions := make([]mgr.RecoveryAction, 0, len(delays))
+	for _, delay := range delays {
+		actions = append(actions, mgr.RecoveryAction{Type: mgr.ServiceRestart, Delay: delay})
+	}
+	return actions
+}
+
+// recoveryResetSeconds is the reset period in the unit the service manager
+// takes.
+func recoveryResetSeconds(reset time.Duration) uint32 {
+	if reset <= 0 {
+		return 0
+	}
+	return uint32(reset / time.Second)
 }
 
 // StartService starts the service and treats an already running service as

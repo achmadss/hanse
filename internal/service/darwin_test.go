@@ -16,6 +16,12 @@ func TestDarwinInstallPlan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
+	if plan.Service != DarwinPlistPath {
+		t.Errorf("service = %q, want %q", plan.Service, DarwinPlistPath)
+	}
+	if plan.Account != "hanse-node" {
+		t.Errorf("account = %q, want the service account", plan.Account)
+	}
 	plist := stepAt(t, plan, DarwinPlistPath)
 	if plist.Kind != StepWriteFile {
 		t.Fatalf("plist step = %q, want a write", plist.Kind)

@@ -14,8 +14,12 @@ const LinuxUnitName = "hanse-node.service"
 
 // linuxPlan is the install or uninstall of the systemd unit
 // (docs/architecture.md section 8.4).
+//
+// The step descriptions are written in the past tense: install and
+// uninstall print them as each step succeeds, so the output is a record of
+// what changed on the node.
 func linuxPlan(o Options, acc Account) (Plan, error) {
-	plan := Plan{OS: o.OS, Action: o.Action}
+	plan := Plan{OS: o.OS, Action: o.Action, Service: LinuxUnitPath}
 	if o.Action == Uninstall {
 		// Disabling a unit that is not installed is not a failure. The
 		// configuration, the credential, and the state directory stay, so
@@ -23,28 +27,29 @@ func linuxPlan(o Options, acc Account) (Plan, error) {
 		plan.Steps = []Step{
 			{Kind: StepRun, Args: []string{"systemctl", "disable", "--now", LinuxUnitName},
 				IgnoreFailure: true,
-				Description:   "stop " + LinuxUnitName + " and disable it at boot"},
+				Description:   "stopped " + LinuxUnitName + " and disabled it at boot"},
 			{Kind: StepRemoveFile, Target: LinuxUnitPath, IgnoreFailure: true,
-				Description: "remove " + LinuxUnitPath},
+				Description: "removed " + LinuxUnitPath},
 			{Kind: StepRun, Args: []string{"systemctl", "daemon-reload"},
-				Description: "reload the systemd manager configuration"},
+				Description: "reloaded the systemd manager configuration"},
 		}
 		return plan, nil
 	}
+	plan.Account = acc.Name
 	plan.Steps = posixFileSteps(o, acc)
 	plan.Steps = append(plan.Steps,
 		Step{Kind: StepWriteFile, Target: LinuxUnitPath, Content: linuxUnit(o, acc),
 			Mode: 0o644, Owner: rootOwner(),
-			Description: "write the systemd unit " + LinuxUnitPath},
+			Description: "wrote the systemd unit " + LinuxUnitPath},
 		Step{Kind: StepRun, Args: []string{"systemctl", "daemon-reload"},
-			Description: "reload the systemd manager configuration"},
+			Description: "reloaded the systemd manager configuration"},
 		Step{Kind: StepRun, Args: []string{"systemctl", "enable", LinuxUnitName},
-			Description: "enable " + LinuxUnitName + " at boot"},
+			Description: "enabled " + LinuxUnitName + " at boot"},
 	)
 	if o.Start {
 		plan.Steps = append(plan.Steps, Step{
 			Kind: StepRun, Args: []string{"systemctl", "restart", LinuxUnitName},
-			Description: "start " + LinuxUnitName,
+			Description: "started " + LinuxUnitName,
 		})
 	}
 	return plan, nil

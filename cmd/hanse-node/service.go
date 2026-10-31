@@ -69,10 +69,13 @@ func installService(host service.Host, args serviceArgs, stdout, stderr io.Write
 		return code
 	}
 	if start {
-		printf(stdout, "hanse-node: the service is running, and it starts at boot without a login\n")
+		printf(stdout, "hanse-node: installed %s for %s, and it is running now\n",
+			plan.Service, plan.Account)
+		printf(stdout, "hanse-node: it starts at boot without a login\n")
 		return exitOK
 	}
-	printf(stdout, "hanse-node: the service is registered, and it starts at boot without a login\n")
+	printf(stdout, "hanse-node: installed %s for %s\n", plan.Service, plan.Account)
+	printf(stdout, "hanse-node: it starts at boot without a login once the node has enrolled\n")
 	printf(stdout, "hanse-node: this node has not enrolled yet: run `hanse-node join "+
 		"<gateway-url> <join-token> --config %s`, then `hanse-node install` again "+
 		"(docs/node-setup.md)\n", args.configPath)
@@ -108,8 +111,8 @@ func uninstallService(host service.Host, args serviceArgs, stdout, stderr io.Wri
 	if code := applyPlan(plan, host, stdout, stderr); code != exitOK {
 		return code
 	}
-	printf(stdout, "hanse-node: the service is removed; %s and the node credential in %s are kept\n",
-		args.configPath, args.stateDir)
+	printf(stdout, "hanse-node: removed %s; %s and the node credential in %s are kept\n",
+		plan.Service, args.configPath, args.stateDir)
 	return exitOK
 }
 

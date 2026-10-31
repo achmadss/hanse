@@ -46,14 +46,26 @@ func startAgent(configPath string, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
 	defer stop()
-	return agentRun(ctx, configPath, stderr)
+	return agentRun(ctx, configPath, stderr, false)
 }
 
 // agentRun loads agent.yaml, reads the node credential that `hanse-node
 // join` wrote, and runs the agent until ctx is done. The Windows service
 // handler cancels ctx on Stop and Shutdown, so the agent stops its
 // handlers before the service manager kills the process.
-func agentRun(ctx context.Context, configPath string, stderr io.Writer) int {
+//
+// service says the process runs under the operating system's service
+// manager, whose standard error is discarded: the agent's lines and its
+// diagnostics then go to the log file in the state directory, so an
+// operator can read why a service did not come up.
+func agentRun(ctx context.Context, configPath string, stderr io.Writer, service bool) int {
+	logs, closeLogs := openAgentLog(service, stderr)
+	defer closeLogs()
+	stderr = logs
+	// The log lives in the state directory, which the configuration names.
+	// Until it is read, the documented default holds the log, so even a
+	// configuration problem reaches a file that an operator can open.
+	setLogDir(logs, defaultStateDir())
 	cfg, problems, err := config.LoadAgent(configPath)
 	if err != nil {
 		printf(stderr, "hanse-node: %v\n", err)
@@ -66,6 +78,7 @@ func agentRun(ctx context.Context, configPath string, stderr io.Writer) int {
 		printf(stderr, "hanse-node: %s: %d configuration problem(s)\n", configPath, len(problems))
 		return exitFail
 	}
+	setLogDir(logs, cfg.StateDir)
 	credential, err := readCredential(cfg.StateDir)
 	if err != nil {
 		printf(stderr, "hanse-node: %v\n", err)
@@ -100,6 +113,15 @@ func agentRun(ctx context.Context, configPath string, stderr io.Writer) int {
 		return exitFail
 	}
 	return exitOK
+}
+
+// setLogDir tells a log destination that waits for the state directory
+// where the directory is. Only the Windows service log waits: every other
+// destination is the writer it was given.
+func setLogDir(logs io.Writer, dir string) {
+	if setter, ok := logs.(interface{ SetStateDir(string) }); ok {
+		setter.SetStateDir(dir)
+	}
 }
 
 // parseRunArgs reads the run command's arguments. The configuration path

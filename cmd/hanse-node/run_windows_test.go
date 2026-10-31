@@ -65,6 +65,72 @@ func TestServiceHandlerStopsTheAgent(t *testing.T) {
 	}
 }
 
+// TestServiceHandlerStopIsNeverAFailure covers an agent that returns a
+// non-zero code for a cancelled context: the manager asked for the stop, so
+// the service reports success. A non-zero code would look like a failure and
+// could start the recovery action.
+func TestServiceHandlerStopIsNeverAFailure(t *testing.T) {
+	for _, command := range []svc.Cmd{svc.Stop, svc.Shutdown} {
+		handler := &serviceHandler{run: func(ctx context.Context) int {
+			<-ctx.Done()
+			return exitFail
+		}}
+		requests := make(chan svc.ChangeRequest, 1)
+		changes := make(chan svc.Status, 4)
+		type result struct {
+			accepted bool
+			code     uint32
+		}
+		finished := make(chan result, 1)
+		go func() {
+			accepted, code := handler.Execute(nil, requests, changes)
+			finished <- result{accepted: accepted, code: code}
+		}()
+		nextStatus(t, changes)
+		nextStatus(t, changes)
+		requests <- svc.ChangeRequest{Cmd: command}
+		select {
+		case got := <-finished:
+			if got.code != 0 {
+				t.Errorf("%d: exit code = %d, want 0 after a requested stop", command, got.code)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%d: the handler did not return after the stop", command)
+		}
+	}
+}
+
+// TestServiceHandlerAnswersInterrogate covers the status request that the
+// service manager sends while the agent runs.
+func TestServiceHandlerAnswersInterrogate(t *testing.T) {
+	handler := &serviceHandler{run: func(ctx context.Context) int {
+		<-ctx.Done()
+		return exitOK
+	}}
+	requests := make(chan svc.ChangeRequest, 2)
+	changes := make(chan svc.Status, 8)
+	done := make(chan struct{})
+	go func() {
+		_, _ = handler.Execute(nil, requests, changes)
+		close(done)
+	}()
+	nextStatus(t, changes)
+	nextStatus(t, changes)
+	requests <- svc.ChangeRequest{
+		Cmd:           svc.Interrogate,
+		CurrentStatus: svc.Status{State: svc.Running},
+	}
+	if status := nextStatus(t, changes); status.State != svc.Running {
+		t.Errorf("interrogate answer = %d, want Running", status.State)
+	}
+	requests <- svc.ChangeRequest{Cmd: svc.Stop}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the handler did not stop")
+	}
+}
+
 // TestServiceHandlerReportsACrash covers an agent that exits with a
 // failure: the handler reports the service as failed, so the service
 // manager carries out the configured recovery action.

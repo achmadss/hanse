@@ -79,6 +79,11 @@ type Plan struct {
 	OS string
 	// Action is what the plan does.
 	Action Action
+	// Service is the definition that the plan installs or removes: the
+	// unit file, the launchd plist, or the Windows service name.
+	Service string
+	// Account is the account the service runs as, when the plan knows it.
+	Account string
 	// Steps run in order.
 	Steps []Step
 }

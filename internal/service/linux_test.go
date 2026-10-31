@@ -13,6 +13,12 @@ func TestLinuxInstallPlan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
+	if plan.Service != LinuxUnitPath {
+		t.Errorf("service = %q, want %q", plan.Service, LinuxUnitPath)
+	}
+	if plan.Account != "hanse-node" {
+		t.Errorf("account = %q, want the service account", plan.Account)
+	}
 	want := []StepKind{
 		StepMkdir, StepWriteFile, StepMkdir, StepChown,
 		StepWriteFile, StepRun, StepRun, StepRun,
