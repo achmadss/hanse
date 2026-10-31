@@ -75,9 +75,20 @@ func Supervise(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if check {
-		// The agent's password check runs this mode: sudo started the
-		// supervisor, so the account may run it, and there is nothing to
-		// do but report success without creating a sudo timestamp.
+		// The agent's password check runs this mode. sudo started the
+		// supervisor, so the account may run it; report whether sudo read
+		// the password, which tells the agent that the sudoers rule asks
+		// for one. No handler runs, so no sudo timestamp is created.
+		marker := make([]byte, 1)
+		read := 0
+		if stdin != nil {
+			read, _ = stdin.Read(marker)
+		}
+		if read == 0 {
+			_, _ = fmt.Fprintln(stdout, runner.SupervisorCheckRead)
+		} else {
+			_, _ = fmt.Fprintln(stdout, runner.SupervisorCheckUnread)
+		}
 		return 0
 	}
 	if len(fs.Args()) == 0 {

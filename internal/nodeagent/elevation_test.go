@@ -2,6 +2,7 @@ package nodeagent
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,6 +113,32 @@ func TestElevationGateWindowForgetsOldFailures(t *testing.T) {
 	}
 	if gate.locked() {
 		t.Error("wrong passwords outside the window caused a lockout")
+	}
+}
+
+// TestElevationGateRefusesANopasswdSudoers covers a node whose sudoers
+// rule lets sudo run the check without a password: the check refuses every
+// password, and the refusal is a configuration problem that does not lock
+// the node out.
+func TestElevationGateRefusesANopasswdSudoers(t *testing.T) {
+	clock := &gateClock{now: time.Now()}
+	gate := newElevationGate(Elevation{Enabled: true}, clock.Now, func(_, _ string) error {
+		return errors.New("sudo did not ask for a password: the sudoers rule for the supervisor must not use NOPASSWD")
+	})
+	for attempt := 0; attempt < DefaultLockoutAttempts*2; attempt++ {
+		allowed, code, reason := gate.check("pc", "down", "placeholder-good-password")
+		if allowed {
+			t.Fatal("a sudoers rule without a password check was accepted")
+		}
+		if code != herrors.ElevationDenied {
+			t.Fatalf("code %v, want elevation_denied", code)
+		}
+		if !strings.Contains(reason, "NOPASSWD") {
+			t.Fatalf("reason %q, want the sudoers rule named", reason)
+		}
+	}
+	if gate.locked() {
+		t.Error("a configuration problem locked the node out")
 	}
 }
 

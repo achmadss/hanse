@@ -65,6 +65,7 @@ printf '%s\n' "$*" >> "$record/argv"
 env >> "$record/env"
 while [ "$1" != "--" ]; do shift; done
 shift
+printf 'hanse-elevation-password:' >&2
 IFS= read -r password
 printf '%s\n' "$password" >> "$record/stdin"
 if [ "$password" = "PASSWORD" ]; then
@@ -242,6 +243,11 @@ func TestPrivilegedPasswordNeverLeavesMemory(t *testing.T) {
 		t.Errorf("the agent output holds the elevation password:\n%s", st.output.String())
 	}
 	err := filepath.Walk(st.stateDir, func(path string, info os.FileInfo, err error) error {
+		if os.IsNotExist(err) {
+			// The agent rewrites its journal while it runs; a file that
+			// vanished is nothing to read.
+			return nil
+		}
 		if err != nil || info.IsDir() {
 			return err
 		}
