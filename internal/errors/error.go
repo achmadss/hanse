@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -75,11 +76,14 @@ func (e *Error) WithDetails(details map[string]any) *Error {
 	return &Error{code: e.code, Message: e.Message, Details: merged}
 }
 
+// keysOf returns the map keys in ascending order, so Error() prints the
+// same line for the same error on every run.
 func keysOf(m map[string]any) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
 	}
+	sort.Strings(keys)
 	return keys
 }
 

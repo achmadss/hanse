@@ -584,11 +584,12 @@ Finished:         2026-10-31T02:25:04Z
 Error:
   Code:     not_a_directory
   Message:  /home/you/hanse-demo/demo-data/notes.txt is not a directory
-hanse: handler_failed: not_a_directory: /home/you/hanse-demo/demo-data/notes.txt is not a directory ([code operation_id message])
+hanse: handler_failed: not_a_directory: /home/you/hanse-demo/demo-data/notes.txt is not a directory
+  operation_id: op_d77fcc932b10cfcebace41e7864be4fb
 exit code: 33
 ```
 
-The names in parentheses are the error's detail keys, in no fixed order. The CLI exits with code `33` (`handler_failed`). The operation's error keeps the handler's own code, `not_a_directory`, with its message and details.
+The first line is the error code and message. Each useful detail follows on its own line, sorted by key. The CLI exits with code `33` (`handler_failed`). The operation's error keeps the handler's own code, `not_a_directory`, with its message and details.
 
 ## 7. Change it
 

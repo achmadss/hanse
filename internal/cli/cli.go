@@ -72,7 +72,7 @@ func Run(ctx context.Context, args []string, opts Options) int {
 		_, _ = fmt.Fprintln(opts.Stderr, usage.hintOr())
 		return 2
 	}
-	_, _ = fmt.Fprintf(opts.Stderr, "hanse: %s\n", err)
+	_ = writeError(opts.Stderr, err)
 	return exitCode(err)
 }
 

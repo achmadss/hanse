@@ -295,3 +295,20 @@ func TestNewDoesNotMutateCallerDetails(t *testing.T) {
 		t.Errorf("error details not redacted: %v", e.Details)
 	}
 }
+
+// TestErrorKeyOrderIsStable requires Error() to sort the detail keys, so the
+// same error prints the same line on every run.
+func TestErrorKeyOrderIsStable(t *testing.T) {
+	details := map[string]any{
+		"operation_id": "op_01J9Z3",
+		"message":      "the handler failed",
+		"code":         "not_a_directory",
+		"capability":   "audit",
+	}
+	const want = "handler_failed: the operation failed ([capability code message operation_id])"
+	for i := 0; i < 50; i++ {
+		if got := New(HandlerFailed, "the operation failed", details).Error(); got != want {
+			t.Fatalf("run %d: Error() = %q, want %q", i, got, want)
+		}
+	}
+}

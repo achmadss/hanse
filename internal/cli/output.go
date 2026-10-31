@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -9,6 +11,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/achmadss/hanse/internal/client"
+	herrors "github.com/achmadss/hanse/internal/errors"
 )
 
 // format is a command's output format.
@@ -87,6 +90,71 @@ func joinIDs(operations []client.Operation) string {
 		ids = append(ids, op.ID)
 	}
 	return strings.Join(ids, ", ")
+}
+
+// writeError prints one error for people. The first line is
+// "hanse: <code>: <message>". Every detail value that the command has not
+// reported yet follows on its own line as "  <key>: <value>", sorted by
+// key; a nested value prints as compact JSON. The line is the same on every
+// run (docs/architecture.md sections 12 and 14).
+func writeError(w io.Writer, err error) error {
+	e := herrors.From(err)
+	if _, writeErr := fmt.Fprintf(w, "hanse: %s: %s\n", e.Code().Name(), oneLine(e.Message)); writeErr != nil {
+		return writeErr
+	}
+	printed := printedDetailKeys(e)
+	for _, key := range sortedKeys(e.Details) {
+		if printed[key] {
+			continue
+		}
+		if _, writeErr := fmt.Fprintf(w, "  %s: %s\n", key, detailValue(e.Details[key])); writeErr != nil {
+			return writeErr
+		}
+	}
+	return nil
+}
+
+// printedDetailKeys returns the detail keys that the command has already
+// reported for e, so writeError does not repeat them. printConflict prints
+// the operation ID of a conflict, printValidationProblems prints the
+// argument problems, and a handler failure leads with the handler's own
+// code and message.
+func printedDetailKeys(e *herrors.Error) map[string]bool {
+	printed := map[string]bool{}
+	if errors.Is(e, herrors.OperationConflict) {
+		printed["operation_id"] = true
+	}
+	if errors.Is(e, herrors.InvalidArguments) || errors.Is(e, herrors.MissingArgument) {
+		printed["errors"] = true
+	}
+	if errors.Is(e, herrors.HandlerFailed) {
+		printed["code"] = true
+		printed["message"] = true
+	}
+	return printed
+}
+
+// detailValue renders one detail value on one line. A nested value prints
+// as compact JSON, whose encoder sorts map keys, so the text is stable.
+func detailValue(v any) string {
+	switch value := v.(type) {
+	case nil:
+		return "null"
+	case string:
+		return oneLine(value)
+	case bool, json.Number,
+		float32, float64,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64:
+		return fmt.Sprint(value)
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return oneLine(fmt.Sprint(v))
+	}
+	return strings.TrimSpace(buf.String())
 }
 
 // sortedKeys returns map keys in ascending order.
