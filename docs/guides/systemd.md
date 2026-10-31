@@ -1,0 +1,210 @@
+# Run the Gateway under systemd
+
+This guide installs the Gateway as a systemd system service on Linux. It
+assumes a binary installed at `/usr/local/bin/hanse-gateway` and the
+documented configuration paths:
+
+| Path | Holds | Access |
+|---|---|---|
+| `/etc/hanse/gateway.yaml` | The configuration | Read-only |
+| `/etc/hanse/nodes.yaml`, `routes.yaml` | Nodes and routing | Read-only |
+| `/etc/hanse/capabilities/` | Capability packages | Read-only |
+| `/etc/hanse/credentials/` | Secret files | Read-only |
+| `/etc/hanse/tls/` | TLS certificate and key | Read-only |
+| `/var/lib/hanse/` | History, enrollment, and the tokens file | Read and write |
+
+Every value in this guide is a placeholder: `gateway.example.com` for the
+public host name and `192.0.2.0/24` for addresses.
+
+The unit is in the repository at
+[`deploy/systemd/hanse-gateway.service`](../../deploy/systemd/hanse-gateway.service).
+
+## 1. Create the service account
+
+The Gateway needs no privilege. It listens on an unprivileged port and starts
+handler processes as its own user, so a dedicated system account is enough:
+
+```console
+$ sudo useradd --system --no-create-home --home-dir /var/lib/hanse \
+    --shell /usr/sbin/nologin hanse
+```
+
+The unit lets systemd create the two directories with the right owner when
+the service starts. If you create them yourself, keep the modes:
+
+```console
+$ sudo install -d -o hanse -g hanse -m 0750 /etc/hanse
+$ sudo install -d -o hanse -g hanse -m 0700 /var/lib/hanse
+```
+
+`StateDirectory=hanse` and `ConfigurationDirectory=hanse` in the unit also
+create `/var/lib/hanse` and `/etc/hanse` when they are missing.
+
+## 2. Install the binary
+
+Build from source or take a release archive:
+
+```console
+$ go build -trimpath -o hanse-gateway ./cmd/hanse-gateway
+$ sudo install -m 0755 hanse-gateway /usr/local/bin/hanse-gateway
+$ hanse-gateway --version
+```
+
+## 3. Write the configuration
+
+Start from the examples:
+
+```console
+$ sudo cp config/gateway.example.yaml /etc/hanse/gateway.yaml
+$ sudo cp config/nodes.example.yaml  /etc/hanse/nodes.yaml
+$ sudo cp config/routes.example.yaml /etc/hanse/routes.yaml
+$ sudo install -d -o hanse -g hanse -m 0750 /etc/hanse/capabilities /etc/hanse/credentials
+```
+
+Change the values in `gateway.yaml` to the absolute paths under `/etc/hanse`
+and `/var/lib/hanse`, and set `node` to the node ID in `nodes.yaml` that is
+this host. Then validate before the first start:
+
+```console
+$ sudo -u hanse hanse-gateway --check-config --config /etc/hanse/gateway.yaml
+/etc/hanse/gateway.yaml: configuration is valid
+```
+
+The check prints every problem and exits 1 when anything is wrong. The
+service refuses to start on the same problems, so run the check after every
+configuration change.
+
+### TLS or a reverse proxy
+
+The Gateway serves TLS itself when `tls.cert_file` and `tls.key_file` are
+set:
+
+```yaml
+listen: 0.0.0.0:8443
+tls:
+  cert_file: /etc/hanse/tls/cert.pem
+  key_file: /etc/hanse/tls/key.pem
+```
+
+Without TLS, the listen address must be loopback. To place a TLS reverse proxy
+on the same host, keep `listen: 127.0.0.1:8443` and leave
+`allow_insecure_http: false`. See
+[Run the Gateway behind a TLS reverse proxy](reverse-proxy.md).
+
+## 4. Create the first API token
+
+The tokens file lives in the state directory by default. Create a token as
+the service user, so its file mode stays `0600`:
+
+```console
+$ sudo -u hanse hanse-gateway token add admin --config /etc/hanse/gateway.yaml
+hst_<token>
+```
+
+The token is printed once. Store it in a password manager; the Gateway keeps
+only its hash.
+
+## 5. Install the unit
+
+```console
+$ sudo install -m 0644 deploy/systemd/hanse-gateway.service \
+    /etc/systemd/system/hanse-gateway.service
+$ sudo systemctl daemon-reload
+$ sudo systemctl enable --now hanse-gateway
+```
+
+## 6. Verify the service
+
+```console
+$ systemctl status hanse-gateway
+$ curl --fail --silent http://127.0.0.1:8443/healthz
+ok
+$ curl --fail --silent http://127.0.0.1:8443/readyz
+ready
+```
+
+`/healthz` and `/readyz` need no token. See
+[Health and readiness endpoints](health.md) for what each one promises.
+
+Follow the log with:
+
+```console
+$ journalctl -u hanse-gateway --follow
+```
+
+The Gateway writes structured log lines to standard error. Set
+`log.format: json` in `gateway.yaml` for one JSON object per line, which a
+log shipper can parse.
+
+## 7. Stop and restart
+
+```console
+$ sudo systemctl stop hanse-gateway
+$ sudo systemctl restart hanse-gateway
+```
+
+On `SIGTERM` the Gateway stops accepting connections, waits for in-flight
+requests up to `timeouts.grace_period`, marks the operations that were still
+queued or running as failed with the reason `gateway_restart`
+(docs/architecture.md section 9.6), and closes the stores. `TimeoutStopSec=30s`
+is longer than the default 10 second grace period, so a normal stop is
+graceful.
+
+A configuration error makes the process exit 1 and `Restart=on-failure`
+retries it every two seconds. Fix the file, run `--check-config`, then
+restart; `journalctl -u hanse-gateway` holds every problem the Gateway
+reported.
+
+## 8. Hardening the unit
+
+The unit applies these settings. Each one costs the Gateway nothing, because
+the Gateway never needs the capability it removes.
+
+| Setting | Effect |
+|---|---|
+| `User=hanse`, `Group=hanse` | Handlers run as an unprivileged service account. |
+| `NoNewPrivileges=yes` | A handler process cannot gain rights through a setuid binary. |
+| `CapabilityBoundingSet=`, `AmbientCapabilities=` | No Linux capability at all. Port 8443 needs none. |
+| `ProtectSystem=strict` | The whole file system is read-only except the paths below. |
+| `ReadWritePaths=/var/lib/hanse` | The only writable directory: the databases and the tokens file. |
+| `StateDirectory=hanse` | Creates `/var/lib/hanse` with mode 0700 and the right owner. |
+| `ProtectHome=yes` | No access to the home directories of logged-in users. |
+| `PrivateTmp=yes` | A private `/tmp`, so another service cannot read handler files. |
+| `PrivateDevices=yes` | No access to physical devices. |
+| `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectKernelLogs` | No kernel configuration, module loading, or kernel log access. |
+| `ProtectControlGroups`, `ProtectClock`, `ProtectHostname` | No control-group, clock, or host name changes. |
+| `ProtectProc=invisible` | Other users' processes are hidden from the service. |
+| `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6` | Only the socket families the Gateway uses. |
+| `RestrictNamespaces=yes`, `RestrictRealtime=yes`, `RestrictSUIDSGID=yes` | No new namespaces, no realtime scheduling, no setuid or setgid files. |
+| `LockPersonality=yes`, `MemoryDenyWriteExecute=yes` | No execution-personality change and no writable, executable memory. |
+| `SystemCallFilter=@system-service`, `SystemCallErrorNumber=EPERM` | Only the system-service system calls; anything else gets `EPERM`. |
+| `UMask=0077` | Every file the Gateway creates is private. |
+
+If an `exec` capability needs to run a program that the filter blocks, add the
+program's calls to the unit with an override instead of removing the filter:
+
+```ini
+# /etc/systemd/system/hanse-gateway.service.d/exec-handler.conf
+[Service]
+SystemCallFilter=~@mount
+```
+
+`ProtectSystem=strict` makes `/etc/hanse` read-only, which is what the
+Gateway expects. Do not add it to `ReadWritePaths`; replace a capability
+package or a secret on disk and use `POST /v1/capabilities/reload` for the
+capability packages. Secret files are read on every use, so a replaced file
+needs no restart.
+
+## 9. Upgrade
+
+```console
+$ sudo systemctl stop hanse-gateway
+$ sudo install -m 0755 hanse-gateway-new /usr/local/bin/hanse-gateway
+$ sudo -u hanse hanse-gateway --check-config --config /etc/hanse/gateway.yaml
+$ sudo systemctl start hanse-gateway
+```
+
+The databases use SQLite in WAL mode and survive the restart. An operation
+that was running during the stop is stored as `failed` with
+`gateway_restart`; a client retries it with the same `Idempotency-Key` when
+the operation is safe to repeat.
