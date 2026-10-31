@@ -373,10 +373,10 @@ A bundle is the content of one capability directory: the manifest and every hand
 
 1. List every regular file in the directory, recursively, with paths relative to the directory and `/` as the separator. A capability directory must not contain symbolic links.
 2. Sort the list by path, comparing bytes.
-3. For each file, write one line: the path, a NUL byte, `755` if the file is executable or `644` otherwise, a NUL byte, the lowercase hex SHA-256 of the file content, and `\n`.
+3. For each file, write one line: the path, a NUL byte, `755` if any execute bit is set in the file's permission bits or `644` otherwise, a NUL byte, the lowercase hex SHA-256 of the file content, and `\n`.
 4. The bundle hash is `sha256:` followed by the lowercase hex SHA-256 of all lines together.
 
-The same algorithm runs on every OS. On Windows, every file counts as `644`.
+The same algorithm runs on every OS, and it reads the file permission bits only. A file system that holds no execute bit, such as NTFS on Windows, reports none, so a Windows Gateway counts every file as `644`. A Gateway on Linux or macOS counts an executable file as `755`. The archive of section 5.2 records the mode of every file, so an agent on any OS hashes a bundle the way the Gateway did.
 
 ### 5.2 Download
 
@@ -392,14 +392,20 @@ The Gateway answers with a gzip-compressed tar archive (`application/gzip`) of t
 The agent:
 
 1. Unpacks the archive into a new temporary directory inside its cache. It rejects absolute paths, paths that contain `..`, links, and device files.
-2. Computes the bundle hash of the unpacked files. If it differs from the requested hash, the agent deletes the directory and answers `rejected` with `handler_integrity`.
-3. Renames the directory to `<cache_dir>/<hex hash>`.
+2. Reads the entry mode of every unpacked file from its tar header: `755` when the header mode has any execute bit, `644` otherwise.
+3. Computes the bundle hash of the unpacked files from those recorded modes, not from the modes its own file system reports. If the hash differs from the requested hash, the agent deletes the directory and answers `rejected` with `handler_integrity`.
+4. Writes the recorded modes as a JSON object, one `755` or `644` value per relative path, to `<cache_dir>/<hex hash>.modes`. The file sits beside the bundle directory, so it is not part of the hash.
+5. Renames the directory to `<cache_dir>/<hex hash>`.
+
+The tar header is the record of the bundle hash, so a bundle that the Gateway built on Linux or macOS, with an executable handler, verifies on Windows, where the unpacked files report mode `644`.
 
 The agent downloads each bundle once, even when several runs need it at the same time.
 
 ### 5.3 Check before every run
 
-Before each run, the agent computes the hash of the bundle's directory again. When it differs, the agent deletes the directory and downloads the bundle again. When the new copy also differs, it answers `rejected` with `handler_integrity`.
+Before each run, the agent computes the hash of the bundle's directory again, from the entry modes it stored beside the directory. When the hash differs, the agent deletes the directory and downloads the bundle again. When the new copy also differs, it answers `rejected` with `handler_integrity`.
+
+A cache entry that has no stored mode list, written by an older agent, is hashed with the modes on disk. On Windows that entry is downloaded again when it holds an executable file.
 
 The agent may delete bundles that no run has used for 7 days.
 

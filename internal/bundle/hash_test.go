@@ -79,3 +79,59 @@ func TestBundleHashChangesWithContent(t *testing.T) {
 		t.Fatalf("hash did not change after content changed: %q", first)
 	}
 }
+
+// TestHashWithModesIsPlatformIndependent proves the agent rebuilds the
+// Gateway's hash from the modes an archive recorded, on every OS. The
+// expected value is the one the Gateway computes on Linux, so the test
+// fails on Windows when HashDir replaces it (issue 88).
+func TestHashWithModesIsPlatformIndependent(t *testing.T) {
+	const want = "sha256:59620006995a6ec5ea5bd54d99d05e48ad14247fa38ed1d867bdeb55323d98c3"
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "handler.sh"), []byte("#!/bin/sh\necho ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "data", "notes.txt"), []byte("notes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modes := map[string]string{"handler.sh": "755", "data/notes.txt": "644"}
+	got, err := HashWithModes(root, modes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("hash with recorded modes = %q, want %q", got, want)
+	}
+	// The recorded mode is what the hash covers, so the same content with
+	// 644 must hash differently.
+	got, err = HashWithModes(root, map[string]string{"handler.sh": "644", "data/notes.txt": "644"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == want {
+		t.Fatal("the hash ignored the recorded mode")
+	}
+}
+
+// TestHashWithModesRejectsBadModeLists covers a mode list that does not
+// describe the directory, or holds a mode other than 755 and 644.
+func TestHashWithModesRejectsBadModeLists(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "handler.sh"), []byte("ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]map[string]string{
+		"missing file": {"handler.sh": "755", "gone.txt": "644"},
+		"missing mode": {"gone.txt": "644"},
+		"bad mode":     {"handler.sh": "700"},
+	}
+	for name, modes := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := HashWithModes(root, modes); err == nil {
+				t.Fatalf("HashWithModes accepted %v", modes)
+			}
+		})
+	}
+}
