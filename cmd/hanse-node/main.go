@@ -51,7 +51,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	var stateDir string
 	var configPath string
 	fs.BoolVar(&showVersion, "version", false, "print the version and exit")
-	fs.StringVar(&stateDir, "state-dir", defaultStateDir(), "directory that holds the node credential")
+	// The default is empty, not the OS default: join and install resolve
+	// an unnamed state directory from agent.yaml before the default, so
+	// they must know whether the operator named one.
+	fs.StringVar(&stateDir, "state-dir", "", "directory that holds the node credential")
 	fs.StringVar(&configPath, "config", defaultConfigPath(), "path to agent.yaml")
 	fs.Usage = func() { usage(stderr) }
 	if err := fs.Parse(args); err != nil {

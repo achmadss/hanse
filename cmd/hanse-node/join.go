@@ -64,6 +64,12 @@ type credentialFile struct {
 // runJoin exchanges a join token for a node credential and stores it in
 // the state directory. The credential and the token never appear in
 // output: the printed line names the node and the file only.
+//
+// The state directory comes from --state-dir, then state_dir in the
+// configuration file, then the documented default. When --state-dir names
+// it, join writes it into the configuration file as an absolute path, so
+// `hanse-node run --config` and `hanse-node install` find the credential
+// that this command stored (docs/configuration.md section 7).
 func runJoin(args []string, stdout, stderr io.Writer, stateDir string) int {
 	positionals, dir, configPath, ok := parseJoinArgs(args, stateDir, stderr)
 	if !ok {
@@ -75,6 +81,11 @@ func runJoin(args []string, stdout, stderr io.Writer, stateDir string) int {
 	}
 	gatewayURL, joinToken := positionals[0], positionals[1]
 	endpoint, err := joinEndpoint(gatewayURL)
+	if err != nil {
+		printf(stderr, "hanse-node: %v\n", err)
+		return exitFail
+	}
+	dir, explicit, err := resolveJoinStateDir(dir, configPath)
 	if err != nil {
 		printf(stderr, "hanse-node: %v\n", err)
 		return exitFail
@@ -95,13 +106,44 @@ func runJoin(args []string, stdout, stderr io.Writer, stateDir string) int {
 		return exitFail
 	}
 	if configPath != "" {
-		if err := writeGatewayURL(configPath, gatewayURL); err != nil {
+		// Only --state-dir is recorded: a state_dir that the file already
+		// sets stays as the operator wrote it, and the documented default
+		// needs no line.
+		writeDir := ""
+		if explicit {
+			writeDir = dir
+		}
+		if err := writeAgentConfig(configPath, gatewayURL, writeDir); err != nil {
 			printf(stderr, "hanse-node: %v\n", err)
 			return exitFail
 		}
 	}
 	printf(stdout, "enrolled node %s; the credential is stored in %s\n", out.Node, path)
 	return exitOK
+}
+
+// resolveJoinStateDir picks the state directory of a join: --state-dir,
+// then state_dir in the configuration file, then the OS default. explicit
+// reports whether --state-dir named it, which is when join writes it into
+// the file as an absolute path.
+func resolveJoinStateDir(flagDir, configPath string) (dir string, explicit bool, err error) {
+	if flagDir != "" {
+		absolute, err := filepath.Abs(flagDir)
+		if err != nil {
+			return "", false, fmt.Errorf("cannot resolve the state directory %s: %v", flagDir, err)
+		}
+		return absolute, true, nil
+	}
+	if configPath != "" {
+		fromConfig, ok, err := config.AgentStateDir(configPath)
+		if err != nil {
+			return "", false, err
+		}
+		if ok {
+			return fromConfig, false, nil
+		}
+	}
+	return defaultStateDir(), false, nil
 }
 
 func joinUsage(w io.Writer) {
@@ -299,11 +341,70 @@ func restrictMode(path string, mode os.FileMode) error {
 	return nil
 }
 
-// writeGatewayURL stores gateway_url in agent.yaml, keeping every other
-// value and comment, so a fresh enrollment leaves the node ready to run
-// (docs/configuration.md section 7.1). A missing file is created with the
-// format version and the URL.
-func writeGatewayURL(path, gatewayURL string) error {
+// findAgentField returns the index of a key in a YAML mapping, or -1.
+func findAgentField(mapping *yaml.Node, key string) int {
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			return i
+		}
+	}
+	return -1
+}
+
+// setAgentField replaces the value of key, or appends the key, and returns
+// the key's index. An empty mapping first gets the format version, so the
+// file this writes always loads.
+func setAgentField(mapping *yaml.Node, key, value string) int {
+	if index := findAgentField(mapping, key); index >= 0 {
+		// Change the value node in place, so a comment attached to it
+		// survives the rewrite.
+		node := mapping.Content[index+1]
+		node.Kind = yaml.ScalarNode
+		node.Tag = "!!str"
+		node.Value = value
+		node.Alias = nil
+		return index
+	}
+	if len(mapping.Content) == 0 {
+		mapping.Content = append(mapping.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "version"},
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: "1"},
+		)
+	}
+	index := len(mapping.Content)
+	mapping.Content = append(mapping.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
+	)
+	return index
+}
+
+// insertAgentField inserts one key and value at index in a YAML mapping.
+func insertAgentField(mapping *yaml.Node, index int, key, value string) {
+	if index < 0 || index > len(mapping.Content) {
+		index = len(mapping.Content)
+	}
+	pair := []*yaml.Node{
+		{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
+	}
+	content := make([]*yaml.Node, 0, len(mapping.Content)+2)
+	content = append(content, mapping.Content[:index]...)
+	content = append(content, pair...)
+	content = append(content, mapping.Content[index:]...)
+	mapping.Content = content
+}
+
+// writeAgentConfig stores gateway_url and, when stateDir is not empty,
+// state_dir in agent.yaml. It keeps every other value and comment, so a
+// fresh enrollment leaves the node ready to run
+// (docs/configuration.md section 7). A missing file is created with the
+// format version and the values it is given.
+//
+// A new file gets mode 0600 on POSIX; an existing file keeps its mode. The
+// state directory is written next to gateway_url, as the absolute path
+// that `hanse-node run` later resolves the same way.
+func writeAgentConfig(path, gatewayURL, stateDir string) error {
 	if path == "" {
 		return nil
 	}
@@ -328,26 +429,15 @@ func writeGatewayURL(path, gatewayURL string) error {
 		return fmt.Errorf("%s is not a YAML mapping", path)
 	}
 	mapping := doc.Content[0]
-	value := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: gatewayURL}
-	found := false
-	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		if mapping.Content[i].Value == "gateway_url" {
-			mapping.Content[i+1] = value
-			found = true
-			break
+	gatewayIndex := setAgentField(mapping, "gateway_url", gatewayURL)
+	if stateDir != "" {
+		if index := findAgentField(mapping, "state_dir"); index >= 0 {
+			setAgentField(mapping, "state_dir", stateDir)
+		} else {
+			// Keep state_dir next to gateway_url, where an operator
+			// expects the two values that join writes.
+			insertAgentField(mapping, gatewayIndex+2, "state_dir", stateDir)
 		}
-	}
-	if !found {
-		if len(mapping.Content) == 0 {
-			mapping.Content = append(mapping.Content,
-				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "version"},
-				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: "1"},
-			)
-		}
-		mapping.Content = append(mapping.Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "gateway_url"},
-			value,
-		)
 	}
 	out, err := yaml.Marshal(&doc)
 	if err != nil {

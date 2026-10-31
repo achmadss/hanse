@@ -427,6 +427,10 @@ operations:
 
 Each executor node has an `agent.yaml`. Only the node's administrator may be able to change it: on Linux and macOS, root owns it and the agent's account cannot write it. On Windows, only Administrators and SYSTEM can write it. The agent refuses to start when the file is writable by others. The Gateway cannot change this file, so a node keeps control over what runs on it with administrator rights.
 
+A relative `state_dir` resolves from the directory of `agent.yaml`, like every other path in these files. The same resolved directory applies to `hanse-node join`, `hanse-node run`, and `hanse-node install`.
+
+`hanse-node join` takes the state directory from, in order, `--state-dir`, then `state_dir` in the file, then the documented default. When `--state-dir` names it, join writes `state_dir` into `agent.yaml` as an absolute path next to `gateway_url`, so `hanse-node run --config` and `hanse-node install` read the same directory that holds the credential. Join keeps the other fields and comments of an existing file. A file that join creates gets mode `0600` on Linux and macOS.
+
 ### 7.1 Fields
 
 | Field | Type | Default | Meaning |

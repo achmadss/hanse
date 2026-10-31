@@ -167,3 +167,58 @@ func TestLoadAgentRejectsBadValues(t *testing.T) {
 		})
 	}
 }
+
+// TestAgentStateDir covers the state_dir that `hanse-node join` reads
+// before it writes anything (docs/configuration.md §7).
+func TestAgentStateDir(t *testing.T) {
+	dir := t.TempDir()
+
+	relative := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(relative, []byte("version: 1\nstate_dir: ./state\n"), 0o600); err != nil {
+		t.Fatalf("write agent.yaml: %v", err)
+	}
+	got, ok, err := AgentStateDir(relative)
+	if err != nil {
+		t.Fatalf("AgentStateDir: %v", err)
+	}
+	if !ok {
+		t.Fatal("a file that names state_dir reported none")
+	}
+	if want := filepath.Join(dir, "state"); got != want {
+		t.Errorf("state dir %q, want %q", got, want)
+	}
+
+	absolute := filepath.Join(dir, "absolute.yaml")
+	stateDir := filepath.Join(dir, "elsewhere")
+	if err := os.WriteFile(absolute, []byte("version: 1\nstate_dir: "+stateDir+"\n"), 0o600); err != nil {
+		t.Fatalf("write agent.yaml: %v", err)
+	}
+	got, ok, err = AgentStateDir(absolute)
+	if err != nil {
+		t.Fatalf("AgentStateDir: %v", err)
+	}
+	if !ok || got != stateDir {
+		t.Errorf("state dir %q/%t, want %q", got, ok, stateDir)
+	}
+
+	none := filepath.Join(dir, "none.yaml")
+	if err := os.WriteFile(none, []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatalf("write agent.yaml: %v", err)
+	}
+	if got, ok, err := AgentStateDir(none); err != nil || ok || got != "" {
+		t.Errorf("state dir %q/%t/%v, want none", got, ok, err)
+	}
+
+	missing := filepath.Join(dir, "missing.yaml")
+	if got, ok, err := AgentStateDir(missing); err != nil || ok || got != "" {
+		t.Errorf("missing file: state dir %q/%t/%v, want none", got, ok, err)
+	}
+
+	broken := filepath.Join(dir, "broken.yaml")
+	if err := os.WriteFile(broken, []byte("state_dir: [\n"), 0o600); err != nil {
+		t.Fatalf("write agent.yaml: %v", err)
+	}
+	if _, _, err := AgentStateDir(broken); err == nil {
+		t.Error("a file that is not YAML was accepted")
+	}
+}

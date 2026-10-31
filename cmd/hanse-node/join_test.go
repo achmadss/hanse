@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/achmadss/hanse/internal/config"
 )
 
 // testCredential is a placeholder credential of the documented shape.
@@ -256,5 +258,88 @@ func TestJoinCreatesMissingConfigFile(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "version: 1") || !strings.Contains(string(data), "gateway_url: "+server.URL) {
 		t.Errorf("new agent.yaml is incomplete:\n%s", data)
+	}
+	if !strings.Contains(string(data), "state_dir: "+filepath.Join(dir, "state")) {
+		t.Errorf("new agent.yaml does not name the state directory:\n%s", data)
+	}
+	if runtime.GOOS != "windows" {
+		checkMode(t, configPath, 0o600)
+	}
+}
+
+// TestJoinUsesTheConfiguredStateDir proves that join without --state-dir
+// stores the credential where agent.yaml says, not in the default directory
+// (issue #71).
+func TestJoinUsesTheConfiguredStateDir(t *testing.T) {
+	server := joinServer(t)
+	defer server.Close()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(configPath, []byte("version: 1\nstate_dir: ./node-state\n"), 0o600); err != nil {
+		t.Fatalf("write agent.yaml: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"join", server.URL, testJoinToken, "--config", configPath}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("exit code %d, stderr %s", code, stderr.String())
+	}
+	stateDir := filepath.Join(dir, "node-state")
+	if _, err := os.Stat(filepath.Join(stateDir, credentialFileName)); err != nil {
+		t.Fatalf("the credential is not in the configured state directory: %v", err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read agent.yaml: %v", err)
+	}
+	if !strings.Contains(string(data), "state_dir: ./node-state") {
+		t.Errorf("join rewrote a state_dir it did not name:\n%s", data)
+	}
+}
+
+// TestJoinWritesTheStateDirAsAnAbsolutePath proves that --state-dir is
+// recorded beside gateway_url as an absolute path, and that the existing
+// fields and comments survive.
+func TestJoinWritesTheStateDirAsAnAbsolutePath(t *testing.T) {
+	server := joinServer(t)
+	defer server.Close()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "agent.yaml")
+	body := "# keep this comment\nversion: 1\nmax_concurrent_runs: 8\n"
+	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write agent.yaml: %v", err)
+	}
+	// A relative --state-dir resolves against the working directory.
+	t.Chdir(dir)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"join", server.URL, testJoinToken, "--state-dir", "./node", "--config", configPath}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("exit code %d, stderr %s", code, stderr.String())
+	}
+	stateDir, ok, err := config.AgentStateDir(configPath)
+	if err != nil {
+		t.Fatalf("read state_dir: %v", err)
+	}
+	if !ok || !filepath.IsAbs(stateDir) {
+		t.Fatalf("state_dir = %q, want an absolute path", stateDir)
+	}
+	if want := filepath.Join(dir, "node"); stateDir != want {
+		t.Errorf("state_dir = %q, want %q", stateDir, want)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, credentialFileName)); err != nil {
+		t.Fatalf("the credential is not in the named state directory: %v", err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read agent.yaml: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "# keep this comment") {
+		t.Errorf("join dropped a comment:\n%s", text)
+	}
+	if !strings.Contains(text, "max_concurrent_runs: 8") {
+		t.Errorf("join dropped another setting:\n%s", text)
+	}
+	if !strings.Contains(text, "state_dir: "+stateDir) {
+		t.Errorf("agent.yaml does not name the absolute state directory:\n%s", text)
 	}
 }

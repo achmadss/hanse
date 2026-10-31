@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
@@ -15,11 +13,8 @@ import (
 	"time"
 
 	"github.com/achmadss/hanse/internal/agentconn"
-	"github.com/achmadss/hanse/internal/api"
 	"github.com/achmadss/hanse/internal/config"
-	"github.com/achmadss/hanse/internal/enroll"
 	"github.com/achmadss/hanse/internal/nodeagent"
-	"github.com/achmadss/hanse/internal/registry"
 	"github.com/achmadss/hanse/internal/runner"
 	hanruntime "github.com/achmadss/hanse/internal/runtime"
 )
@@ -66,61 +61,20 @@ func TestAgentLogHoldsNoSecret(t *testing.T) {
 
 	// The Gateway's side: one node, the echo capability, the enrollment
 	// store, and the connection hub.
-	registryInput := registry.Input{
-		Nodes: []registry.Node{{
-			ID: "node-a", OS: goruntime.GOOS, Arch: goruntime.GOARCH,
-			Roles: []string{"server"}, Enabled: true,
-		}},
-		Routes: registry.Routes{Capabilities: map[string]registry.CapabilityRoute{
-			"echo": {Executors: []string{"node-a"}, DefaultExecutor: "node-a"},
-		}},
-	}
-	reg, warnings, err := registry.Load(registry.Options{
-		Dirs:  []string{filepath.Join("..", "..", "capabilities")},
-		Input: registryInput,
-	})
-	if err != nil {
-		t.Fatalf("load the registry: %v", err)
-	}
-	if len(warnings) != 0 {
-		t.Fatalf("warnings: %+v", warnings)
-	}
-	var enrollment *enroll.Service
-	hub, err := agentconn.New(agentconn.Config{
-		Registry:       reg,
-		GatewayVersion: "1.0.0",
-		Verify: func(credential string) (string, error) {
-			if enrollment == nil {
-				return "", io.ErrUnexpectedEOF
-			}
-			return enrollment.Verify(credential)
-		},
-		HeartbeatInterval: time.Second,
-		HeartbeatTimeout:  5 * time.Second,
-		ReconnectWindow:   time.Minute,
-	})
-	if err != nil {
-		t.Fatalf("build the hub: %v", err)
-	}
-	enrollment, err = enroll.Open(enroll.Options{StateDir: t.TempDir(), Disconnect: hub})
-	if err != nil {
-		t.Fatalf("open the enrollment store: %v", err)
-	}
-	t.Cleanup(func() { _ = enrollment.Close() })
-	server := httptest.NewServer(api.New(reg, nil, enrollment, api.WithAgentHub(hub)))
-	t.Cleanup(server.Close)
+	gateway := newTestGateway(t)
+	hub := gateway.hub
 
 	// Enroll this node the way an operator does, with the real join
 	// command, so the credential is the real thing.
 	if err := os.WriteFile(configPath, []byte("version: 1\nstate_dir: "+stateDir+"\n"), 0o600); err != nil {
 		t.Fatalf("write agent.yaml: %v", err)
 	}
-	token, err := enrollment.IssueJoinToken("node-a")
+	token, err := gateway.enrollment.IssueJoinToken("node-a")
 	if err != nil {
 		t.Fatalf("issue a join token: %v", err)
 	}
 	var joinOut, joinErr bytes.Buffer
-	if code := runJoin([]string{server.URL, token.Plain, "--state-dir", stateDir,
+	if code := runJoin([]string{gateway.server.URL, token.Plain, "--state-dir", stateDir,
 		"--config", configPath}, &joinOut, &joinErr, stateDir); code != exitOK {
 		t.Fatalf("join: exit %d: %s", code, joinErr.String())
 	}

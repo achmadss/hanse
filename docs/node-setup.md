@@ -95,6 +95,20 @@ enrolled node node-a; the credential is stored in /var/lib/hanse-node/credential
 The credential never appears in the output or in a log. The join token works
 once.
 
+Join keeps the credential and the configuration file in agreement. The state
+directory comes from `--state-dir`, then `state_dir` in `agent.yaml`, then the
+documented default. When `--state-dir` names it, join writes it into
+`agent.yaml` as an absolute path beside `gateway_url`, so `hanse-node run
+--config` and `hanse-node install` find the same credential. A relative
+`state_dir` in the file resolves from the file's directory.
+
+To keep the credential away from the default directory, name both together:
+
+```console
+$ sudo hanse-node join https://gateway.example.com hjt_<join-token> \
+    --state-dir /srv/hanse-node/state --config /etc/hanse-node/agent.yaml
+```
+
 ## 4. Install the service
 
 ### Linux
