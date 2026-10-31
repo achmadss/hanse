@@ -6,12 +6,19 @@ package main
 import (
 	"context"
 	"os"
+	"os/signal"
 
 	"github.com/achmadss/hanse/internal/cli"
 )
 
 func main() {
-	os.Exit(cli.Run(context.Background(), os.Args[1:], cli.Options{
+	// Ctrl+C ends a wait or a log stream without cancelling the operation
+	// (docs/architecture.md section 12). The handler turns the cancellation
+	// into a message and prints the operation ID.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	os.Exit(cli.Run(ctx, os.Args[1:], cli.Options{
 		Stdin:  os.Stdin,
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,

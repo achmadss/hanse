@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	herrors "github.com/achmadss/hanse/internal/errors"
 )
 
 // The types in this file mirror the operation response shapes of
@@ -43,6 +45,47 @@ type OperationRecord struct {
 // OperationList is the body of GET /v1/operations.
 type OperationList struct {
 	Operations []OperationRecord `json:"operations"`
+}
+
+// Elevation is the password of a privileged operation
+// (docs/architecture.md section 9 and docs/configuration.md section 6.2).
+// The Gateway passes it to the handler and never stores or returns it, so a
+// client sends it once and holds it no longer than the request needs.
+type Elevation struct {
+	Password string `json:"password"`
+}
+
+// SubmitRequest is the body of POST /v1/operations. Arguments is the raw
+// JSON object, so a large integer keeps every digit. An empty Executor lets
+// the Gateway resolve the default one.
+type SubmitRequest struct {
+	Capability string          `json:"capability"`
+	Operation  string          `json:"operation"`
+	Arguments  json.RawMessage `json:"arguments,omitempty"`
+	Executor   string          `json:"executor,omitempty"`
+	Elevation  *Elevation      `json:"elevation,omitempty"`
+}
+
+// Submit returns POST /v1/operations: the new operation record, already
+// finished for a synchronous operation and still running for an
+// asynchronous one. A rejected request comes back as an *herrors.Error with
+// the Gateway's code and details, so its CLI exit code is the documented
+// one; a concurrency conflict carries the running operation's ID in the
+// "operation_id" detail.
+func (c *Client) Submit(ctx context.Context, req SubmitRequest) (OperationRecord, error) {
+	var out OperationRecord
+	if err := c.postJSON(ctx, &out, req, "v1", "operations"); err != nil {
+		return OperationRecord{}, err
+	}
+	return out, nil
+}
+
+// Code returns the shared error code for a wire value, such as the code of
+// an operation record's error, and reports whether the value is one of
+// them.
+func Code(wire string) (*herrors.Code, bool) {
+	code, ok := codesByWire[wire]
+	return code, ok
 }
 
 // OperationRecordEnvelope is the body of GET /v1/operations/{id}. The

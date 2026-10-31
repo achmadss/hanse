@@ -48,7 +48,7 @@ func Run(ctx context.Context, args []string, opts Options) int {
 		printUsage(opts.Stderr)
 		return 2
 	}
-	if hasHelpFlag(args) || args[0] == "help" {
+	if (hasHelpFlag(args) && !runOperationHelpTarget(args)) || args[0] == "help" {
 		printUsage(opts.Stdout)
 		return 0
 	}
@@ -61,10 +61,15 @@ func Run(ctx context.Context, args []string, opts Options) int {
 	if err == nil {
 		return 0
 	}
+	if errors.Is(err, errWaitInterrupted) {
+		// Ctrl+C follows the shell convention: 128+SIGINT. The operation
+		// keeps running, so the wait did not finish successfully.
+		return interruptExitCode
+	}
 	var usage *usageError
 	if errors.As(err, &usage) {
 		_, _ = fmt.Fprintf(opts.Stderr, "hanse: %s\n", usage.message)
-		_, _ = fmt.Fprintln(opts.Stderr, `run "hanse --help" for usage`)
+		_, _ = fmt.Fprintln(opts.Stderr, usage.hintOr())
 		return 2
 	}
 	_, _ = fmt.Fprintf(opts.Stderr, "hanse: %s\n", err)
@@ -95,8 +100,12 @@ func (a *app) run(ctx context.Context, args []string) error {
 		return a.describeCommand(ctx, args[1:])
 	case "validate":
 		return a.validateCommand(ctx, args[1:])
+	case "run":
+		return a.runCommand(ctx, args[1:])
 	case "operations":
 		return a.operationsCommand(ctx, args[1:])
+	case "__complete":
+		return a.completeCommand(ctx, args[1:])
 	default:
 		return usagef("unknown command %q", args[0])
 	}
@@ -105,10 +114,31 @@ func (a *app) run(ctx context.Context, args []string) error {
 // usageError is a command line mistake. It maps to exit code 2.
 type usageError struct {
 	message string
+	// hint is the line that tells the user where the usage is. Empty means
+	// the command list of "hanse --help".
+	hint string
 }
 
 // Error implements the error interface.
 func (e *usageError) Error() string { return e.message }
+
+// hintOr returns the help hint, or the command list hint when none is set.
+func (e *usageError) hintOr() string {
+	if e.hint != "" {
+		return e.hint
+	}
+	return `run "hanse --help" for usage`
+}
+
+// withUsageHint returns the usage error err with another help hint. An error
+// that is not a usage error passes through unchanged.
+func withUsageHint(err error, hint string) error {
+	var usage *usageError
+	if !errors.As(err, &usage) {
+		return err
+	}
+	return &usageError{message: usage.message, hint: hint}
+}
 
 // usagef returns a usage error.
 func usagef(format string, args ...any) error {
@@ -140,6 +170,7 @@ Commands:
   options <capability> <operation> <field>  Show the valid values for an argument.
   describe <capability> <operation>         Show everything needed to build a request.
   validate <capability> <operation>         Validate a request without running it.
+  run <capability> <operation> [flags]      Run an operation; its flags come from its schema.
   operations [filters]                      List operations.
   operations show <id>                      Show one operation.
   operations cancel <id>                    Cancel an operation.

@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -213,5 +214,129 @@ func TestOperationInvalidID(t *testing.T) {
 	}
 	if got := requests.Load(); got != 0 {
 		t.Errorf("sent %d requests with a hostile identifier, want 0", got)
+	}
+}
+
+// submitBody is the request body the submit fixture receives.
+type submitBody struct {
+	Capability string                     `json:"capability"`
+	Operation  string                     `json:"operation"`
+	Arguments  map[string]json.RawMessage `json:"arguments"`
+	Executor   string                     `json:"executor"`
+	Elevation  *Elevation                 `json:"elevation"`
+}
+
+// TestSubmit covers POST /v1/operations: the encoded request, the accepted
+// record of an asynchronous operation, and the omitted optional fields.
+func TestSubmit(t *testing.T) {
+	var received submitBody
+	srv := newTestServer(t, map[string]http.HandlerFunc{
+		"/v1/operations": func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				_, _ = w.Write([]byte(`{"code":"internal","message":"the submit used the wrong method"}`))
+				return
+			}
+			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"code":"invalid_request","message":"the request body is malformed"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(fixtureOperationRunning))
+		},
+	})
+
+	record, err := newTestClient(t, srv).Submit(context.Background(), SubmitRequest{
+		Capability: "pc",
+		Operation:  "up",
+		Arguments:  json.RawMessage(`{"node":"node-c"}`),
+		Executor:   "node-b",
+		Elevation:  &Elevation{Password: "placeholder-elevation-password"},
+	})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if record.ID != "op_01J9Z3" || record.Status != "running" {
+		t.Errorf("submit: got %+v", record)
+	}
+	if received.Capability != "pc" || received.Operation != "up" || received.Executor != "node-b" {
+		t.Errorf("submit: request %+v", received)
+	}
+	if !strings.Contains(string(received.Arguments["node"]), "node-c") {
+		t.Errorf("submit: arguments %v", received.Arguments)
+	}
+	if received.Elevation == nil || received.Elevation.Password != "placeholder-elevation-password" {
+		t.Errorf("submit: elevation %+v", received.Elevation)
+	}
+}
+
+// TestSubmitOmitsOptionalFields requires an empty executor and no elevation
+// to stay out of the request body.
+func TestSubmitOmitsOptionalFields(t *testing.T) {
+	raw := map[string]json.RawMessage{}
+	srv := newTestServer(t, map[string]http.HandlerFunc{
+		"/v1/operations": func(w http.ResponseWriter, r *http.Request) {
+			if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"code":"invalid_request","message":"the request body is malformed"}`))
+				return
+			}
+			jsonRoute(fixtureOperationCompleted)(w, r)
+		},
+	})
+	record, err := newTestClient(t, srv).Submit(context.Background(), SubmitRequest{
+		Capability: "demo",
+		Operation:  "clean",
+	})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if record.Status != "completed" {
+		t.Errorf("submit: got %+v", record)
+	}
+	for _, field := range []string{"executor", "elevation", "arguments"} {
+		if _, ok := raw[field]; ok {
+			t.Errorf("submit: the request carries an empty %q", field)
+		}
+	}
+}
+
+// TestSubmitConflict requires the running operation's ID to reach the
+// caller through the error details.
+func TestSubmitConflict(t *testing.T) {
+	srv := newTestServer(t, map[string]http.HandlerFunc{
+		"/v1/operations": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"code":"operation_conflict","message":"operation \"op_running\" is already running",` +
+				`"details":{"operation_id":"op_running"}}`))
+		},
+	})
+	_, err := newTestClient(t, srv).Submit(context.Background(), SubmitRequest{Capability: "pc", Operation: "up"})
+	if !errors.Is(err, herrors.OperationConflict) {
+		t.Fatalf("submit: error %v, want the OperationConflict code", err)
+	}
+	var apiErr *herrors.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("submit: error %v is not an *herrors.Error", err)
+	}
+	if apiErr.Details["operation_id"] != "op_running" {
+		t.Errorf("submit: details %v, want the running operation ID", apiErr.Details)
+	}
+	if got := herrors.ExitCode(err); got != 32 {
+		t.Errorf("submit: exit code %d, want 32", got)
+	}
+}
+
+// TestCode maps a wire value to its shared code.
+func TestCode(t *testing.T) {
+	code, ok := Code("handler_exit")
+	if !ok || code != herrors.HandlerExit {
+		t.Errorf("Code(handler_exit) = %v, %t", code, ok)
+	}
+	if _, ok := Code("not_a_code"); ok {
+		t.Error("Code(not_a_code) reported a known code")
 	}
 }
