@@ -348,7 +348,8 @@ An operation's `concurrency` setting limits how many runs can happen at the same
 A client cancels an operation with `POST /v1/operations/{id}/cancel`:
 
 - A `queued` operation becomes `cancelled` at once.
-- For a `running` operation, the Gateway signals the handler, waits for a grace period, and then stops the handler's whole process tree. This works the same way for local and remote executors.
+- For a `running` operation, the Gateway signals the handler, waits for a grace period, and then stops the handler's whole process tree. This works the same way for local and remote executors. The operation stays `running` until the handler exits or the grace period ends, and the log records the kill when the handler outlives the grace period. A handler that reports `ok` with exit code `0` during the grace period therefore ends `completed` ([handler contract §5](handler-contract.md#5-exit-codes-and-final-states)).
+- The cancel request answers with the operation's current state: `cancelled` for a queued operation, and the state after that wait for a running one. The record may still be `running` when the handler has not exited yet.
 
 ### 9.6 History
 
@@ -538,7 +539,7 @@ Behavior:
 - For a privileged operation, `run` prompts for the password without showing it. When the terminal is not interactive, the password must come from `--password`. Without it, `run` fails with `Elevation required`.
 - `--password` puts the password on the command line. The shell can save it in its history, and other users of the same machine can see it while the command runs. The CLI prints a warning to stderr every time `--password` is used.
 - Every command accepts `--format text|json`. JSON output is deterministic and has no colors. Followed logs in JSON form print one object per line.
-- Exit codes map to the [error codes](#14-errors).
+- Exit codes map to the [error codes](#14-errors). Only `run` maps an operation's final state to an exit code. A read-only command, such as `operations show` or `logs --follow`, exits 0 when its query succeeded and prints the state.
 - The CLI checks `GET /v1/version` and warns when its API version does not match the Gateway's.
 
 Dedicated commands or aliases, such as a short `pc up`, may exist later. They must be thin wrappers that send the same API requests.
@@ -563,7 +564,7 @@ Most of these files are read only at startup. A running Gateway re-reads the cap
 
 The Gateway, the runtimes, and the CLI share one set of error codes. Each code has a snake_case wire value, a fixed HTTP status, and a fixed CLI exit code. The Go type lives in `internal/errors`.
 
-The HTTP statuses follow common API practice: 400 for a malformed request, 422 for a semantically invalid one, 404 for unknown resources, 409 for conflicts, 502 for handler failures, 503 for an unavailable executor or Gateway, and 504 for a timeout. The CLI exit codes start at 20 and group by category, avoid 0 (success), 1 (generic failure), 2 (usage, which every binary reserves), and 126 and above (which POSIX shells reserve). They are distinct per code so scripts can tell them apart.
+The HTTP statuses follow common API practice: 400 for a malformed request, 422 for a semantically invalid one, 404 for unknown resources, 409 for conflicts, 502 for handler failures, 503 for an unavailable executor or Gateway, and 504 for a timeout. The CLI exit codes start at 20 and group by category, avoid 0 (success), 1 (generic failure), 2 (usage, which every binary reserves), and 126 and above (which POSIX shells reserve). They are distinct per code so scripts can tell them apart. Only `run` maps an operation's final state to an exit code; a succeeded query such as `operations show` or `logs --follow` exits 0 and prints the state.
 
 | Error | Wire code | HTTP | CLI exit | Meaning |
 |---|---|---|---|---|
