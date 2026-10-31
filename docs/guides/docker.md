@@ -342,7 +342,9 @@ The agent connects over one of two paths:
 
 For a container that serves TLS itself and publishes only on loopback, use
 `https://127.0.0.1:8443` and point `ca_file` at the CA that signed the
-certificate, because the certificate names the public host.
+certificate, because the certificate names the public host. Install that CA in
+the host's system trust store before `hanse-node join`, which has no
+`ca_file` of its own.
 
 Check that the node is online:
 
