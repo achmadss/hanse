@@ -106,6 +106,22 @@ const fixtureOperationCancelled = `{
   "summary": "cancelled by the client"
 }`
 
+// fixtureOperationCancelledDone is a cancelled record that a show reads.
+const fixtureOperationCancelledDone = `{
+  "id": "op_01J9Z8",
+  "capability": "pc",
+  "operation": "down",
+  "requester": "erin",
+  "executor": "node-a",
+  "executor_source": "route",
+  "status": "cancelled",
+  "mode": "async",
+  "created_at": "2026-10-30T09:00:00Z",
+  "started_at": "2026-10-30T09:00:01Z",
+  "finished_at": "2026-10-30T09:00:04Z",
+  "summary": "stopped by the client"
+}`
+
 // operationsGateway records the query of every list request, so a test can
 // prove the CLI forwarded its filters.
 type operationsGateway struct {
@@ -172,6 +188,8 @@ func newOperationsGateway(t *testing.T) (*httptest.Server, *operationsGateway) {
 			_, _ = w.Write([]byte(`{"operation":` + fixtureOperationFailed + `}`))
 		case r.URL.Path == "/v1/operations/op_01J9Z7":
 			_, _ = w.Write([]byte(`{"operation":` + fixtureOperationCapabilityCode + `}`))
+		case r.URL.Path == "/v1/operations/op_01J9Z8":
+			_, _ = w.Write([]byte(`{"operation":` + fixtureOperationCancelledDone + `}`))
 		case r.URL.Path == "/v1/operations/op_01J9Z3/cancel" && r.Method == http.MethodPost:
 			_, _ = w.Write([]byte(fixtureOperationCancelled))
 		case r.URL.Path == "/v1/operations/op_01J9Z4/cancel" && r.Method == http.MethodPost:
@@ -216,11 +234,11 @@ func TestOperationsGoldenJSON(t *testing.T) {
 			wantQuery: "capability=demo&executor=node-b&operation=clean&requester=bob&status=completed",
 		},
 		{
-			// A known final-state code keeps its own exit code.
+			// A query exits 0 whatever the operation's final state.
 			golden:    "operation",
 			args:      []string{"operations", "show", "op_01J9Z6"},
 			wantQuery: "",
-			wantCode:  38,
+			wantCode:  0,
 		},
 		{
 			golden:    "operation_cancel",
@@ -271,8 +289,8 @@ func TestOperationsTextOutput(t *testing.T) {
 			name: "show with error",
 			args: []string{"operations", "show", "op_01J9Z6"},
 			want: []string{"Status:", "failed", "Code:", "handler_exit", "Message:", "2026-10-30T06:00:03Z"},
-			// The known code keeps its own exit code.
-			wantCode: 38,
+			// A query that succeeded exits 0, even for a failed operation.
+			wantCode: 0,
 		},
 		{
 			name: "show with result",
@@ -304,9 +322,8 @@ func TestOperationsTextOutput(t *testing.T) {
 }
 
 // TestOperationsShowCapabilityErrorCode requires a failed operation whose
-// final-state code is not one of the shared codes to exit with
-// handler_failed, while the record still shows the handler's own code,
-// message, and details.
+// final-state code is not one of the shared codes to print the handler's own
+// code, message, and details, and to exit 0 because the query succeeded.
 func TestOperationsShowCapabilityErrorCode(t *testing.T) {
 	srv, _ := newOperationsGateway(t)
 	configPath := filepath.Join(t.TempDir(), "hanse", "config.json")
@@ -315,18 +332,37 @@ func TestOperationsShowCapabilityErrorCode(t *testing.T) {
 	for _, format := range []string{"text", "json"} {
 		t.Run(format, func(t *testing.T) {
 			stdout, stderr, code := runCLI(t, []string{"operations", "show", "op_01J9Z7", "--format", format}, configPath)
-			if code != 33 {
-				t.Fatalf("show: exit code %d, want 33; stderr %s", code, stderr)
+			if code != 0 {
+				t.Fatalf("show: exit code %d, want 0; stderr %s", code, stderr)
+			}
+			if stderr != "" {
+				t.Errorf("show: unexpected stderr %q", stderr)
 			}
 			for _, want := range []string{"audit_unreadable", "the audit log is unreadable", "/var/log/audit.log"} {
 				if !strings.Contains(stdout, want) {
 					t.Errorf("show: output does not contain %q:\n%s", want, stdout)
 				}
 			}
-			if !strings.Contains(stderr, "handler_failed") || !strings.Contains(stderr, "audit_unreadable") {
-				t.Errorf("show: stderr %q, want handler_failed and the handler's code", stderr)
-			}
 		})
+	}
+}
+
+// TestOperationsShowCancelled exits 0 for a cancelled operation and prints
+// its state, so a script can read a record without treating it as an error.
+func TestOperationsShowCancelled(t *testing.T) {
+	srv, _ := newOperationsGateway(t)
+	configPath := filepath.Join(t.TempDir(), "hanse", "config.json")
+	writeTestConfig(t, configPath, srv.URL, testToken)
+
+	stdout, stderr, code := runCLI(t, []string{"operations", "show", "op_01J9Z8"}, configPath)
+	if code != 0 {
+		t.Fatalf("show: exit code %d, want 0; stderr %s", code, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("show: unexpected stderr %q", stderr)
+	}
+	if !strings.Contains(stdout, "cancelled") {
+		t.Errorf("show: output does not print the cancelled state:\n%s", stdout)
 	}
 }
 
