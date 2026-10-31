@@ -34,6 +34,9 @@ type Host interface {
 	RemoveFile(path string) error
 	// Run runs a service manager command such as systemctl or launchctl.
 	Run(args []string) error
+	// RunQuiet runs a service manager command and discards its output,
+	// for a step that usually finds nothing to do.
+	RunQuiet(args []string) error
 	// RegisterService creates a Windows service, or updates the
 	// definition of an existing one.
 	RegisterService(spec Spec) error

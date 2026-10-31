@@ -48,11 +48,13 @@ func TestDarwinInstallPlan(t *testing.T) {
 
 	// The old definition is unloaded before the new plist replaces it,
 	// because launchd keeps the definition it loaded.
-	var unload, write, bootstrap, enable, start int
+	var unload, log, write, bootstrap, enable, start int
 	for i, candidate := range plan.Steps {
 		switch {
 		case candidate.Kind == StepRun && len(candidate.Args) > 1 && candidate.Args[1] == "bootout":
 			unload = i
+		case candidate.Target == DarwinLogPath:
+			log = i
 		case candidate.Target == DarwinPlistPath:
 			write = i
 		case candidate.Kind == StepRun && len(candidate.Args) > 1 && candidate.Args[1] == "bootstrap":
@@ -63,12 +65,90 @@ func TestDarwinInstallPlan(t *testing.T) {
 			start = i
 		}
 	}
-	if unload >= write || write >= bootstrap || bootstrap >= enable || enable >= start {
-		t.Fatalf("step order unload=%d write=%d bootstrap=%d enable=%d start=%d is wrong",
-			unload, write, bootstrap, enable, start)
+	if log >= write || write >= bootstrap || bootstrap >= enable || enable >= start {
+		t.Fatalf("step order log=%d write=%d bootstrap=%d enable=%d start=%d is wrong",
+			log, write, bootstrap, enable, start)
+	}
+	if unload >= write {
+		t.Fatalf("step order unload=%d write=%d is wrong", unload, write)
 	}
 	if got := strings.Join(plan.Steps[bootstrap].Args, " "); got != "launchctl bootstrap system "+DarwinPlistPath {
 		t.Errorf("bootstrap = %q", got)
+	}
+	// A first install has nothing to unload, and launchctl reports that
+	// on stderr. The step is quiet, so install prints neither its output
+	// nor the "unloaded an earlier" line.
+	if !plan.Steps[unload].Quiet || !plan.Steps[unload].IgnoreFailure {
+		t.Errorf("unload step = %+v, want a quiet, tolerated step", plan.Steps[unload])
+	}
+}
+
+// TestDarwinInstallCreatesTheLogFile covers the file that launchd opens as
+// the service account: install writes it as that account before the daemon
+// loads, and a re-install keeps its content and repairs its owner and mode.
+func TestDarwinInstallCreatesTheLogFile(t *testing.T) {
+	options := testOptions(Install)
+	options.OS = "darwin"
+	plan, err := Build(options, testAccount())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	log := stepAt(t, plan, DarwinLogPath)
+	if log.Kind != StepWriteFile {
+		t.Fatalf("log step = %q, want a write", log.Kind)
+	}
+	if log.Mode != 0o600 {
+		t.Errorf("log mode = %04o, want 0600", log.Mode)
+	}
+	if log.Owner == nil || *log.Owner != *accountOwner(testAccount()) {
+		t.Errorf("log owner = %v, want the service account", log.Owner)
+	}
+	if !log.CreateOnly {
+		t.Error("the log step replaces an existing log, which would lose it")
+	}
+	if log.Content != "" {
+		t.Errorf("the log step writes %q, want an empty file", log.Content)
+	}
+	for _, key := range []string{"StandardOutPath", "StandardErrorPath"} {
+		if !strings.Contains(stepAt(t, plan, DarwinPlistPath).Content,
+			"<key>"+key+"</key>\n\t<string>"+DarwinLogPath+"</string>") {
+			t.Errorf("the plist's %s is not %s", key, DarwinLogPath)
+		}
+	}
+}
+
+// TestDarwinQuietStepHidesItsOutput covers the progress report: a quiet
+// step runs through RunQuiet and prints nothing.
+func TestDarwinQuietStepHidesItsOutput(t *testing.T) {
+	options := testOptions(Install)
+	options.OS = "darwin"
+	plan, err := Build(options, testAccount())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	host := &fakeHost{account: testAccount()}
+	var printed []string
+	if err := plan.Apply(host, func(step Step) { printed = append(printed, step.Description) }); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(printed) != len(plan.Steps)-1 {
+		t.Fatalf("printed %d lines, want one per visible step (%d):\n%s",
+			len(printed), len(plan.Steps)-1, strings.Join(printed, "\n"))
+	}
+	for _, line := range printed {
+		if strings.Contains(line, "unloaded an earlier") {
+			t.Errorf("printed %q, which is false on a first install", line)
+		}
+	}
+	var quiet []string
+	for _, call := range host.calls {
+		if strings.HasPrefix(call, "run-quiet ") {
+			quiet = append(quiet, call)
+		}
+	}
+	want := "run-quiet launchctl bootout " + DarwinJobTarget
+	if len(quiet) != 1 || quiet[0] != want {
+		t.Errorf("quiet commands = %v, want %q", quiet, want)
 	}
 }
 
@@ -86,6 +166,9 @@ func TestDarwinUninstallPlan(t *testing.T) {
 	}
 	if plan.Steps[0].Args[1] != "bootout" || !plan.Steps[0].IgnoreFailure {
 		t.Errorf("first step = %v, want a tolerated unload", plan.Steps[0])
+	}
+	if !plan.Steps[0].Quiet {
+		t.Error("the unload reports launchctl's error on a node that never installed")
 	}
 	if plan.Steps[1].Target != DarwinPlistPath {
 		t.Errorf("removed %q, want %q", plan.Steps[1].Target, DarwinPlistPath)
