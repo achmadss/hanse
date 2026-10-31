@@ -21,8 +21,10 @@ type Store interface {
 	// the operation exists; a read failure is the error, so a caller can
 	// never mistake a broken store for a missing operation.
 	Get(id string) (Record, bool, error)
-	// List returns the records that satisfy f, sorted by operation ID.
-	// A read failure is an error, never an empty list.
+	// List returns the records that satisfy f, newest first: by creation
+	// time descending, then by ID descending. A positive Limit returns
+	// only the newest records. A read failure is an error, never an empty
+	// list.
 	List(f Filter) ([]Record, error)
 	// ByIdempotency returns the operation of one requester and
 	// Idempotency-Key. An empty key never matches. The bool reports
@@ -112,8 +114,9 @@ func (s *MemoryStore) Get(id string) (Record, bool, error) {
 	return rec.clone(), true, nil
 }
 
-// List returns the records that satisfy f, sorted by operation ID
-// (docs/architecture.md section 11.1: every list is sorted by ID).
+// List returns the records that satisfy f, newest first: by creation time
+// descending, then by ID descending, and at most f.Limit records when it is
+// positive (docs/architecture.md section 11.1).
 func (s *MemoryStore) List(f Filter) ([]Record, error) {
 	if s == nil {
 		return []Record{}, nil
@@ -126,7 +129,15 @@ func (s *MemoryStore) List(f Filter) ([]Record, error) {
 		}
 	}
 	s.mu.RUnlock()
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID > out[j].ID
+	})
+	if f.Limit > 0 && len(out) > f.Limit {
+		out = out[:f.Limit]
+	}
 	return out, nil
 }
 

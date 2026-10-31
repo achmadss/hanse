@@ -518,6 +518,13 @@ func TestListFilters(t *testing.T) {
 		t.Errorf("list is not sorted by creation time: %s then %s",
 			all[0].CreatedAt, all[1].CreatedAt)
 	}
+	newest, err := manager.List(operations.Filter{Limit: 1})
+	if err != nil {
+		t.Fatalf("list with a limit: %v", err)
+	}
+	if len(newest) != 1 || newest[0].ID != second.ID {
+		t.Errorf("list with a limit returned %v, want only %s", newest, second.ID)
+	}
 	byRequester, err := manager.List(operations.Filter{Requester: "other"})
 	if err != nil {
 		t.Fatalf("list by requester: %v", err)

@@ -384,6 +384,45 @@ func TestActiveFilterExcludesFinished(t *testing.T) {
 	}
 }
 
+// TestListOrderAndLimit checks that the store orders records newest first,
+// by creation time and then ID, and that a limit keeps the newest ones.
+func TestListOrderAndLimit(t *testing.T) {
+	store := open(t, history.Options{})
+	older := sample("op_aaa", operations.StateCompleted)
+	older.CreatedAt = fixedNow.Add(-2 * time.Hour)
+	middle := sample("op_mmm", operations.StateCompleted)
+	middle.CreatedAt = fixedNow.Add(-time.Hour)
+	newest := sample("op_zzz", operations.StateCompleted)
+	newest.CreatedAt = fixedNow.Add(-time.Minute)
+	for _, rec := range []operations.Record{older, middle, newest} {
+		if err := store.Insert(rec); err != nil {
+			t.Fatalf("insert %s: %v", rec.ID, err)
+		}
+	}
+
+	all, err := store.List(operations.Filter{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	want := []string{newest.ID, middle.ID, older.ID}
+	if len(all) != len(want) {
+		t.Fatalf("list returned %d records, want %d", len(all), len(want))
+	}
+	for i, id := range want {
+		if all[i].ID != id {
+			t.Errorf("record %d is %s, want %s", i, all[i].ID, id)
+		}
+	}
+
+	limited, err := store.List(operations.Filter{Limit: 2})
+	if err != nil {
+		t.Fatalf("list with a limit: %v", err)
+	}
+	if len(limited) != 2 || limited[0].ID != newest.ID || limited[1].ID != middle.ID {
+		t.Errorf("list with a limit returned %v, want the two newest records", limited)
+	}
+}
+
 // TestTimestampOrdering checks that a whole-second timestamp and a
 // fractional one sort by time, so retention deletes the older record.
 func TestTimestampOrdering(t *testing.T) {

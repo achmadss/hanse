@@ -242,6 +242,36 @@ func TestListNewestFirst(t *testing.T) {
 		t.Errorf("list is not newest first: %s then %s, want %s then %s",
 			listed.Operations[0].ID, listed.Operations[1].ID, second.ID, first.ID)
 	}
+
+	// The limit keeps the newest records.
+	resp, payload = call(t, fixture.handler, fixture.token, http.MethodGet, "/v1/operations?limit=1", "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list with a limit: status %d, body %s", resp.StatusCode, payload)
+	}
+	listed = operationsResponse{}
+	if err := json.Unmarshal(payload, &listed); err != nil {
+		t.Fatalf("list with a limit: body %v (%s)", err, payload)
+	}
+	if len(listed.Operations) != 1 || listed.Operations[0].ID != second.ID {
+		t.Errorf("list with a limit holds %+v, want only %s", listed.Operations, second.ID)
+	}
+}
+
+// TestListLimitValues requires 422 for a limit outside 1 to 1000.
+func TestListLimitValues(t *testing.T) {
+	fixture := newExecutionFixture(t)
+	for _, value := range []string{"0", "-1", "1001", "many", "1.5"} {
+		t.Run(value, func(t *testing.T) {
+			resp, payload := call(t, fixture.handler, fixture.token, http.MethodGet,
+				"/v1/operations?limit="+value, "", nil)
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Fatalf("limit %s: status %d, want 422, body %s", value, resp.StatusCode, payload)
+			}
+			if got := decodeWireError(t, payload).Code; got != "invalid_arguments" {
+				t.Errorf("limit %s: code %q, want invalid_arguments", value, got)
+			}
+		})
+	}
 }
 
 // TestSubmitAsync starts echo.sleep, gets the operation ID at once, and

@@ -393,7 +393,7 @@ Execution endpoints:
 |---|---|
 | `POST /v1/operations` | Submit an operation |
 | `POST /v1/operations/validate` | Validate a request without running it |
-| `GET /v1/operations` | List operations newest first, with filters |
+| `GET /v1/operations` | List operations newest first, with filters; `limit` defaults to 100 and is at most 1000 |
 | `GET /v1/operations/{id}` | One operation's status and result |
 | `POST /v1/operations/{id}/cancel` | Cancel an operation |
 | `GET /v1/operations/{id}/logs` | Read, stream, or follow an operation's logs |
@@ -418,7 +418,7 @@ All JSON responses are deterministic, with keys in a stable order, so that scrip
 
 ### 11.1 Response shapes
 
-Every discovery response is JSON. Object keys keep a fixed order, and every list is sorted by ID, so two identical requests return identical bytes. The exception is the operation list, which is newest first: by `created_at` descending, then by ID descending.
+Every discovery response is JSON. Object keys keep a fixed order, and every list is sorted by ID, so two identical requests return identical bytes. The exception is the operation list, which is newest first: by `created_at` descending, then by ID descending, and holds at most the `limit` query parameter, 100 by default and 1000 at most.
 
 | Endpoint | Body |
 |---|---|

@@ -100,6 +100,8 @@ var schema = []string{
 	WHERE idempotency_key <> ''`,
 	`CREATE INDEX IF NOT EXISTS operations_finished
 	ON operations (finished_at)`,
+	`CREATE INDEX IF NOT EXISTS operations_created
+	ON operations (created_at DESC, id DESC)`,
 	`CREATE INDEX IF NOT EXISTS operations_active
 	ON operations (capability, operation, status)`,
 }
@@ -323,8 +325,10 @@ func (s *Store) Get(id string) (operations.Record, bool, error) {
 	return rec, true, nil
 }
 
-// List returns the records that satisfy f, sorted by operation ID
-// (docs/architecture.md section 11.1: every list is sorted by ID).
+// List returns the records that satisfy f, newest first: by creation time
+// descending, then by ID descending, and at most f.Limit records when it is
+// positive (docs/architecture.md section 11.1). created_at is stored as a
+// fixed-width UTC timestamp, so a text sort is a time sort.
 func (s *Store) List(f operations.Filter) ([]operations.Record, error) {
 	query := `SELECT ` + recordColumns + ` FROM operations`
 	var clauses []string
@@ -348,7 +352,11 @@ func (s *Store) List(f operations.Filter) ([]operations.Record, error) {
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
 	}
-	query += " ORDER BY id"
+	query += " ORDER BY created_at DESC, id DESC"
+	if f.Limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, f.Limit)
+	}
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, storeError("list operations", err)

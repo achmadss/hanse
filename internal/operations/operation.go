@@ -170,7 +170,7 @@ type Check struct {
 // Filter narrows a list of operations. An empty field matches everything.
 // Active selects only the states that still count against concurrency
 // (`queued` and `running`), so a concurrency check never loads finished
-// history.
+// history. A positive Limit returns only the newest records.
 type Filter struct {
 	Capability string
 	Operation  string
@@ -178,6 +178,7 @@ type Filter struct {
 	Status     State
 	Requester  string
 	Active     bool
+	Limit      int
 }
 
 // matches reports whether rec satisfies every filter field.

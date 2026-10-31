@@ -4,12 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"time"
 
 	"github.com/achmadss/hanse/internal/client"
 	herrors "github.com/achmadss/hanse/internal/errors"
+)
+
+// The size of the operation list: the Gateway default and the largest value
+// it accepts (docs/architecture.md section 11).
+const (
+	defaultOperationsLimit = 100
+	maxOperationsLimit     = 1000
 )
 
 // operationsCommand implements operations, operations show, and operations
@@ -22,6 +30,9 @@ func (a *app) operationsCommand(ctx context.Context, args []string) error {
 	executorFilter := fs.String("executor", "", "only operations on this executor")
 	statusFilter := fs.String("status", "", "only operations in this state")
 	requesterFilter := fs.String("requester", "", "only operations from this requester")
+	limit := fs.Int("limit", defaultOperationsLimit,
+		fmt.Sprintf("show at most this many operations (default %d, maximum %d)",
+			defaultOperationsLimit, maxOperationsLimit))
 	positional, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -30,26 +41,23 @@ func (a *app) operationsCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if *limit < 1 || *limit > maxOperationsLimit {
+		return usagef("--limit must be from 1 to %d", maxOperationsLimit)
+	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	filter := client.OperationFilter{
 		Capability: *capabilityFilter,
 		Operation:  *operationFilter,
 		Executor:   *executorFilter,
 		Status:     *statusFilter,
 		Requester:  *requesterFilter,
+		Limit:      *limit,
 	}
 	if len(positional) > 0 {
-		for _, filterFlag := range []struct {
-			name  string
-			value string
-		}{
-			{"--capability", *capabilityFilter},
-			{"--operation", *operationFilter},
-			{"--executor", *executorFilter},
-			{"--status", *statusFilter},
-			{"--requester", *requesterFilter},
-		} {
-			if filterFlag.value != "" {
-				return usagef("%s filters the operation list only", filterFlag.name)
+		for _, name := range []string{"capability", "operation", "executor", "status", "requester", "limit"} {
+			if set[name] {
+				return usagef("--%s filters the operation list only", name)
 			}
 		}
 	}
