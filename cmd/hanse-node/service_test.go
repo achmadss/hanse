@@ -336,6 +336,60 @@ func writeTestCredential(t *testing.T, stateDir, credential, gatewayURL string) 
 	}
 }
 
+// TestInstallUsesTheConfiguredStateDir proves that install without
+// --state-dir uses the state_dir in agent.yaml, resolved against the file's
+// directory, instead of the OS default (issue #71).
+func TestInstallUsesTheConfiguredStateDir(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(configPath, []byte("version: 1\nstate_dir: ./node-state\n"), 0o600); err != nil {
+		t.Fatalf("write agent.yaml: %v", err)
+	}
+	host := &serviceFake{account: testNodeAccount(), administrator: true}
+	var stdout, stderr bytes.Buffer
+	args := serviceArgs{configPath: configPath}
+	if code := installService(host, args, &stdout, &stderr); code != exitOK {
+		t.Fatalf("exit code = %d, want %d: %s", code, exitOK, stderr.String())
+	}
+	want := filepath.Join(dir, "node-state")
+	if !strings.Contains(host.callsText(), "mkdir "+want) {
+		t.Errorf("calls:\n%s\nwant the configured state directory %s", host.callsText(), want)
+	}
+}
+
+// TestResolveServiceStateDir covers the order: --state-dir, then
+// state_dir in agent.yaml, then the OS default.
+func TestResolveServiceStateDir(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(configPath, []byte("version: 1\nstate_dir: ./node-state\n"), 0o600); err != nil {
+		t.Fatalf("write agent.yaml: %v", err)
+	}
+	flagDir := filepath.Join(dir, "flagged")
+
+	got, err := resolveServiceStateDir(flagDir, configPath)
+	if err != nil {
+		t.Fatalf("resolve with a flag: %v", err)
+	}
+	if got != flagDir {
+		t.Errorf("state dir = %q, want the flag %q", got, flagDir)
+	}
+	got, err = resolveServiceStateDir("", configPath)
+	if err != nil {
+		t.Fatalf("resolve from the file: %v", err)
+	}
+	if want := filepath.Join(dir, "node-state"); got != want {
+		t.Errorf("state dir = %q, want %q", got, want)
+	}
+	got, err = resolveServiceStateDir("", filepath.Join(dir, "missing.yaml"))
+	if err != nil {
+		t.Fatalf("resolve from a missing file: %v", err)
+	}
+	if got != defaultStateDir() {
+		t.Errorf("state dir = %q, want the default %q", got, defaultStateDir())
+	}
+}
+
 // planServicePath is the service definition that install writes on the
 // operating system the test runs on.
 func planServicePath() string {

@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/achmadss/hanse/internal/config"
 	"github.com/achmadss/hanse/internal/service"
 )
 
@@ -40,6 +41,11 @@ func installService(host service.Host, args serviceArgs, stdout, stderr io.Write
 	if code, ok := requireAdministrator(host, "install", stderr); !ok {
 		return code
 	}
+	stateDir, err := resolveServiceStateDir(args.stateDir, args.configPath)
+	if err != nil {
+		printf(stderr, "hanse-node: %v\n", err)
+		return exitFail
+	}
 	binary, err := os.Executable()
 	if err != nil {
 		printf(stderr, "hanse-node: cannot find the hanse-node executable: %v\n", err)
@@ -50,15 +56,15 @@ func installService(host service.Host, args serviceArgs, stdout, stderr io.Write
 		printf(stderr, "hanse-node: %v\n", err)
 		return exitFail
 	}
-	start := credentialExists(args.stateDir)
+	start := credentialExists(stateDir)
 	plan, err := service.Build(service.Options{
 		OS:         runtime.GOOS,
 		Action:     service.Install,
 		User:       args.user,
 		Binary:     binary,
 		ConfigPath: args.configPath,
-		StateDir:   args.stateDir,
-		GatewayURL: enrolledGatewayURL(args.stateDir),
+		StateDir:   stateDir,
+		GatewayURL: enrolledGatewayURL(stateDir),
 		Start:      start,
 	}, account)
 	if err != nil {
@@ -99,6 +105,12 @@ func uninstallService(host service.Host, args serviceArgs, stdout, stderr io.Wri
 	if code, ok := requireAdministrator(host, "uninstall", stderr); !ok {
 		return code
 	}
+	stateDir, err := resolveServiceStateDir(args.stateDir, args.configPath)
+	if err != nil {
+		// Uninstall removes the service, so a configuration file it cannot
+		// read must not stop it. The path appears only in the report.
+		stateDir = defaultStateDir()
+	}
 	plan, err := service.Build(service.Options{
 		OS:     runtime.GOOS,
 		Action: service.Uninstall,
@@ -112,7 +124,7 @@ func uninstallService(host service.Host, args serviceArgs, stdout, stderr io.Wri
 		return code
 	}
 	printf(stdout, "hanse-node: removed %s; %s and the node credential in %s are kept\n",
-		plan.Service, args.configPath, args.stateDir)
+		plan.Service, args.configPath, stateDir)
 	return exitOK
 }
 
@@ -212,6 +224,35 @@ func parseServiceArgs(args []string, configPath, stateDir string, stderr io.Writ
 		}
 	}
 	return parsed, true
+}
+
+// resolveServiceStateDir picks the state directory that install reports
+// and creates: --state-dir, then state_dir in agent.yaml, then the OS
+// default. The result is absolute, because a service plan requires
+// absolute paths, and a relative state_dir resolves against the file's
+// directory (docs/configuration.md section 7).
+func resolveServiceStateDir(flagDir, configPath string) (string, error) {
+	if flagDir != "" {
+		absolute, err := filepath.Abs(flagDir)
+		if err != nil {
+			return "", fmt.Errorf("cannot resolve the state directory %s: %v", flagDir, err)
+		}
+		return absolute, nil
+	}
+	if configPath != "" {
+		fromConfig, ok, err := config.AgentStateDir(configPath)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			absolute, err := filepath.Abs(fromConfig)
+			if err != nil {
+				return "", fmt.Errorf("cannot resolve the state directory %s: %v", fromConfig, err)
+			}
+			return absolute, nil
+		}
+	}
+	return defaultStateDir(), nil
 }
 
 // credentialExists reports whether this node has enrolled, which is what

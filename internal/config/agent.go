@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -8,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // AgentConfig is the parsed agent.yaml (docs/configuration.md section 7).
@@ -97,6 +100,37 @@ func LoadAgent(path string) (*AgentConfig, Problems, error) {
 	finalizeAgent(agent, filepath.Dir(path))
 	checkAgent(agent, path, &problems)
 	return agent, problems, nil
+}
+
+// AgentStateDir returns the state_dir that agent.yaml names, resolved
+// against the file's directory like every other path in the file
+// (docs/configuration.md section 7). The second result reports whether the
+// file names one at all.
+//
+// It reads only state_dir, so `hanse-node join` can use a file that is not
+// complete yet: a file without gateway_url is one that join is about to
+// finish. A missing file names no state directory.
+func AgentStateDir(path string) (string, bool, error) {
+	if path == "" {
+		return "", false, nil
+	}
+	data, err := os.ReadFile(path)
+	switch {
+	case os.IsNotExist(err):
+		return "", false, nil
+	case err != nil:
+		return "", false, fmt.Errorf("cannot read %s: %v", path, err)
+	}
+	var field struct {
+		StateDir string `yaml:"state_dir"`
+	}
+	if err := yaml.Unmarshal(data, &field); err != nil {
+		return "", false, fmt.Errorf("cannot read %s: %v", path, err)
+	}
+	if field.StateDir == "" {
+		return "", false, nil
+	}
+	return resolvePath(filepath.Dir(path), field.StateDir), true, nil
 }
 
 // defaultAgentStateDir is the documented state directory per OS
