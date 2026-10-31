@@ -9,7 +9,7 @@ documented configuration paths:
 | `/etc/hanse/gateway.yaml` | The configuration | Read-only |
 | `/etc/hanse/nodes.yaml`, `routes.yaml` | Nodes and routing | Read-only |
 | `/etc/hanse/capabilities/` | Capability packages | Read-only |
-| `/etc/hanse/credentials/` | Secret files | Read-only |
+| `/etc/hanse/credentials/` | Secret files | Read-only, mode 0700 |
 | `/etc/hanse/tls/` | TLS certificate and key | Read-only |
 | `/var/lib/hanse/` | History, enrollment, and the tokens file | Read and write |
 
@@ -59,8 +59,15 @@ Start from the examples:
 $ sudo cp config/gateway.example.yaml /etc/hanse/gateway.yaml
 $ sudo cp config/nodes.example.yaml  /etc/hanse/nodes.yaml
 $ sudo cp config/routes.example.yaml /etc/hanse/routes.yaml
-$ sudo install -d -o hanse -g hanse -m 0750 /etc/hanse/capabilities /etc/hanse/credentials
+$ sudo install -d -o hanse -g hanse -m 0750 /etc/hanse/capabilities
+$ sudo install -d -o hanse -g hanse -m 0700 /etc/hanse/credentials
 ```
+
+The credentials directory must be mode `0700`. The Gateway refuses one whose
+group or other read bits are set, even when every secret file inside it is
+private: `--check-config` reports `paths.credentials_dir: ... is readable by
+users other than its owner`. Capability packages stay at `0750`; they hold no
+secrets.
 
 Change the values in `gateway.yaml` to the absolute paths under `/etc/hanse`
 and `/var/lib/hanse`. Set `node` to the node ID in `nodes.yaml` that is this
@@ -98,6 +105,27 @@ never has two executors.
 
 `http` capabilities work in both layouts, because the Gateway makes those
 calls itself.
+
+### Privileged operations on the Gateway host
+
+The unit sets `NoNewPrivileges=yes` (section 8), so no process it starts can
+raise its rights through `sudo`. With `embedded_agent: true` a privileged
+operation therefore cannot run on the Gateway host. The embedded agent never
+asks for an elevation password, and the run fails with HTTP 403, code
+`elevation_denied`, and the message `the embedded agent does not elevate
+handlers`.
+
+Do not remove `NoNewPrivileges` from the Gateway unit to make a privileged
+operation work. Run the operation on an ordinary executor node instead, as
+[Run the node agent as a system service](../node-setup.md) describes,
+including its [sudoers rule](../node-setup.md#sudoers-rule-linux-and-macos).
+
+To run privileged operations on this machine, use the layout above: set
+`embedded_agent: false` and run `hanse-node` here with that sudoers rule. The
+node agent unit deliberately omits `NoNewPrivileges`, because the agent needs
+`sudo` to gain root ([docs/node-setup.md](../node-setup.md#linux)). An agent
+that does run with `NoNewPrivileges=yes` refuses every privileged run with
+`elevation_denied` and a message that names the setting.
 
 ### TLS or a reverse proxy
 
@@ -221,7 +249,7 @@ the Gateway never needs the capability it removes.
 | Setting | Effect |
 |---|---|
 | `User=hanse`, `Group=hanse` | Handlers run as an unprivileged service account. |
-| `NoNewPrivileges=yes` | A handler process cannot gain rights through a setuid binary. |
+| `NoNewPrivileges=yes` | A handler process cannot gain rights through a setuid binary or through `sudo`, so a privileged operation cannot run on this host's embedded agent. See [Privileged operations on the Gateway host](#privileged-operations-on-the-gateway-host). |
 | `CapabilityBoundingSet=`, `AmbientCapabilities=` | No Linux capability at all. Port 8443 needs none. |
 | `ProtectSystem=strict` | The whole file system is read-only except the paths below. |
 | `ReadWritePaths=/var/lib/hanse` | The only writable directory: the databases and the tokens file. |
