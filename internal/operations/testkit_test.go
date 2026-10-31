@@ -234,23 +234,6 @@ func waitTestkitLog(t *testing.T, env *testkitEnv, id, text string, timeout time
 		id, text, timeout, logLines(t, env.manager, id))
 }
 
-// warmTestkitHandler runs one handler through testkit.long, whose 10 minute
-// timeout leaves room for a cold PowerShell start on a Windows CI runner. A
-// synchronous operation must not spend its 30 second budget on that start, so
-// the first test of the package warms the handler once.
-//
-// TODO(#85): drop the warm-up once the Windows baseline environment fixes the
-// slow first-use module load under the restricted token.
-func warmTestkitHandler(t *testing.T, env *testkitEnv) {
-	t.Helper()
-	rec := submitTestkit(t, env, "long", `{"node":"gateway","seconds":1}`)
-	done := waitTestkitDone(t, env, rec.ID, 120*time.Second)
-	if done.Status != StateCompleted {
-		t.Fatalf("warm up the testkit handler: status = %q (failure %+v, logs %v)",
-			done.Status, done.Failure, logLines(t, env.manager, done.ID))
-	}
-}
-
 // TestTestkitManifest covers the manifest of every testkit operation: the
 // mode, the timeout, the grace period, the concurrency limit, the privileged
 // flag, the option provider, and the required node argument.
@@ -408,7 +391,6 @@ func TestTestkitSay(t *testing.T) {
 		t.Skip(reason)
 	}
 	env := newTestkitEnv(t, 0, 0)
-	warmTestkitHandler(t, env)
 	rec := submitTestkit(t, env, "say", `{"target":"node-b","text":"hello"}`)
 	if rec.Status != StateCompleted {
 		t.Fatalf("testkit.say status = %q, want completed (failure %+v, logs %v)",
