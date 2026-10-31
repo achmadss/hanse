@@ -168,7 +168,7 @@ Every accepted operation records the result of resolution:
 
 `executor_source` is `explicit` or `default`. New values can be added when explicit selection policies are introduced.
 
-`routes.yaml` is the single source of truth for eligible and default executors. See [Routing](configuration.md#9-routing-the-single-source-of-truth).
+`routes.yaml` is the single source of truth for eligible and default executors. See [Routing](configuration.md#9-routing-the-single-source-of-truth). A [configuration reload](#112-reloading-configuration) re-reads it and swaps in the new routing only when `routes.yaml`, `nodes.yaml`, and every capability manifest validate; until then the running routing stays in place.
 
 ### Example
 
@@ -210,7 +210,7 @@ A capability is a directory with a `manifest.yaml` and its handler files. The ma
 - The handler kind and an entry command for each supported OS.
 - Each operation's mode (synchronous or asynchronous), timeout, and `concurrency` setting.
 
-The Gateway loads every capability directory listed in its configuration. Adding a capability does not require rebuilding Hanse.
+The Gateway loads every capability directory listed in its configuration. Adding a capability does not require rebuilding Hanse. A package that appears on disk becomes runnable after a [configuration reload](#112-reloading-configuration) reads it and `routes.yaml` routes it; neither needs a restart.
 
 ### 7.2 Handler kinds
 
@@ -270,6 +270,7 @@ With `embedded_agent: true`, the Gateway refuses a join token for the node that 
 - A node is `online` while its agent is connected and `offline` otherwise. Executor resolution uses this status.
 - The agent reconnects after a lost connection, waiting longer after each failure, up to 60 seconds.
 - Each node has at most one connection. A new connection replaces the old one.
+- A [configuration reload](#112-reloading-configuration) keeps the presence of every node that stays in `nodes.yaml`, including the version its agent reported. A node the reload removed is disconnected and leaves the registry, so its agent cannot connect until the node is back in `nodes.yaml`. A node the reload disabled is closed with the node-disabled code at its next connection check.
 
 A handler keeps running while the connection is down. The agent buffers its log lines and its result, up to the [limits](handler-contract.md#11-limits), and delivers them after it reconnects. If the agent does not reconnect within 5 minutes, the Gateway marks the operation `failed` with the code `executor_connection_lost`. When the agent reconnects later, it stops that handler.
 
@@ -396,6 +397,12 @@ Execution endpoints:
 | `POST /v1/operations/{id}/cancel` | Cancel an operation |
 | `GET /v1/operations/{id}/logs` | Read or follow an operation's logs |
 
+Configuration endpoints, used by operators and the CLI:
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /v1/capabilities/reload` | Re-read the capability directories, `nodes.yaml`, and `routes.yaml`, and apply the result |
+
 Node agent endpoints, used only by `hanse-node`:
 
 | Endpoint | Purpose |
@@ -475,6 +482,25 @@ The first request names no executor, so the Gateway resolves one. The response f
 }
 ```
 
+### 11.2 Reloading configuration
+
+`POST /v1/capabilities/reload`, `hanse capabilities install`, and `SIGHUP` on POSIX all run the same reload. A reload re-reads:
+
+- the capability directories that `gateway.yaml`'s `paths.capabilities` names, with every manifest validated and every argument schema compiled;
+- `nodes.yaml` and `routes.yaml`, from the paths that the `gateway.yaml` loaded at startup names.
+
+`gateway.yaml` itself is not reloaded. Its settings stay those loaded at startup: the listen address, TLS files, timeouts, limits, the host `node`, `embedded_agent`, state and credential paths, and logging. `agent.yaml` on each node is not reloaded either, because it belongs to the node agent. Change any of these files with a restart.
+
+The reload is all or nothing. When any file has a problem, the reload reports every problem it found, answers an error, and keeps the running configuration: the capability set, the node set, and the routing stay exactly as they were. Nothing is swapped until every file validates.
+
+After a successful reload:
+
+- A capability package that appeared becomes runnable as soon as `routes.yaml` routes it. A package removed from disk disappears.
+- Node presence survives for every node that stays in `nodes.yaml`, including the agent version the node last reported. A node that the reload removed from `nodes.yaml` is disconnected and leaves the registry. A node that the reload disabled is refused new runs, exactly as at startup.
+- Running operations are not affected. An operation that already resolved its capability keeps that snapshot for the rest of its run.
+
+A reload needs a token without an allow list, which has full access. A restricted token answers `forbidden`, HTTP 403. A reload that fails leaves the previous configuration running, so a broken `routes.yaml` cannot take the Gateway down.
+
 ## 12. Hanse CLI
 
 The `hanse` CLI serves people and AI agents equally. It fetches every capability, schema, node, and value from the Gateway, so a new capability works in the CLI with no CLI change.
@@ -530,6 +556,8 @@ Dedicated commands or aliases, such as a short `pc up`, may exist later. They mu
 Secrets never appear in these files. A node or handler refers to a secret with a credential reference that points to a protected file. The full format is in [configuration.md](configuration.md).
 
 The Gateway validates all configuration at startup and refuses to start when it is invalid. `hanse-gateway --check-config` runs the same checks without starting the server.
+
+Most of these files are read only at startup. A running Gateway re-reads the capability directories, `nodes.yaml`, and `routes.yaml` on `POST /v1/capabilities/reload` or `SIGHUP`; it validates them together and keeps the running configuration when anything is wrong. `gateway.yaml` is not part of that reload, so change its settings with a restart. [Reloading configuration](architecture.md#112-reloading-configuration) has the details.
 
 ## 14. Errors
 

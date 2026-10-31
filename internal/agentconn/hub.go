@@ -233,6 +233,22 @@ func (h *Hub) Disconnect(nodeID string) {
 	}
 }
 
+// NodeRemoved closes the live connection of a node that a configuration
+// reload removed from nodes.yaml, with the node-mismatch close code the
+// protocol uses when the node is gone (docs/agent-protocol.md section 10).
+// The agent cannot connect again until the node is back in nodes.yaml.
+func (h *Hub) NodeRemoved(nodeID string) {
+	if h == nil || nodeID == "" {
+		return
+	}
+	h.mu.Lock()
+	c := h.conns[nodeID]
+	h.mu.Unlock()
+	if c != nil {
+		c.close(closeNodeMismatch, "the node was removed from nodes.yaml")
+	}
+}
+
 // Online reports whether the node's agent is connected.
 func (h *Hub) Online(nodeID string) bool {
 	if h == nil {

@@ -55,8 +55,10 @@ type gateway struct {
 	// configuration asked for 0.
 	Addr string
 
-	ready  atomic.Bool
-	log    *slog.Logger
+	ready atomic.Bool
+	log   *slog.Logger
+	// reg is the live capability registry a configuration reload updates.
+	reg    *registry.Registry
 	server *http.Server
 	hub    *agentconn.Hub
 	store  *history.Store
@@ -118,6 +120,19 @@ func startGateway(ctx context.Context, configPath string, opts startOptions) (*g
 	reg, warnings, err := registry.Load(registry.Options{
 		Dirs:  cfg.Gateway.Paths.Capabilities,
 		Input: registryInput(cfg),
+		// A reload re-reads nodes.yaml and routes.yaml from the paths this
+		// gateway.yaml resolved at startup; gateway.yaml itself is not
+		// re-read (docs/architecture.md section 11.2).
+		ReloadInput: func() (registry.Input, error) {
+			reloaded, problems, err := config.LoadNodesRoutes(&cfg.Gateway)
+			if err != nil {
+				return registry.Input{}, err
+			}
+			if len(problems) > 0 {
+				return registry.Input{}, problems
+			}
+			return registryInput(reloaded), nil
+		},
 	})
 	if err != nil {
 		return fail(err)
@@ -192,6 +207,9 @@ func startGateway(ctx context.Context, configPath string, opts startOptions) (*g
 	if err != nil {
 		return fail(err)
 	}
+	// A reload that removes a node disconnects its agent, because the node
+	// no longer exists in nodes.yaml (docs/architecture.md section 8.2).
+	reg.SetNodeRemovedHook(hub.NodeRemoved)
 	agentDispatcher := operations.NewAgentDispatcher(hub, reg, timeouts)
 	dispatch := &dispatcher{
 		registry: reg,
@@ -239,6 +257,7 @@ func startGateway(ctx context.Context, configPath string, opts startOptions) (*g
 	g := &gateway{
 		ready:  atomic.Bool{},
 		log:    log,
+		reg:    reg,
 		hub:    hub,
 		store:  store,
 		enroll: enrollService,
@@ -321,6 +340,29 @@ func startGateway(ctx context.Context, configPath string, opts startOptions) (*g
 		}
 	}()
 	return g, nil
+}
+
+// reloadConfig re-reads the capability directories, nodes.yaml, and
+// routes.yaml and swaps the validated result into the running Gateway. A
+// problem keeps the running configuration and every reported problem goes
+// to the log (docs/architecture.md section 11.2). SIGHUP calls it.
+func (g *gateway) reloadConfig() {
+	if g == nil || g.reg == nil {
+		return
+	}
+	warnings, err := g.reg.Reload()
+	if err != nil {
+		g.log.Error("configuration reload failed; keeping the running configuration",
+			slog.String("error", err.Error()))
+		return
+	}
+	for _, warning := range warnings {
+		g.log.Warn("capability registry warning",
+			slog.String("capability", warning.Capability),
+			slog.String("message", warning.Message))
+	}
+	g.log.Info("configuration reloaded",
+		slog.Int("capabilities", len(g.reg.Capabilities())))
 }
 
 // shutdown stops accepting requests, waits for in-flight ones up to the

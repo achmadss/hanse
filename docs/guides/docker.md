@@ -396,6 +396,18 @@ The named volume survives. An operation that was running during the restart
 is stored as `failed` with `gateway_restart`; a client retries it with the
 same `Idempotency-Key` when the operation is safe to repeat.
 
+A new capability package, a `nodes.yaml` change, or a `routes.yaml` change
+does not need a restart. Reload the running container instead:
+
+```console
+$ docker kill --signal=SIGHUP hanse-gateway
+```
+
+`POST /v1/capabilities/reload` does the same over the API. A reload re-reads
+only the capability directories, `nodes.yaml`, and `routes.yaml`;
+`gateway.yaml` changes still need the restart above. See
+[Reloading configuration](../configuration.md#11-reloading-configuration).
+
 Validate a new configuration before starting the container:
 
 ```console

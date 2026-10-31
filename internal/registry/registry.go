@@ -31,6 +31,12 @@ type Options struct {
 	// Input carries nodes.yaml and routes.yaml values. Until issue #8
 	// merges, callers build those values themselves.
 	Input Input
+	// ReloadInput, when set, returns the nodes and routing a reload must
+	// use. The Gateway sets it to re-read nodes.yaml and routes.yaml, so a
+	// reload picks up a new node or route without a restart. A nil value
+	// keeps the Input of the initial Load, which is what embedders and
+	// tests that never reload from disk want.
+	ReloadInput func() (Input, error)
 }
 
 // Capability is one loaded capability package: its manifest, the compiled
@@ -120,8 +126,11 @@ type Registry struct {
 	// and the capabilities it can execute.
 	Nodes *NodeRegistry
 	// opts are the Load options Reload reuses to scan the same
-	// directories with the same nodes and routes.
+	// directories, with the nodes and routes ReloadInput returns.
 	opts Options
+	// nodeRemoved is the hook Reload calls for every node it removes;
+	// SetNodeRemovedHook installs it before the Gateway serves requests.
+	nodeRemoved func(nodeID string)
 	// reloadMu serializes reloads, so two concurrent requests cannot
 	// interleave their scans.
 	reloadMu sync.Mutex
@@ -200,8 +209,9 @@ func Load(opts Options) (*Registry, []Warning, error) {
 	reg := &Registry{
 		capabilities: map[string]*Capability{},
 		opts: Options{
-			Dirs:  append([]string(nil), opts.Dirs...),
-			Input: opts.Input,
+			Dirs:        append([]string(nil), opts.Dirs...),
+			Input:       opts.Input,
+			ReloadInput: opts.ReloadInput,
 		},
 	}
 	for _, dir := range opts.Dirs {
