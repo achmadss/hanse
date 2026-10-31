@@ -20,7 +20,7 @@ The guide covers both Gateway layouts:
 
 ## 1. Put the Gateway behind the proxy
 
-Choose one of the two layouts below.
+Choose one of the three layouts below.
 
 ### Proxy on the same host: loopback
 
@@ -41,7 +41,7 @@ which this layout does not do.
 ### Proxy on another host: a private address
 
 When the proxy runs on another machine, the Gateway must accept plain HTTP
-on a network address. That is the one case where `allow_insecure_http: true`
+on a network address. That is one case where `allow_insecure_http: true`
 is correct:
 
 ```yaml
@@ -59,10 +59,73 @@ $ sudo nft add rule inet filter input tcp dport 8443 \
     ip saddr != 192.0.2.11 drop
 ```
 
-Keep `allow_insecure_http: true` on that private, proxy-only network and
-nowhere else. A Gateway that listens on a public address without TLS hands
-credentials and arguments to anyone on the path, because the node credential
-and the API token travel in plain text.
+Keep `allow_insecure_http: true` on that private, proxy-only network, or on
+the bridge listener below, and nowhere else. A Gateway that listens on a
+public address without TLS hands credentials and arguments to anyone on the
+path, because the node credential and the API token travel in plain text.
+
+### Proxy in a container on the same host: the Docker bridge
+
+When the proxy runs in a container on the Gateway host, a loopback listener
+does not work: the container has its own network namespace, so `127.0.0.1`
+inside it is the container, not the host. The Gateway instead listens on the
+Docker bridge address, which is a non-loopback address, so this layout needs
+`allow_insecure_http: true`:
+
+```yaml
+# gateway.yaml
+listen: 192.0.2.10:8443
+allow_insecure_http: true
+public_url: https://gateway.example.com
+```
+
+`192.0.2.10` stands for the bridge's own address; use the value of
+`ip -4 addr show docker0` on the host. A container reaches the host on that
+address. Do not use `0.0.0.0`, which also accepts traffic on every other
+interface.
+
+The proxy container then reaches the Gateway at the bridge address, so
+Caddy's upstream is that address rather than `127.0.0.1`:
+
+```caddyfile
+gateway.example.com {
+	encode zstd gzip
+
+	reverse_proxy 192.0.2.10:8443 {
+		flush_interval -1
+	}
+}
+```
+
+The bridge address exists only while Docker runs. On a host that starts the
+Gateway under systemd, order the units so the Gateway starts after
+`docker.service`; otherwise it can bind before the address exists, or refuse
+to start:
+
+```ini
+# /etc/systemd/system/hanse-gateway.service.d/docker.conf
+[Unit]
+After=docker.service
+Wants=docker.service
+```
+
+```console
+$ sudo systemctl daemon-reload
+$ sudo systemctl restart hanse-gateway
+```
+
+Keep `allow_insecure_http: true` only while the listener accepts the bridge
+subnet, and restrict the port to it. With a firewall that allows only the
+bridge subnet:
+
+```console
+$ sudo nft add rule inet filter input tcp dport 8443 \
+    ip saddr != 192.0.2.0/24 drop
+```
+
+As with the private address above, keep the plain-HTTP port off every other
+interface. The node credential and the API token travel in plain text, so a
+public listener without TLS exposes both.
 
 The agent protocol requires `https` URLs; an agent may use `http` only for a
 loopback host in tests (docs/agent-protocol.md section 1).
