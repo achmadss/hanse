@@ -8,18 +8,30 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
+
+	"github.com/achmadss/hanse/internal/agentconn"
+	"github.com/achmadss/hanse/internal/agentproto"
+	"github.com/achmadss/hanse/internal/auth"
 	"github.com/achmadss/hanse/internal/config"
+	herrors "github.com/achmadss/hanse/internal/errors"
+	"github.com/achmadss/hanse/internal/operations"
+	"github.com/achmadss/hanse/internal/registry"
+	"github.com/achmadss/hanse/internal/runtime"
 )
 
 // startTestGateway starts a Gateway on a loopback port the operating system
@@ -209,17 +221,25 @@ func TestGracefulShutdown(t *testing.T) {
 // writeConfigTree writes a minimal Gateway configuration with the given
 // extra gateway.yaml lines. Placeholder addresses only: 192.0.2.0/24 is
 // reserved for documentation.
+// writeConfigTree writes gateway.yaml with node: gateway, nodes.yaml
+// holding that node, an empty routes.yaml, and the directories they name.
 func writeConfigTree(t *testing.T, dir, extra string) {
 	t.Helper()
-	gw := "version: 1\nnode: gateway\npaths:\n" +
-		"  nodes: nodes.yaml\n  routes: routes.yaml\n" +
-		"  capabilities:\n    - " + dir + "/capabilities\n" +
-		"  credentials_dir: " + dir + "/credentials\n  state_dir: " + dir + "/state\n" +
-		extra
-	nodes := "version: 1\nnodes:\n  gateway:\n    os: linux\n    arch: amd64\n"
-	routes := "version: 1\ncapabilities: {}\n"
+	writeConfigFiles(t, dir, "version: 1\nnode: gateway\npaths:\n"+
+		"  nodes: nodes.yaml\n  routes: routes.yaml\n"+
+		"  capabilities:\n    - "+dir+"/capabilities\n"+
+		"  credentials_dir: "+dir+"/credentials\n  state_dir: "+dir+"/state\n"+
+		extra,
+		"version: 1\nnodes:\n  gateway:\n    os: linux\n    arch: amd64\n",
+		"version: 1\ncapabilities: {}\n")
+}
+
+// writeConfigFiles writes gateway.yaml, nodes.yaml, and routes.yaml into
+// dir and creates the directories gateway.yaml names.
+func writeConfigFiles(t *testing.T, dir, gateway, nodes, routes string) {
+	t.Helper()
 	for name, content := range map[string]string{
-		"gateway.yaml": gw,
+		"gateway.yaml": gateway,
 		"nodes.yaml":   nodes,
 		"routes.yaml":  routes,
 	} {
@@ -307,6 +327,401 @@ func TestStartGatewayRefusesABadCertificate(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "TLS certificate") {
 		t.Errorf("error = %q, want it to name the TLS certificate", err)
+	}
+}
+
+// codeOfBody reads the error code of one API error response.
+func codeOfBody(t *testing.T, body []byte) string {
+	t.Helper()
+	var e struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(body, &e); err != nil {
+		t.Fatalf("decode the error body %s: %v", body, err)
+	}
+	return e.Code
+}
+
+// echoManifest is the exec capability of the tests without an embedded
+// agent: it has no built-in executor, so only a node agent can run it.
+const echoManifest = `version: 1
+id: echo
+name: Echo
+description: Print a line from a node
+contract: hanse.handler/v1
+
+handler:
+  kind: exec
+  entry:
+    linux: [sh, handler.sh]
+
+operations:
+  say:
+    description: Write a marker file and print a line
+    arguments:
+      type: object
+      additionalProperties: false
+      properties:
+        message:
+          type: string
+          description: The text to print
+    options:
+      message: provider
+`
+
+// writeEmbeddedFalseTree writes a Gateway configuration with
+// embedded_agent: false: node gateway is the host node, one exec capability
+// routes to it, and no agent connection is open for it. The handler creates
+// marker when it runs, so a test can prove that it never ran in the Gateway
+// process.
+func writeEmbeddedFalseTree(t *testing.T, dir, marker string) {
+	t.Helper()
+	writeConfigFiles(t, dir,
+		"version: 1\nnode: gateway\nembedded_agent: false\n"+
+			"public_url: http://127.0.0.1:8443\nlisten: 127.0.0.1:8443\npaths:\n"+
+			"  nodes: nodes.yaml\n  routes: routes.yaml\n"+
+			"  capabilities:\n    - "+dir+"/capabilities\n"+
+			"  credentials_dir: "+dir+"/credentials\n  state_dir: "+dir+"/state\n",
+		"version: 1\nnodes:\n  gateway:\n    os: linux\n    arch: amd64\n",
+		"version: 1\ncapabilities:\n  echo:\n    executors: [gateway]\n    default_executor: gateway\n")
+	capDir := filepath.Join(dir, "capabilities", "echo")
+	if err := os.MkdirAll(capDir, 0o755); err != nil {
+		t.Fatalf("create the capability directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(capDir, "manifest.yaml"), []byte(echoManifest), 0o644); err != nil {
+		t.Fatalf("write the manifest: %v", err)
+	}
+	handler := "#!/bin/sh\ntouch '" + marker + "'\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(capDir, "handler.sh"), []byte(handler), 0o644); err != nil {
+		t.Fatalf("write the handler: %v", err)
+	}
+}
+
+// TestGatewayWithoutEmbeddedAgentStarts requires the Gateway to accept
+// embedded_agent: false and to serve the API.
+func TestGatewayWithoutEmbeddedAgentStarts(t *testing.T) {
+	dir := t.TempDir()
+	writeEmbeddedFalseTree(t, dir, filepath.Join(dir, "ran-in-process"))
+	ctx, cancel := context.WithCancel(context.Background())
+	g, err := startGateway(ctx, filepath.Join(dir, "gateway.yaml"), startOptions{
+		listen: "127.0.0.1:0",
+		stderr: io.Discard,
+	})
+	if err != nil {
+		cancel()
+		t.Fatalf("start the Gateway without an embedded agent: %v", err)
+	}
+	defer func() {
+		cancel()
+		if err := <-g.Done(); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	}()
+	if status, body := probeURL(t, "http://"+g.Addr+"/healthz"); status != http.StatusOK || body != "ok\n" {
+		t.Errorf("GET /healthz = %d %q, want 200 %q", status, body, "ok\n")
+	}
+	if status, body := probeURL(t, "http://"+g.Addr+"/readyz"); status != http.StatusOK || body != "ready\n" {
+		t.Errorf("GET /readyz = %d %q, want 200 %q", status, body, "ready\n")
+	}
+}
+
+// startGatewayWithToken starts the Gateway in dir with one API token and
+// returns it with that token. dir already holds a complete configuration.
+func startGatewayWithToken(t *testing.T, dir string) (*gateway, string) {
+	t.Helper()
+	store, err := auth.LoadStore(filepath.Join(dir, "state", "tokens.json"))
+	if err != nil {
+		t.Fatalf("load the token store: %v", err)
+	}
+	token, err := store.Add("admin", nil)
+	if err != nil {
+		t.Fatalf("add an API token: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	g, err := startGateway(ctx, filepath.Join(dir, "gateway.yaml"), startOptions{
+		listen: "127.0.0.1:0",
+		stderr: io.Discard,
+	})
+	if err != nil {
+		cancel()
+		t.Fatalf("start the Gateway without an embedded agent: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-g.Done():
+			if err != nil {
+				t.Errorf("shutdown: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("the Gateway did not stop")
+		}
+	})
+	return g, token
+}
+
+// TestGatewayWithoutEmbeddedAgentSendsExecToTheHostAgent requires an exec
+// run for the host node without a connection to fail with
+// executor_unavailable, and never to run in the Gateway process.
+func TestGatewayWithoutEmbeddedAgentSendsExecToTheHostAgent(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran-in-process")
+	writeEmbeddedFalseTree(t, dir, marker)
+	g, token := startGatewayWithToken(t, dir)
+
+	request, err := http.NewRequest(http.MethodPost, "http://"+g.Addr+"/v1/operations",
+		strings.NewReader(`{"capability":"echo","operation":"say","arguments":{}}`))
+	if err != nil {
+		t.Fatalf("build the request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("submit the operation: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read the response: %v", err)
+	}
+	// Executor resolution refuses an offline node before anything runs, with
+	// the executor_unavailable code of docs/architecture.md §14. The Gateway
+	// never falls back to its own process.
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("submit status = %d, want 503, body %s", response.StatusCode, body)
+	}
+	if code := codeOfBody(t, body); code != "executor_unavailable" {
+		t.Errorf("submit code = %q, want executor_unavailable, body %s", code, body)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("the handler ran in the Gateway process (marker %s: %v)", marker, statErr)
+	}
+}
+
+// TestGatewayWithoutEmbeddedAgentOptionsGoToTheHostAgent requires an exec
+// option provider call to follow the same route as a run: to the host
+// node's agent, never to the Gateway process.
+func TestGatewayWithoutEmbeddedAgentOptionsGoToTheHostAgent(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran-in-process")
+	writeEmbeddedFalseTree(t, dir, marker)
+	g, token := startGatewayWithToken(t, dir)
+
+	request, err := http.NewRequest(http.MethodGet,
+		"http://"+g.Addr+"/v1/operations/echo/say/options/message", nil)
+	if err != nil {
+		t.Fatalf("build the request: %v", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("request the options: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read the response: %v", err)
+	}
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("options status = %d, want 503, body %s", response.StatusCode, body)
+	}
+	if code := codeOfBody(t, body); code != "executor_unavailable" {
+		t.Errorf("options code = %q, want executor_unavailable, body %s", code, body)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("the option provider ran in the Gateway process (marker %s: %v)", marker, statErr)
+	}
+}
+
+// TestDispatcherWithoutEmbeddedAgentUsesTheHostAgentPath calls the dispatcher
+// directly, past executor resolution, and requires an exec call for the host
+// node to go to the node agent path. With embedded_agent: false the Gateway
+// builds no exec dispatcher, so the only possible outcome is the agent's
+// answer.
+func TestDispatcherWithoutEmbeddedAgentUsesTheHostAgentPath(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran-in-process")
+	writeEmbeddedFalseTree(t, dir, marker)
+
+	cfg, problems, err := config.Load(filepath.Join(dir, "gateway.yaml"))
+	if err != nil || len(problems) > 0 {
+		t.Fatalf("load the configuration: %v, problems: %v", err, problems)
+	}
+	reg, _, err := registry.Load(registry.Options{
+		Dirs:  cfg.Gateway.Paths.Capabilities,
+		Input: registryInput(cfg),
+	})
+	if err != nil {
+		t.Fatalf("load the registry: %v", err)
+	}
+	hub, err := agentconn.New(agentconn.Config{
+		Registry: reg,
+		Verify:   func(string) (string, error) { return "", herrors.New(herrors.AuthenticationFailed, "", nil) },
+	})
+	if err != nil {
+		t.Fatalf("build the hub: %v", err)
+	}
+	d := &dispatcher{
+		registry: reg,
+		host:     "gateway",
+		embedded: false,
+		agent:    operations.NewAgentDispatcher(hub, reg, config.Timeouts{}),
+	}
+	_, err = d.Execute(context.Background(), &operations.Call{Request: &runtime.Request{
+		ID:         "op_test",
+		Capability: "echo",
+		Operation:  "say",
+		Executor:   runtime.Node{ID: "gateway"},
+	}})
+	if !errors.Is(err, herrors.ExecutorUnavailable) {
+		t.Fatalf("exec on gateway = %v, want executor_unavailable", err)
+	}
+	if !strings.Contains(err.Error(), "no agent connection") {
+		t.Errorf("error = %q, want the node agent's answer", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("the handler ran in the Gateway process (marker %s: %v)", marker, statErr)
+	}
+}
+
+// writeEmbeddedFalseHTTPTree writes the embedded_agent: false configuration
+// with an http capability routed to the host node. The Gateway calls url
+// itself, so no node agent is involved.
+func writeEmbeddedFalseHTTPTree(t *testing.T, dir, url string) {
+	t.Helper()
+	writeConfigFiles(t, dir,
+		"version: 1\nnode: gateway\nembedded_agent: false\n"+
+			"public_url: http://127.0.0.1:8443\nlisten: 127.0.0.1:8443\npaths:\n"+
+			"  nodes: nodes.yaml\n  routes: routes.yaml\n"+
+			"  capabilities:\n    - "+dir+"/capabilities\n"+
+			"  credentials_dir: "+dir+"/credentials\n  state_dir: "+dir+"/state\n",
+		"version: 1\nnodes:\n  gateway:\n    os: linux\n    arch: amd64\n",
+		"version: 1\ncapabilities:\n  remote:\n    executors: [gateway]\n    default_executor: gateway\n")
+	capDir := filepath.Join(dir, "capabilities", "remote")
+	if err := os.MkdirAll(capDir, 0o755); err != nil {
+		t.Fatalf("create the capability directory: %v", err)
+	}
+	manifest := "version: 1\nid: remote\nname: Remote\ndescription: Remote service capability\n" +
+		"contract: hanse.handler/v1\n\nhandler:\n  kind: http\n  url: " + url + "\n\n" +
+		"operations:\n  ping:\n    description: Ping the service\n    arguments:\n" +
+		"      type: object\n      additionalProperties: false\n"
+	if err := os.WriteFile(filepath.Join(capDir, "manifest.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write the manifest: %v", err)
+	}
+}
+
+// TestGatewayWithoutEmbeddedAgentServesHTTPCapability requires an http
+// capability routed to the host node to work while that node has no agent
+// connection: the Gateway makes the call itself.
+func TestGatewayWithoutEmbeddedAgentServesHTTPCapability(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"contract":"hanse.handler/v1","status":"ok","result":{"state":"online"}}`)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	writeEmbeddedFalseHTTPTree(t, dir, server.URL)
+	g, token := startGatewayWithToken(t, dir)
+
+	request, err := http.NewRequest(http.MethodPost, "http://"+g.Addr+"/v1/operations",
+		strings.NewReader(`{"capability":"remote","operation":"ping","arguments":{}}`))
+	if err != nil {
+		t.Fatalf("build the request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("submit the operation: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read the response: %v", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("submit status = %d, want 200, body %s", response.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `"completed"`) {
+		t.Errorf("body = %s, want a completed operation", body)
+	}
+}
+
+// TestGatewayWithoutEmbeddedAgentAcceptsTheHostNode requires the host node
+// to enroll and connect when embedded_agent is false: its node agent is the
+// only executor for that node in this layout.
+func TestGatewayWithoutEmbeddedAgentAcceptsTheHostNode(t *testing.T) {
+	dir := t.TempDir()
+	writeEmbeddedFalseTree(t, dir, filepath.Join(dir, "ran-in-process"))
+	g, _ := startGatewayWithToken(t, dir)
+
+	token, err := g.enroll.IssueJoinToken("gateway")
+	if err != nil {
+		t.Fatalf("issue a join token: %v", err)
+	}
+	join := `{"protocol":"hanse.agent/v1","join_token":"` + token.Plain +
+		`","agent_version":"1.0.0","os":"linux","arch":"amd64"}`
+	request, err := http.NewRequest(http.MethodPost, "http://"+g.Addr+"/v1/agent/join", strings.NewReader(join))
+	if err != nil {
+		t.Fatalf("build the join request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("join the host node: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read the join response: %v", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("join status = %d, want 200, body %s", response.StatusCode, body)
+	}
+	var joined struct {
+		Node       string `json:"node"`
+		Credential string `json:"credential"`
+	}
+	if err := json.Unmarshal(body, &joined); err != nil {
+		t.Fatalf("decode the join response: %v", err)
+	}
+	if joined.Node != "gateway" || joined.Credential == "" {
+		t.Fatalf("join response = %+v, want gateway and a credential", joined)
+	}
+
+	url := "ws" + strings.TrimPrefix("http://"+g.Addr, "http") + "/v1/agent/connect"
+	dialer := *websocket.DefaultDialer
+	dialer.Subprotocols = []string{agentproto.SubprotocolV1}
+	ws, _, err := dialer.Dial(url, http.Header{"Authorization": {"Bearer " + joined.Credential}})
+	if err != nil {
+		t.Fatalf("connect the host node: %v", err)
+	}
+	defer func() { _ = ws.Close() }()
+	hello, err := agentproto.Encode(&agentproto.Hello{
+		Type: agentproto.TypeHello, Protocol: agentproto.ProtocolV1, AgentVersion: "1.0.0",
+		OS: "linux", Arch: "amd64", Contracts: []string{"hanse.handler/v1"},
+		MaxConcurrentRuns: 4,
+	})
+	if err != nil {
+		t.Fatalf("encode hello: %v", err)
+	}
+	_ = ws.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	if err := ws.WriteMessage(websocket.TextMessage, hello); err != nil {
+		t.Fatalf("write hello: %v", err)
+	}
+	_ = ws.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, welcomeData, err := ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("read welcome: %v", err)
+	}
+	message, err := agentproto.Decode(welcomeData)
+	if err != nil {
+		t.Fatalf("decode welcome: %v", err)
+	}
+	if _, ok := message.(*agentproto.Welcome); !ok {
+		t.Fatalf("first message is %T, want welcome", message)
 	}
 }
 

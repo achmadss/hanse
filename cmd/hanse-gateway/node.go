@@ -103,6 +103,13 @@ func runNodeEnroll(args []string, stdout, stderr io.Writer, outerConfig string) 
 	if !ok {
 		return exitFail
 	}
+	// The embedded agent already runs the host node's exec handlers when
+	// gateway.yaml keeps embedded_agent true. A node agent for the same ID
+	// would give that node two executors (docs/architecture.md §8.1).
+	if cfg.Gateway.EmbeddedAgentEnabled() && id == cfg.Gateway.Node {
+		printf(stderr, "hanse-gateway: node %q is the Gateway host and runs its handlers in the Gateway's embedded agent; set embedded_agent: false in %s to run them on a node agent.\n", id, configPath)
+		return exitFail
+	}
 	service, ok := openEnroll(cfg, stderr)
 	if !ok {
 		return exitFail

@@ -86,7 +86,8 @@ Supporting terms:
    | Argument validation  Executor resolver  |
    | Operation manager    History and logs   |
    | Handler runtimes: builtin, exec, http   |
-   | Node connections     Embedded agent     |
+   | Node connections                        |
+   | Embedded agent (embedded_agent: true)   |
    +-----------------------------------------+
             ^                     ^
             |                     |
@@ -112,10 +113,19 @@ Supporting terms:
 | History and logs | Stores operation records and per-operation logs so that they survive a Gateway restart. |
 | Handler runtimes | Run handlers. `builtin` runs Go code inside the Gateway. `exec` runs a program. `http` calls an HTTP endpoint. |
 | Node connections | Enrolls node agents, accepts their connections, and tracks which nodes are online. |
-| Embedded agent | The node agent's code, built into the Gateway, so the Gateway host can be an executor without a separate agent. |
+| Embedded agent | The node agent's code, built into the Gateway, so the Gateway host can be an executor without a separate agent. The Gateway builds it only when `gateway.yaml` sets `node`. |
 | Node agent | The `hanse-node` program on each executor node. It receives handler files and run requests, runs handlers, and sends back logs and results. |
 
 The Gateway is a single process. Hanse does not need a message broker, a separate database server, or a service mesh.
+
+The Gateway has two layouts. `node` always names the Gateway host node; `embedded_agent` chooses where that node's `exec` handlers run:
+
+| Layout | `gateway.yaml` | Exec handlers on the Gateway host | The host node's agent |
+|---|---|---|---|
+| Embedded agent | `embedded_agent: true` (default) | Run in the Gateway process, in the embedded agent. | The Gateway refuses it: one node never has two executors. |
+| Host node agent | `embedded_agent: false` | Run on the host's `hanse-node` agent, like on every other executor. | Enrolls and connects like any other node. This is the layout for the Gateway in a container. |
+
+`http` handlers run in the Gateway process in both layouts, because the Gateway calls their endpoint itself.
 
 ## 4. Request flow
 
@@ -144,6 +154,8 @@ The Gateway chooses the executor with this precedence:
 The chosen executor must be in the operation's eligible executor list. The operation's list, when set, narrows the capability's list.
 
 If the chosen executor is disabled, or its node agent is not connected, the Gateway returns an error. It does not try another executor.
+
+With `embedded_agent: true`, the Gateway runs an `exec` call for the host node in its embedded agent instead of a node agent. With `embedded_agent: false`, every `exec` call for that node, including an option provider call, needs its connected node agent. An offline executor always fails with `executor_unavailable`, and the Gateway never falls back to its own process. An `http` capability needs no connection, because the Gateway makes that call itself.
 
 Every accepted operation records the result of resolution:
 
@@ -229,7 +241,10 @@ Some argument values change at runtime. A capability supplies them through an op
 
 Every executor node runs the node agent, `hanse-node`. The agent connects out to the Gateway, receives handler files and run requests, runs handlers, and sends their logs and results back. The Gateway never connects to a node.
 
-The Gateway host needs no separate agent. The Gateway contains the agent's code and runs handlers on its own host the same way.
+`gateway.yaml`'s `node` is the Gateway host node. `embedded_agent` chooses where that node's `exec` handlers run:
+
+- **Embedded agent** (`embedded_agent: true`, the default). The Gateway contains the agent's code and runs the host node's `exec` handlers in its own process, so the machine needs no separate `hanse-node`. The node ID already has its executor, so the Gateway refuses a `hanse-node` enrollment or connection for the same ID.
+- **Host node agent** (`embedded_agent: false`). The Gateway starts no embedded agent and runs no `exec` handler in its own process. The host node's `exec` handlers run on a `hanse-node` agent for that node, like on every other executor: run `hanse-node` there and enroll it like any other node. This is the layout for a Gateway in a container, where handlers must run on the real host. `http` handlers still run in the Gateway process.
 
 The message format between the Gateway and the agent is defined in the [agent protocol](agent-protocol.md).
 
@@ -244,9 +259,11 @@ A node joins the Gateway once, with a one-time join token:
 
 A join token works once and expires after 15 minutes by default. A node credential belongs to one node ID, so an agent cannot act as another node. `hanse-gateway node revoke node-a` revokes the credential, and the node must enroll again.
 
+With `embedded_agent: true`, the Gateway refuses a join token for the node that `gateway.yaml`'s `node` names: that node already runs its exec handlers in the embedded agent, and one node never has two executors. The refusal uses the `forbidden` code, HTTP 403, and leaves the token unused, so the node can enroll after `embedded_agent` is set to `false`.
+
 ### 8.2 Connection and presence
 
-- The agent opens a WebSocket connection to `GET /v1/agent/connect` and authenticates with its node credential. A WebSocket is a long-lived, two-way connection that starts as an ordinary HTTPS request, so it works through reverse proxies and tunnels.
+- The agent opens a WebSocket connection to `GET /v1/agent/connect` and authenticates with its node credential. With `embedded_agent: true`, the Gateway refuses a credential for the node that `gateway.yaml`'s `node` names, with the `forbidden` code, HTTP 403, before the upgrade. With `false`, the host node connects like any other node. A WebSocket is a long-lived, two-way connection that starts as an ordinary HTTPS request, so it works through reverse proxies and tunnels.
 - The connection uses the same TLS rules as the API.
 - When it connects, the agent reports its version, its OS and architecture, and its agent protocol version. The Gateway rejects the connection if the OS or architecture differs from `nodes.yaml`, or if it does not support the protocol version.
 - Both sides send a heartbeat every 15 seconds. A side that receives nothing for 45 seconds treats the connection as lost.
@@ -504,7 +521,7 @@ Dedicated commands or aliases, such as a short `pc up`, may exist later. They mu
 
 | File | Holds |
 |---|---|
-| `gateway.yaml` | Listen address, TLS, authentication, capability directories, history storage, and default timeouts. |
+| `gateway.yaml` | Listen address, TLS, authentication, capability directories, history storage, default timeouts, the host `node`, and `embedded_agent`. |
 | `nodes.yaml` | Each node's ID, name, OS, architecture, role, address, `enabled` flag, and free-form `attributes`. |
 | `routes.yaml` | Eligible executors and default executors, at capability level and at operation level. |
 | `manifest.yaml` | One per capability package. See [Capability packages](#71-capability-packages). |

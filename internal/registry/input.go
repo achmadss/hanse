@@ -18,6 +18,11 @@ type Input struct {
 	// GatewayHost is the Gateway host node ID from gateway.yaml's `node`.
 	// http capabilities may list only this node as executor.
 	GatewayHost string
+	// GatewayHostNoEmbeddedAgent says that the Gateway runs no embedded
+	// agent for GatewayHost, so that node is online only while its
+	// hanse-node agent is connected. False keeps the embedded-agent rule:
+	// the Gateway host is always online (docs/architecture.md §8).
+	GatewayHostNoEmbeddedAgent bool
 	// Routes is the parsed routes.yaml. An empty Routes behaves like an
 	// empty routing table: every capability is unrouted and warns.
 	Routes Routes

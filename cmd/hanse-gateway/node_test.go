@@ -17,7 +17,13 @@ import (
 // nodes.yaml, so the node subcommands have real IDs to work with.
 func nodeFixture(t *testing.T) (configPath, stateDir string) {
 	t.Helper()
-	dir := configFixture(t, "")
+	return nodeFixtureWith(t, "")
+}
+
+// nodeFixtureWith is nodeFixture with a snippet appended to gateway.yaml.
+func nodeFixtureWith(t *testing.T, extra string) (configPath, stateDir string) {
+	t.Helper()
+	dir := configFixture(t, extra)
 	nodes := `version: 1
 nodes:
   gateway:
@@ -96,6 +102,41 @@ func TestNodeEnrollUnknownNode(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), `node "node-z" is not in`) {
 		t.Errorf("stderr = %q, want the unknown-node problem", stderr.String())
+	}
+}
+
+// TestNodeEnrollRefusesGatewayHost requires a token for the node that
+// gateway.yaml's `node` names to be refused: that node already runs its
+// handlers in the embedded agent.
+func TestNodeEnrollRefusesGatewayHost(t *testing.T) {
+	configPath, _ := nodeFixture(t)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"node", "enroll", "gateway", "--config", configPath}, &stdout, &stderr)
+	if code != exitFail {
+		t.Fatalf("exit = %d, want %d", code, exitFail)
+	}
+	if stdout.String() != "" {
+		t.Errorf("stdout = %q, want nothing: no token may exist for the Gateway host", stdout.String())
+	}
+	for _, want := range []string{`node "gateway" is the Gateway host`, "embedded agent", "set embedded_agent: false"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr = %q, want it to hold %q", stderr.String(), want)
+		}
+	}
+}
+
+// TestNodeEnrollHostNodeWithoutEmbeddedAgent requires the host node to
+// enroll when embedded_agent is false: its node agent is then the only
+// executor for that node.
+func TestNodeEnrollHostNodeWithoutEmbeddedAgent(t *testing.T) {
+	configPath, _ := nodeFixtureWith(t, "embedded_agent: false\n")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"node", "enroll", "gateway", "--config", configPath}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "join token for gateway") {
+		t.Errorf("stdout = %q, want a join token for gateway", stdout.String())
 	}
 }
 

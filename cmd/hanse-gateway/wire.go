@@ -21,8 +21,9 @@ import (
 // (docs/configuration.md section 4.1).
 func registryInput(cfg *config.Config) registry.Input {
 	in := registry.Input{
-		GatewayHost: cfg.Gateway.Node,
-		Routes:      registry.Routes{Capabilities: map[string]registry.CapabilityRoute{}},
+		GatewayHost:                cfg.Gateway.Node,
+		GatewayHostNoEmbeddedAgent: !cfg.Gateway.EmbeddedAgentEnabled(),
+		Routes:                     registry.Routes{Capabilities: map[string]registry.CapabilityRoute{}},
 	}
 	ids := make([]string, 0, len(cfg.Nodes.Nodes))
 	for id := range cfg.Nodes.Nodes {
@@ -105,12 +106,19 @@ func embeddedNode(cfg *config.Config) runtime.Node {
 }
 
 // dispatcher routes one validated call to the runtime its capability
-// declares. An exec capability runs on the embedded agent when the resolved
-// executor is the Gateway host node and on the node agent otherwise
-// (docs/architecture.md sections 7.2 and 7.3).
+// declares. An exec capability runs on the embedded agent when the Gateway
+// has one and the resolved executor is the Gateway host node; every other
+// exec call goes to the executor's node agent, which includes every exec
+// call for the host node when gateway.yaml sets `embedded_agent: false`
+// (docs/architecture.md sections 7.2, 7.3, and 8).
 type dispatcher struct {
 	registry *registry.Registry
-	host     string
+	// host is gateway.yaml's `node`, the Gateway host node.
+	host string
+	// embedded reports whether the Gateway runs host's exec handlers in its
+	// own process. False sends them to host's node agent, like any other
+	// node's.
+	embedded bool
 	exec     *operations.ExecDispatcher
 	http     *operations.HTTPDispatcher
 	agent    *operations.AgentDispatcher
@@ -136,7 +144,11 @@ func (d *dispatcher) Execute(ctx context.Context, call *operations.Call) (runtim
 	case registry.KindHTTP:
 		return d.http.Execute(ctx, call)
 	case registry.KindExec:
-		if call.Request.Executor.ID == d.host {
+		if d.embedded && call.Request.Executor.ID == d.host {
+			if d.exec == nil {
+				return runtime.Response{}, herrors.New(herrors.Internal,
+					fmt.Sprintf("the Gateway has no embedded agent for host node %q", d.host), nil)
+			}
 			return d.exec.Execute(ctx, call)
 		}
 		return d.agent.Execute(ctx, call)

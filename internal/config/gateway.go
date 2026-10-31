@@ -10,6 +10,8 @@ import (
 
 func strPtr(s string) *string { return &s }
 
+func boolPtr(b bool) *bool { return &b }
+
 var errSyntax = errors.New("not an address")
 
 // GatewayConfig is the parsed gateway.yaml (docs/configuration.md §3).
@@ -19,8 +21,15 @@ var errSyntax = errors.New("not an address")
 type GatewayConfig struct {
 	// Version is the file format version; it must be 1.
 	Version int
-	// Node is the node ID in nodes.yaml that is the Gateway host.
+	// Node is the node ID in nodes.yaml that is the Gateway host. Its http
+	// capabilities always route to this node, and the Gateway makes those
+	// calls itself.
 	Node string
+	// EmbeddedAgent runs the host node's exec handlers inside the Gateway
+	// process. It defaults to true. False runs them on the host node's
+	// hanse-node agent instead, so the Gateway runs no exec handler of its
+	// own (docs/configuration.md §3.2).
+	EmbeddedAgent *bool `yaml:"embedded_agent"`
 	// PublicURL is the URL that clients and node agents use to reach the
 	// Gateway.
 	PublicURL string `yaml:"public_url"`
@@ -216,12 +225,22 @@ func finalizeGateway(g *GatewayConfig, baseDir string) {
 	if g.Agents.HeartbeatTimeout == nil {
 		g.Agents.HeartbeatTimeout = &Duration{Value: 45 * time.Second}
 	}
+	if g.EmbeddedAgent == nil {
+		g.EmbeddedAgent = boolPtr(true)
+	}
 	if g.Log.Level == "" {
 		g.Log.Level = "info"
 	}
 	if g.Log.Format == "" {
 		g.Log.Format = "text"
 	}
+}
+
+// EmbeddedAgentEnabled reports whether the Gateway runs the host node's
+// exec handlers inside its own process. The loader always fills the field;
+// a nil value means the documented default, true.
+func (g *GatewayConfig) EmbeddedAgentEnabled() bool {
+	return g.EmbeddedAgent == nil || *g.EmbeddedAgent
 }
 
 // checkGateway validates gateway.yaml alone. Name is the file's path as
@@ -231,6 +250,9 @@ func checkGateway(g *GatewayConfig, file string, problems *Problems) {
 	if g.Version != 1 {
 		*problems = append(*problems, Problem{file, "version", "must be 1"})
 	}
+	// `node` is required: it names the Gateway host node, which is the only
+	// eligible executor of an `http` capability. The embedded agent is the
+	// separate, optional executor for that node.
 	if g.Node == "" {
 		*problems = append(*problems, Problem{file, "node", "is required"})
 	} else if !ValidID(g.Node) {

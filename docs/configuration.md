@@ -58,7 +58,8 @@ Both programs accept `--config <path>` to use another file.
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `version` | integer | required | `1` |
-| `node` | ID | required | The node in `nodes.yaml` that is the Gateway host. Its handlers run in the Gateway's embedded agent. |
+| `node` | ID | required | The node in `nodes.yaml` that is the Gateway host. `http` capabilities always route to this node, and the Gateway makes those calls itself. |
+| `embedded_agent` | boolean | `true` | Run the host node's `exec` handlers inside the Gateway process. Set it to `false` when the host runs `hanse-node` for the same node: `exec` handlers then run on that node's agent, and `http` handlers still run in the Gateway process. |
 | `public_url` | URL | required | The URL that clients and node agents use to reach the Gateway. `hanse-gateway node enroll` prints it in the join command. |
 | `listen` | host:port | `127.0.0.1:8443` | The address the API listens on. |
 | `tls.cert_file`, `tls.key_file` | path | none | The TLS certificate and key, in PEM format. Set both or neither. |
@@ -91,6 +92,10 @@ Both programs accept `--config <path>` to use another file.
 - Without TLS, the Gateway listens only on a loopback address, unless `allow_insecure_http` is `true`.
 - `public_url` must use `https`, unless its host is a loopback address.
 - `node` must name an enabled node in `nodes.yaml`.
+- `embedded_agent` must be a boolean. It defaults to `true`.
+- With `embedded_agent: true`, the Gateway runs the host node's `exec` handlers in its embedded agent, and it refuses a `hanse-node` enrollment or connection for that same node: one node never has two executors.
+- With `embedded_agent: false`, the Gateway builds no embedded agent. `exec` runs and `exec` option-provider calls for the host node go to its `hanse-node` agent, like any other node, and the host node may enroll, join, and connect. An offline host node fails with `executor_unavailable`; the Gateway never runs the handler in its own process.
+- `http` capabilities route to the host node and run in the Gateway process in both layouts, so they need no node agent.
 
 ### 3.3 Example
 
@@ -98,9 +103,16 @@ Both programs accept `--config <path>` to use another file.
 # Hanse Gateway configuration. See docs/configuration.md.
 version: 1
 
-# The node in nodes.yaml that is this Gateway host. Its handlers run in the
-# Gateway's embedded agent.
+# The node in nodes.yaml that is this Gateway host. Its http handlers always
+# run in the Gateway process, and its exec handlers run there too while
+# embedded_agent is true.
 node: gateway
+
+# Run this host node's exec handlers inside the Gateway process. Set it to
+# false when the host runs hanse-node for the same node, such as for a Gateway
+# in a container: exec handlers then run on that node's agent, and http
+# handlers still run in the Gateway process. See docs/guides/docker.md.
+embedded_agent: true
 
 # The URL that clients and node agents use to reach the Gateway.
 public_url: https://gateway.example.com
@@ -169,7 +181,11 @@ log:
 | `nodes.<id>.enabled` | boolean | `true` | A disabled node runs nothing, cannot be a target, and cannot connect. |
 | `nodes.<id>.attributes` | map | `{}` | Free-form values for capabilities, such as a MAC address. Handlers receive them in the request envelope. |
 
-Nodes have no connection settings, because each node's agent connects to the Gateway. A node that is only a target, such as a machine that other nodes wake or shut down, needs no agent. It stays `offline` and can never be an executor, but requests can still name it in a `hanse:node` argument. Attributes must not hold secrets, because every handler that targets the node receives them.
+Nodes have no connection settings, because each node's agent connects to the Gateway. A node that only acts as a target, such as a machine that other nodes wake or shut down, needs no agent. It stays `offline` and can never be an executor, but requests can still name it in a `hanse:node` argument.
+
+With `embedded_agent: false`, the Gateway host node is an ordinary executor: it needs a `hanse-node` agent, and it is listed in `nodes.yaml` and in the capability's list in `routes.yaml` like any other node. With the default `embedded_agent: true`, its embedded agent is always online.
+
+Attributes must not hold secrets, because every handler that targets the node receives them.
 
 ### 4.2 Example
 
@@ -236,7 +252,7 @@ nodes:
 
 - A default executor must be in the eligible list of its level.
 - An operation's list must be a subset of the capability's list. `"*"` at operation level means the capability's whole list.
-- The Gateway makes `http` handler calls itself, so an `http` capability's list may contain only the Gateway host node, named by `node` in `gateway.yaml`. `"*"` means that node only.
+- The Gateway makes `http` handler calls itself, so an `http` capability's list may contain only the Gateway host node, named by `node` in `gateway.yaml`. `"*"` means that node only. This holds in both layouts: `embedded_agent` changes only where `exec` handlers run.
 - A capability that `routes.yaml` does not mention has no eligible executors. The Gateway logs a warning at startup, and every request for it fails with `Executor not eligible`.
 - A request can run an operation only on a node from its eligible list. A request that names any other node fails with `Executor not eligible`, even if that node runs an agent.
 

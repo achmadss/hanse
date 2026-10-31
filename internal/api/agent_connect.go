@@ -16,6 +16,33 @@ import (
 	"github.com/achmadss/hanse/internal/registry"
 )
 
+// refuseEmbeddedNode rejects a node credential of the Gateway host node when
+// the Gateway runs an embedded agent for it. Without the check the host
+// would have two executors, the embedded agent and the node agent
+// (docs/architecture.md §8.1). A missing or wrong credential is refused
+// first with the same AuthenticationFailed code the hub would answer, so
+// the extra check reveals nothing.
+func (s *server) refuseEmbeddedNode(r *http.Request) error {
+	if s.embeddedNode == "" || s.agents == nil {
+		return nil
+	}
+	credential, ok := bearerCredential(r)
+	if !ok {
+		return herrors.New(herrors.AuthenticationFailed, "", nil)
+	}
+	nodeID, err := s.agents.Authenticate(credential)
+	if err != nil {
+		return err
+	}
+	if nodeID != s.embeddedNode {
+		return nil
+	}
+	return herrors.New(herrors.Forbidden,
+		fmt.Sprintf("node %q is the Gateway host and runs its handlers in the Gateway's embedded agent; set embedded_agent: false in gateway.yaml to connect it as a node agent",
+			nodeID),
+		map[string]any{"node": nodeID})
+}
+
 // BundleSource serves one capability's handler files as the gzip-compressed
 // tar archive of docs/agent-protocol.md section 5.2. The capability's
 // content hash stays the Gateway's business: the source receives the

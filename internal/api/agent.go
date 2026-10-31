@@ -10,6 +10,16 @@ import (
 	herrors "github.com/achmadss/hanse/internal/errors"
 )
 
+// WithEmbeddedNode sets the node ID whose exec handlers the Gateway runs
+// inside its own process, from gateway.yaml's `node` while embedded_agent
+// is true. A node agent may not enroll or connect for that node, because one
+// node never has two executors (docs/architecture.md §8.1). An empty ID is
+// the `embedded_agent: false` layout: the host node enrolls and connects
+// like any other node.
+func WithEmbeddedNode(nodeID string) Option {
+	return func(s *server) { s.embeddedNode = nodeID }
+}
+
 // joinInput is the body of POST /v1/agent/join (docs/agent-protocol.md §2.2).
 type joinInput struct {
 	Protocol     string `json:"protocol"`
@@ -64,10 +74,19 @@ func (s *server) joinAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, joinResponse{Node: out.Node, Credential: out.Credential})
 }
 
-// checkNodeEntry requires the node to exist in nodes.yaml and the agent's
-// OS and architecture to match it. A mismatch is the NodeMismatch code,
-// HTTP 409 (docs/agent-protocol.md §2.3).
+// checkNodeEntry requires the node to exist in nodes.yaml, to not be the
+// node the Gateway runs itself, and the agent's OS and architecture to match
+// it. A mismatch is the NodeMismatch code, HTTP 409 (docs/agent-protocol.md
+// §2.3). A token of the embedded node is refused with the Forbidden code,
+// HTTP 403: the Gateway host already runs its handlers in process, so it
+// must never gain a second executor.
 func (s *server) checkNodeEntry(nodeID, osName, arch string) error {
+	if s.embeddedNode != "" && nodeID == s.embeddedNode {
+		return herrors.New(herrors.Forbidden,
+			fmt.Sprintf("node %q is the Gateway host and runs its handlers in the Gateway's embedded agent; set embedded_agent: false in gateway.yaml to enroll it as a node agent",
+				nodeID),
+			map[string]any{"node": nodeID})
+	}
 	view, ok := s.reg.Nodes.Get(nodeID)
 	if !ok {
 		// The node was removed from nodes.yaml after its token was issued.

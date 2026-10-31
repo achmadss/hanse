@@ -54,8 +54,8 @@ func New(capabilities CapabilityLookup, nodes NodeLookup) *Resolver {
 
 // Resolve returns the executor of one request. requested is the executor
 // the request named, or "" when it named none. The chosen executor is in
-// the operation's eligible list and is enabled and online; this never
-// substitutes another node.
+// the operation's eligible list and is enabled and, for an exec capability,
+// online; this never substitutes another node.
 //
 // It fails with:
 //   - UnknownCapability when the capability is not loaded,
@@ -65,7 +65,9 @@ func New(capabilities CapabilityLookup, nodes NodeLookup) *Resolver {
 //     operation,
 //   - NoDefaultExecutor when the request named none and routes.yaml sets
 //     none for the operation or its capability,
-//   - ExecutorUnavailable when the chosen executor is disabled or offline.
+//   - ExecutorUnavailable when the chosen executor of an exec capability is
+//     disabled or offline. An http capability runs in the Gateway process,
+//     so its executor needs no connection.
 func (r *Resolver) Resolve(capabilityID, operationID, requested string) (Resolution, error) {
 	loaded, ok := r.capability(capabilityID)
 	if !ok {
@@ -78,13 +80,18 @@ func (r *Resolver) Resolve(capabilityID, operationID, requested string) (Resolut
 			fmt.Sprintf("capability %q has no operation %q", capabilityID, operationID),
 			map[string]any{"capability": capabilityID, "operation": operationID})
 	}
+	// An http capability runs in the Gateway process, which calls the
+	// handler endpoint itself; no node agent is involved, so the executor's
+	// connection status does not matter. exec capabilities still need their
+	// executor online (docs/architecture.md §5).
+	needsOnline := loaded.Manifest == nil || loaded.Manifest.Handler.Kind != registry.KindHTTP
 	// A capability that routes.yaml does not mention has no routing entry
 	// for its operations; its requests keep failing with no eligible
 	// executor and no default.
 	routing, _ := loaded.RoutingOf(operationID)
 
 	if requested != "" {
-		return r.accept(capabilityID, operationID, routing, requested, SourceExplicit)
+		return r.accept(capabilityID, operationID, routing, requested, SourceExplicit, needsOnline)
 	}
 	if routing.DefaultExecutor == "" {
 		return Resolution{}, herrors.New(herrors.NoDefaultExecutor,
@@ -92,12 +99,12 @@ func (r *Resolver) Resolve(capabilityID, operationID, requested string) (Resolut
 				operationID, capabilityID),
 			map[string]any{"capability": capabilityID, "operation": operationID})
 	}
-	return r.accept(capabilityID, operationID, routing, routing.DefaultExecutor, SourceDefault)
+	return r.accept(capabilityID, operationID, routing, routing.DefaultExecutor, SourceDefault, needsOnline)
 }
 
 // accept checks one candidate executor and returns it when it may run the
 // operation. A rejected candidate is never replaced by another node.
-func (r *Resolver) accept(capabilityID, operationID string, routing registry.OperationRouting, executor string, source Source) (Resolution, error) {
+func (r *Resolver) accept(capabilityID, operationID string, routing registry.OperationRouting, executor string, source Source, needsOnline bool) (Resolution, error) {
 	view, known := r.node(executor)
 	if !known {
 		return Resolution{}, herrors.New(herrors.InvalidExecutor,
@@ -115,7 +122,7 @@ func (r *Resolver) accept(capabilityID, operationID string, routing registry.Ope
 			fmt.Sprintf("executor %q is disabled", executor),
 			map[string]any{"capability": capabilityID, "operation": operationID, "executor": executor})
 	}
-	if view.Status != registry.StatusOnline {
+	if needsOnline && view.Status != registry.StatusOnline {
 		return Resolution{}, herrors.New(herrors.ExecutorUnavailable,
 			fmt.Sprintf("executor %q is %s", executor, view.Status),
 			map[string]any{"capability": capabilityID, "operation": operationID, "executor": executor})

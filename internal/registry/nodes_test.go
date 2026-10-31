@@ -112,6 +112,27 @@ func TestNodeRegistryStatusDefaults(t *testing.T) {
 	}
 }
 
+func TestNodeRegistryHostWithoutEmbeddedAgent(t *testing.T) {
+	in := nodeRegistryInput()
+	in.GatewayHostNoEmbeddedAgent = true
+	reg, err := NewNodeRegistry(in, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, ok := reg.Status("gateway"); !ok || status != StatusOffline {
+		t.Errorf("Status(gateway) = %q, want offline: no embedded agent runs for it", status)
+	}
+	if err := reg.SetStatus("gateway", StatusOnline); err != nil {
+		t.Fatalf("SetStatus(gateway, online): %s", err)
+	}
+	if status, _ := reg.Status("gateway"); status != StatusOnline {
+		t.Errorf("Status(gateway) = %q, want online after its agent connected", status)
+	}
+	if err := reg.SetStatus("gateway", StatusOffline); err != nil {
+		t.Fatalf("SetStatus(gateway, offline): %s", err)
+	}
+}
+
 func TestNodeRegistrySetStatus(t *testing.T) {
 	reg, err := NewNodeRegistry(nodeRegistryInput(), nil)
 	if err != nil {

@@ -1,9 +1,16 @@
 # Hanse Gateway configuration. See docs/configuration.md.
 version: 1
 
-# The node in nodes.yaml that is this Gateway host. Its handlers run in the
-# Gateway's embedded agent.
+# The node in nodes.yaml that is this Gateway host. Its http handlers always
+# run in the Gateway process, and its exec handlers run there too while
+# embedded_agent is true.
 node: gateway
+
+# Run this host node's exec handlers inside the Gateway process. Set it to
+# false when the host runs hanse-node for the same node, such as for a Gateway
+# in a container: exec handlers then run on that node's agent, and http
+# handlers still run in the Gateway process. See docs/guides/docker.md.
+embedded_agent: true
 
 # The URL that clients and node agents use to reach the Gateway.
 public_url: https://gateway.example.com

@@ -63,10 +63,13 @@ type nodeState struct {
 // Status is kept in memory only. A Gateway starts with every node
 // offline, because no agent is connected yet at startup. The Gateway
 // host's embedded agent is an exception: it never disconnects, so its
-// node is online from construction on and cannot be set offline.
+// node is online from construction on and cannot be set offline. A Gateway
+// that sets embedded_agent: false has no such exception: its host node is
+// online only while its node agent is connected.
 type NodeRegistry struct {
-	gatewayHost string
-	states      map[string]*nodeState
+	gatewayHost                string
+	gatewayHostNoEmbeddedAgent bool
+	states                     map[string]*nodeState
 	// capsMu guards capabilities, which a registry reload replaces.
 	capsMu sync.RWMutex
 	// capabilities maps a node ID to its executable capabilities, sorted.
@@ -83,9 +86,10 @@ func NewNodeRegistry(in Input, capabilities []*Capability) (*NodeRegistry, error
 		return nil, err
 	}
 	n := &NodeRegistry{
-		gatewayHost:  in.GatewayHost,
-		states:       make(map[string]*nodeState, len(in.Nodes)),
-		capabilities: map[string][]NodeCapability{},
+		gatewayHost:                in.GatewayHost,
+		gatewayHostNoEmbeddedAgent: in.GatewayHostNoEmbeddedAgent,
+		states:                     make(map[string]*nodeState, len(in.Nodes)),
+		capabilities:               map[string][]NodeCapability{},
 	}
 	for _, node := range in.Nodes {
 		n.states[node.ID] = &nodeState{node: node, status: StatusOffline}
@@ -112,7 +116,7 @@ func NewNodeRegistry(in Input, capabilities []*Capability) (*NodeRegistry, error
 	for id, ops := range opsByNode {
 		n.capabilities[id] = nodeCapabilitiesSorted(ops)
 	}
-	if n.gatewayHost != "" {
+	if n.gatewayHost != "" && !n.gatewayHostNoEmbeddedAgent {
 		// The Gateway host's embedded agent is always online
 		// (docs/architecture.md section 8).
 		host := n.states[n.gatewayHost]
@@ -208,8 +212,9 @@ func (n *NodeRegistry) Enabled(id string) bool {
 	return state != nil && state.node.Enabled
 }
 
-// GatewayHost returns the ID of the node whose embedded agent runs inside
-// the Gateway process, or "" when gateway.yaml configures none.
+// GatewayHost returns the Gateway host node ID from gateway.yaml's `node`,
+// or "" when none is configured. http capabilities route to it in every
+// layout.
 func (n *NodeRegistry) GatewayHost() string {
 	if n == nil {
 		return ""
@@ -258,7 +263,7 @@ func (n *NodeRegistry) checkStatus(id string, status NodeStatus) error {
 		return herrors.New(herrors.Internal,
 			"nodes: invalid node status "+quote(string(status)), nil)
 	}
-	if id == n.gatewayHost {
+	if id == n.gatewayHost && !n.gatewayHostNoEmbeddedAgent {
 		return herrors.New(herrors.Internal,
 			"nodes: node "+quote(id)+" is the Gateway host: its status is always online and managed by the embedded agent", nil)
 	}
