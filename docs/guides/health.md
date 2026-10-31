@@ -77,8 +77,6 @@ $ curl --fail --silent http://127.0.0.1:8443/readyz
 
 See [Run the Gateway under systemd](systemd.md) for the full unit.
 
-See [Run the Gateway under systemd](systemd.md) for the full unit.
-
 ## 5. Docker and Compose
 
 The image has no `HEALTHCHECK` of its own, because the listen address comes

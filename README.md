@@ -197,7 +197,7 @@ For a real deployment, use one of these guides:
 
 ## Contributing
 
-Issues and pull requests are welcome. Before you open a pull request, run the same checks that CI runs:
+Issues and pull requests are welcome. Before you open a pull request, run these checks from the repository root; all must pass:
 
 ```sh
 gofmt -l .                # must print nothing

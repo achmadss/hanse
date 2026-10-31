@@ -122,7 +122,8 @@ listen: 0.0.0.0:8443
 tls:
   cert_file: /etc/hanse/tls/cert.pem
   key_file: /etc/hanse/tls/key.pem
-# Set to true only when the Gateway listens on loopback behind a TLS reverse proxy.
+# Set to true only for a non-loopback listen address without TLS, behind a
+# TLS reverse proxy. A loopback address needs no flag.
 allow_insecure_http: false
 
 paths:
@@ -537,7 +538,7 @@ The executor and the target are separate. In the example files, `node-a` and `no
 
 ## 10. Validation
 
-The Gateway validates all its configuration at startup and refuses to start when anything is wrong. `hanse-gateway --check-config` runs the same checks and prints every problem without starting the server. `hanse-node --check-config` does the same for `agent.yaml`.
+The Gateway validates all its configuration at startup and refuses to start when anything is wrong. `hanse-gateway --check-config` runs the same checks and prints every problem without starting the server. `hanse-node` runs the same checks on `agent.yaml` when it starts, and prints every problem to its log before it exits nonzero.
 
 The checks include:
 

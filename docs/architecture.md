@@ -314,7 +314,7 @@ How the agent checks the password and elevates the handler:
 
 Each node controls elevation locally. The agent's configuration file can turn elevation off, or allow it only for listed operations. The Gateway cannot change this file. After 5 wrong passwords in 10 minutes, the agent refuses elevation on that node for 10 minutes.
 
-If the agent's account may use `sudo` without a password, `sudo` does not check the password. Do not give the agent's account such a rule.
+If the agent's account may use `sudo` without a password, `sudo` accepts any password, so the agent refuses every privileged run instead of trusting the answer. Never give the agent's account a `NOPASSWD` rule.
 
 ## 9. Operation lifecycle
 
@@ -514,7 +514,7 @@ hanse nodes capabilities node-a
 hanse schema pc up
 hanse options pc up node
 hanse describe pc up
-hanse validate pc up --node node-c
+hanse validate pc up --args-json '{"node":"node-c"}'
 
 hanse run pc up --node node-c
 hanse run pc up --node node-c --executor node-b --follow
@@ -525,9 +525,9 @@ hanse run service restart --name nginx --executor node-a
 hanse run service restart --name nginx --executor node-a --password '<password>'
 
 hanse operations
-hanse operations show op_01J9Z3
-hanse operations cancel op_01J9Z3
-hanse logs op_01J9Z3 -f
+hanse operations show op_5e593f325ec141303b7eed26266fa380
+hanse operations cancel op_5e593f325ec141303b7eed26266fa380
+hanse logs op_5e593f325ec141303b7eed26266fa380 -f
 ```
 
 Behavior:
@@ -551,7 +551,7 @@ Dedicated commands or aliases, such as a short `pc up`, may exist later. They mu
 | `nodes.yaml` | Each node's ID, name, OS, architecture, role, address, `enabled` flag, and free-form `attributes`. |
 | `routes.yaml` | Eligible executors and default executors, at capability level and at operation level. |
 | `manifest.yaml` | One per capability package. See [Capability packages](#71-capability-packages). |
-| `agent.yaml` | On each executor node. The Gateway URL, the path of the stored node credential, the cache directory, and the elevation settings. Only the node's administrator can change it. |
+| `agent.yaml` | On each executor node. The Gateway URL, the state directory that holds the node credential, the run journal, and the handler cache, and the elevation settings. Only the node's administrator can change it. |
 
 Secrets never appear in these files. A node or handler refers to a secret with a credential reference that points to a protected file. The full format is in [configuration.md](configuration.md).
 

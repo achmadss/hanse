@@ -40,7 +40,7 @@ make cross
 
 `make cross` builds Linux, macOS, and Windows on amd64 and arm64.
 
-CI runs on Linux, macOS, and Windows. It runs `go vet`, the linter on Linux, and the Go tests. A separate job runs `make cross`. A pull request is ready when every job passes.
+CI runs on Linux, macOS, and Windows. It runs `go vet`, the linter on Linux, and the Go tests. One job runs `make cross`, and another runs `scripts/check-release-archive.sh` against a GoReleaser snapshot. A pull request is ready when every job passes.
 
 ## Commits
 

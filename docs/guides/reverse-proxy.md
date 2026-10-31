@@ -20,7 +20,7 @@ The guide covers both Gateway layouts:
 
 ## 1. Put the Gateway behind the proxy
 
-Choose one of the two layouts below.
+Choose one of the three layouts below.
 
 ### Proxy on the same host: loopback
 
@@ -41,7 +41,7 @@ which this layout does not do.
 ### Proxy on another host: a private address
 
 When the proxy runs on another machine, the Gateway must accept plain HTTP
-on a network address. That is the one case where `allow_insecure_http: true`
+on a network address. That is one case where `allow_insecure_http: true`
 is correct:
 
 ```yaml
@@ -59,10 +59,88 @@ $ sudo nft add rule inet filter input tcp dport 8443 \
     ip saddr != 192.0.2.11 drop
 ```
 
-Keep `allow_insecure_http: true` on that private, proxy-only network and
-nowhere else. A Gateway that listens on a public address without TLS hands
-credentials and arguments to anyone on the path, because the node credential
-and the API token travel in plain text.
+Keep `allow_insecure_http: true` on that private, proxy-only network, or on
+the bridge listener below, and nowhere else. A Gateway that listens on a
+public address without TLS hands credentials and arguments to anyone on the
+path, because the node credential and the API token travel in plain text.
+
+### Proxy in a container on the same host
+
+When the proxy runs in a container on the Gateway host, a loopback listener
+does not work: the container has its own network namespace, so `127.0.0.1`
+inside it is the container, not the host. The Gateway instead listens on a
+host address that the container can reach, which is not a loopback address,
+so this layout needs `allow_insecure_http: true`:
+
+```yaml
+# gateway.yaml
+listen: 192.0.2.10:8443
+allow_insecure_http: true
+public_url: https://gateway.example.com
+```
+
+`192.0.2.10` stands for the host's address on the network the proxy container
+uses. On the default bridge, that is the address of `docker0`, which
+`ip -4 addr show docker0` prints. The address stays assigned while `docker0`
+is DOWN, so the command works even when no container uses that network. On a
+user-defined network, such as the one Compose creates by default, use the
+network's gateway address instead, which `docker network inspect <network>`
+reports. A container reaches the host on that address. Do not use `0.0.0.0`,
+which also accepts traffic on every other interface.
+
+The proxy container then reaches the Gateway at that address, so Caddy's
+upstream is the address rather than `127.0.0.1`:
+
+```caddyfile
+gateway.example.com {
+	encode zstd gzip
+
+	reverse_proxy 192.0.2.10:8443 {
+		flush_interval -1
+	}
+}
+```
+
+The address exists only while Docker runs. On a host that starts the
+Gateway under systemd, order the units so the Gateway starts after
+`docker.service`; otherwise it can bind before the address exists, or refuse
+to start:
+
+```ini
+# /etc/systemd/system/hanse-gateway.service.d/docker.conf
+[Unit]
+After=docker.service
+Wants=docker.service
+```
+
+```console
+$ sudo systemctl daemon-reload
+$ sudo systemctl restart hanse-gateway
+```
+
+Keep `allow_insecure_http: true` only while the listener accepts the proxy's
+subnet, and restrict the port to it. Allow port 8443 only from the subnet of
+every network the proxy container joins, and drop it from everywhere else.
+A Compose container usually sits on a user-defined network, whose subnet is
+not `docker0`'s, so find each subnet with:
+
+```console
+$ docker network inspect <network> --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'
+```
+
+Then add the allow and drop rules with the host's own firewall tool. The
+following nftables command assumes an existing `inet filter` table with an
+`input` chain, and `192.0.2.0/24` for the proxy network's subnet; repeat the
+rule for each subnet the proxy uses:
+
+```console
+$ sudo nft add rule inet filter input tcp dport 8443 \
+    ip saddr != 192.0.2.0/24 drop
+```
+
+As with the private address above, keep the plain-HTTP port off every other
+interface. The node credential and the API token travel in plain text, so a
+public listener without TLS exposes both.
 
 The agent protocol requires `https` URLs; an agent may use `http` only for a
 loopback host in tests (docs/agent-protocol.md section 1).
