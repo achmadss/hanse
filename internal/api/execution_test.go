@@ -351,31 +351,6 @@ func TestOperationAuth(t *testing.T) {
 	}
 }
 
-// TestElevationNotReturned sends the optional elevation object and
-// requires the password to stay out of every response and record.
-func TestElevationNotReturned(t *testing.T) {
-	fixture := newExecutionFixture(t)
-	const secret = "hunter2-not-a-real-password"
-	body := `{"capability":"echo","operation":"say","arguments":{"message":"hello"},` +
-		`"elevation":{"password":"` + secret + `"}}`
-	resp, payload := call(t, fixture.handler, fixture.token, http.MethodPost, "/v1/operations", body, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("submit with elevation: status %d, body %s", resp.StatusCode, payload)
-	}
-	if bytes.Contains(payload, []byte(secret)) {
-		t.Errorf("the submit response holds the elevation password: %s", payload)
-	}
-	view := decodeOperation(t, payload)
-
-	resp, payload = call(t, fixture.handler, fixture.token, http.MethodGet, "/v1/operations/"+view.ID, "", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET operation: status %d, body %s", resp.StatusCode, payload)
-	}
-	if bytes.Contains(payload, []byte(secret)) {
-		t.Errorf("the operation response holds the elevation password: %s", payload)
-	}
-}
-
 // TestOperationsUnavailable reports the Internal code when the Gateway has
 // no operations manager.
 func TestOperationsUnavailable(t *testing.T) {

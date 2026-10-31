@@ -135,7 +135,7 @@ func TestLogsRedactSecretsInTheDatabase(t *testing.T) {
 	}
 	rec, err := manager.Submit(operations.Request{
 		Capability: "demo",
-		Operation:  "secret",
+		Operation:  "elevated",
 		Arguments:  arguments,
 		Requester:  "tester",
 		Elevation:  &operations.Elevation{Password: secretPassword},

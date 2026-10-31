@@ -56,6 +56,17 @@ operations:
         target:
           type: string
 
+  privileged:
+    description: Finish at once with administrator rights
+    mode: sync
+    privileged: true
+    arguments:
+      type: object
+      additionalProperties: false
+      properties:
+        target:
+          type: string
+
   probe:
     description: Probe one target node
     mode: sync
