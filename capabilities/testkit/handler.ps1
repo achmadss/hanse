@@ -29,7 +29,6 @@ function Write-StandardOutput([string]$Text) {
 
 function Write-Response($Response, [int]$Code) {
     $json = $Response | ConvertTo-Json -Depth 20 -Compress
-    Write-Log "testkit: writing the response"
     Write-StandardOutput ($json + "`n")
     exit $Code
 }
@@ -52,24 +51,17 @@ function Reply-Error([string]$Code, [string]$Message, $Details) {
     Write-Response ([ordered]@{ contract = $contract; status = 'error'; error = $errorObject }) 1
 }
 
-# One line as early as possible, so the operation log shows when the handler
-# process reached its script.
-Write-Log 'testkit: handler starting'
-
 # A console host turns redirected stdin into the script's pipeline input.
 # Opening the stdin handle as a second reader deadlocks on Windows, because
 # the host keeps the pipe open, so the pipeline is the only reader. The
 # manifest's -InputFormat Text keeps every stdin line a string.
-Write-Log 'testkit: reading the request'
 $raw = @($input) -join "`n"
-Write-Log "testkit: read $($raw.Length) characters"
 
 try {
     $req = $raw | ConvertFrom-Json
 } catch {
     Reply-Error 'invalid_arguments' 'the request body is not valid JSON'
 }
-Write-Log 'testkit: parsed the request'
 
 function Get-Argument([string]$Name) {
     if ($null -eq $req.arguments) { return $null }
@@ -181,7 +173,6 @@ switch ($req.operation) {
         $exitCode = Get-IntArgument 'exit_code' 1
         Write-Log "fail: exiting with code $exitCode"
         $body = [ordered]@{ contract = $contract; status = 'ok'; result = [ordered]@{ exit_code = $exitCode } }
-        Write-Log 'testkit: writing the response'
         Write-StandardOutput (($body | ConvertTo-Json -Depth 20 -Compress) + "`n")
         exit $exitCode
     }
@@ -232,7 +223,6 @@ switch ($req.operation) {
             # One response larger than the response limit; the padding is
             # only 'x', so no JSON escaping is needed.
             $padding = 'x' * $bytes
-            Write-Log 'testkit: writing the response'
             Write-StandardOutput ('{"contract":"' + $contract + '","status":"ok","result":{"padding":"' + $padding + '"}}' + "`n")
             exit 0
         } else {
