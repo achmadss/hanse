@@ -74,10 +74,17 @@ func (a *app) operationsCommand(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		// The record keeps the handler's own error, and the exit code maps
+		// that final state the same way run does (docs/architecture.md
+		// section 14).
 		if fm == formatJSON {
-			return writeJSON(a.opts.Stdout, client.OperationRecordEnvelope{Operation: operation})
+			if err := writeJSON(a.opts.Stdout, client.OperationRecordEnvelope{Operation: operation}); err != nil {
+				return err
+			}
+		} else if err := a.writeOperation(operation); err != nil {
+			return err
 		}
-		return a.writeOperation(operation)
+		return operationFailure(operation)
 	case len(positional) == 2 && positional[0] == "cancel":
 		c, _, err := a.open(ctx)
 		if err != nil {

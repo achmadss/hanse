@@ -119,7 +119,7 @@ func (a *app) runCommand(ctx context.Context, args []string) error {
 		// (docs/architecture.md section 9.4).
 		a.printConflict(err)
 		a.printValidationProblems(err)
-		return err
+		return handlerFailureOf(err)
 	}
 	if *rf.detach {
 		if err := a.writeRunDetached(fm, record); err != nil {
@@ -413,9 +413,56 @@ func operationFailure(record client.OperationRecord) error {
 	}
 	code, ok := client.Code(record.Error.Code)
 	if !ok {
-		code = herrors.Internal
+		// The final-state code belongs to the capability, not to the shared
+		// set, so the CLI exits with handler_failed and keeps the handler's
+		// own code, message, and details (docs/architecture.md section 14).
+		return handlerFailure(record.ID, record.Error.Code, record.Error.Message, record.Error.Details)
 	}
 	return herrors.New(code, record.Error.Message, record.Error.Details)
+}
+
+// handlerFailure builds the error of a handler that reported its own
+// failure. The handler's code and message lead the error message, so the
+// terminal shows them, and its details ride inside the error details, as an
+// API response does (docs/architecture.md section 14).
+func handlerFailure(operationID, code, message string, details map[string]any) error {
+	outer := map[string]any{"code": code}
+	if operationID != "" {
+		outer["operation_id"] = operationID
+	}
+	if message != "" {
+		outer["message"] = message
+	}
+	if len(details) > 0 {
+		outer["details"] = details
+	}
+	return herrors.New(herrors.HandlerFailed, handlerMessage(code, message), outer)
+}
+
+// handlerFailureOf rewrites a handler_failed API error from a synchronous
+// run, so the handler's own code and message reach the terminal. The error
+// keeps the handler_failed code, so the exit code does not change.
+func handlerFailureOf(err error) error {
+	var apiErr *herrors.Error
+	if !errors.As(err, &apiErr) || !errors.Is(apiErr, herrors.HandlerFailed) {
+		return err
+	}
+	code, _ := apiErr.Details["code"].(string)
+	if code == "" {
+		return err
+	}
+	message, _ := apiErr.Details["message"].(string)
+	details, _ := apiErr.Details["details"].(map[string]any)
+	operationID, _ := apiErr.Details["operation_id"].(string)
+	return handlerFailure(operationID, code, message, details)
+}
+
+// handlerMessage renders the handler's own code and message as one line.
+func handlerMessage(code, message string) string {
+	if message == "" {
+		return code
+	}
+	return code + ": " + message
 }
 
 // writeRunDetached prints the operation ID and returns without waiting.
