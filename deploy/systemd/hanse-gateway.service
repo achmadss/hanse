@@ -17,7 +17,10 @@ Restart=on-failure
 RestartSec=2s
 
 # The Gateway stops accepting requests and closes its stores on SIGTERM.
-# Allow the configured grace period plus the store close to finish.
+# Allow the configured grace period plus the store close to finish. The
+# control-group kill is systemd's default: when the main process exits,
+# systemd stops any handler process that outlived it.
+KillMode=control-group
 TimeoutStopSec=30s
 
 # /var/lib/hanse holds the history and enrollment databases and is the only

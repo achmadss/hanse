@@ -10,11 +10,20 @@
 
 services:
   gateway:
-    image: ghcr.io/achmadss/hanse-gateway:latest
-    # To build the image from this checkout instead, replace the image line
-    # with: build: { context: ../.. }
+    # Built from this checkout: `docker compose up --detach --build`. The
+    # repository does not publish an image yet; a future release can publish
+    # one and this example can use it instead:
+    #   image: ghcr.io/achmadss/hanse-gateway:<version>
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: hanse-gateway:local
     container_name: hanse-gateway
     restart: unless-stopped
+    # A tiny init is PID 1: it reaps handler processes and forwards SIGTERM
+    # to the Gateway. The container runtime kills a handler that outlives
+    # the Gateway when the container stops.
+    init: true
 
     # The Gateway runs as uid/gid 10001 in the image and needs no write
     # access outside /var/lib/hanse.
@@ -47,8 +56,11 @@ services:
       - /tmp:size=64m
 
     healthcheck:
-      # /healthz needs no token. The listen address in gateway.yaml must
-      # accept a request from inside the container; 0.0.0.0:8443 does.
+      # /healthz needs no token. This command assumes plain HTTP on a
+      # listen address reachable from inside the container, such as
+      # 0.0.0.0:8443 with allow_insecure_http: true. With TLS, use
+      # https://127.0.0.1:8443/healthz and add
+      # --no-check-certificate; see docs/guides/docker.md.
       test: ["CMD", "wget", "--quiet", "--output-document=/dev/null", "http://127.0.0.1:8443/healthz"]
       interval: 30s
       timeout: 3s
