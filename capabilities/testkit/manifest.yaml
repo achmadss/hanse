@@ -1,0 +1,190 @@
+version: 1
+id: testkit
+name: Testkit
+description: Stub operations that only write output, wait, or fail, to test Hanse end to end
+contract: hanse.handler/v1
+
+handler:
+  kind: exec
+  entry:
+    linux: [sh, handler.sh]
+    darwin: [sh, handler.sh]
+    windows:
+      - powershell
+      - -NoProfile
+      - -NonInteractive
+      - -InputFormat
+      - Text
+      - -ExecutionPolicy
+      - Bypass
+      - -File
+      - handler.ps1
+
+operations:
+  say:
+    description: Return the arguments as the result, with the executor and the target node
+    mode: sync
+    timeout: 30s
+    arguments:
+      type: object
+      additionalProperties: false
+      properties:
+        target:
+          type: string
+          format: hanse:node
+          description: An optional node to report from the request envelope
+        text:
+          type: string
+          maxLength: 1024
+          description: Text to return in the result
+
+  long:
+    description: Log one line per second, and take the lock of one node
+    mode: async
+    timeout: 10m
+    concurrency:
+      limit: 1
+      key: [node]
+    arguments:
+      type: object
+      required: [node]
+      additionalProperties: false
+      properties:
+        node:
+          type: string
+          format: hanse:node
+          description: The node whose lock this run takes; pass the same ID to --executor
+        seconds:
+          type: integer
+          minimum: 1
+          maximum: 3600
+          default: 5
+          description: The number of progress lines, one per second
+
+  background:
+    description: Run for minutes and write one log line now and then
+    mode: async
+    timeout: 2h
+    arguments:
+      type: object
+      additionalProperties: false
+      properties:
+        seconds:
+          type: integer
+          minimum: 1
+          maximum: 86400
+          default: 300
+          description: The total run time in seconds
+        interval_seconds:
+          type: integer
+          minimum: 1
+          maximum: 3600
+          default: 60
+          description: The time between two log lines, in seconds
+
+  fail:
+    description: Exit with a chosen code, or return a chosen handler error
+    mode: sync
+    timeout: 30s
+    arguments:
+      type: object
+      additionalProperties: false
+      properties:
+        exit_code:
+          type: integer
+          minimum: 0
+          maximum: 125
+          default: 1
+          description: The exit code of a run that returns no handler error
+        error_code:
+          type: string
+          pattern: "^[a-z][a-z0-9_]*$"
+          maxLength: 64
+          description: A handler error code; when set, the handler returns an error response
+        message:
+          type: string
+          maxLength: 4096
+          default: the testkit handler failed on request
+          description: The handler error message
+        details:
+          type: object
+          additionalProperties: true
+          description: The handler error details
+
+  hang:
+    description: Ignore the stop request until the agent kills the handler
+    mode: async
+    timeout: 5m
+    grace_period: 2s
+    arguments:
+      type: object
+      additionalProperties: false
+      properties:
+        seconds:
+          type: integer
+          minimum: 1
+          maximum: 3600
+          default: 600
+          description: How long to hang when nobody stops the run
+
+  timeout:
+    description: Run past the manifest timeout so the deadline stops it
+    mode: async
+    timeout: 3s
+    grace_period: 1s
+    arguments:
+      type: object
+      additionalProperties: false
+      properties:
+        seconds:
+          type: integer
+          minimum: 1
+          maximum: 3600
+          default: 30
+          description: How long to run when the deadline does not stop it
+
+  flood:
+    description: Write more output than the response and log limits allow
+    mode: async
+    timeout: 5m
+    arguments:
+      type: object
+      additionalProperties: false
+      properties:
+        mode:
+          type: string
+          enum: [stdout, stderr, both]
+          default: both
+          description: Where to write the output
+        kilobytes:
+          type: integer
+          minimum: 1
+          maximum: 65536
+          default: 12288
+          description: How much output to write, in KiB
+
+  choose:
+    description: Return a value that an option provider supplies
+    mode: sync
+    timeout: 30s
+    arguments:
+      type: object
+      required: [choice]
+      additionalProperties: false
+      properties:
+        choice:
+          type: string
+          maxLength: 64
+          description: One of the values that the option provider returns
+    options:
+      choice: provider
+
+  privileged:
+    description: Report whether the handler runs with administrator rights
+    mode: sync
+    timeout: 30s
+    privileged: true
+    arguments:
+      type: object
+      additionalProperties: false
+      properties: {}
