@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"syscall"
 
 	herrors "github.com/achmadss/hanse/internal/errors"
@@ -56,6 +57,9 @@ func preparePrivileged(r *Runner, plan *launchPlan) error {
 		"--grace", plan.Grace.String(),
 		"--cancel-file", plan.CancelFile,
 		"--control", controlPath,
+		// The supervisor watches the agent itself, because sudo can run
+		// the supervisor as a child of its own helper process.
+		"--agent-pid", strconv.Itoa(os.Getpid()),
 		"--")
 	argv = append(argv, plan.Entry...)
 	plan.Entry = argv

@@ -48,9 +48,12 @@ type SuperviseSpec struct {
 	// Poll is how often the stop conditions are checked. Zero means
 	// DefaultSupervisorPoll.
 	Poll time.Duration
-	// Parent returns the process ID the supervisor watches. Zero means
-	// os.Getppid. If the parent changes, the agent is gone and the
-	// handler must not outlive it.
+	// AgentPID is the agent process the supervisor watches. When it is
+	// gone, the handler must not outlive it. Zero means watch the
+	// starting parent instead.
+	AgentPID int
+	// Parent returns the process ID of the supervisor's parent. Zero
+	// means os.Getppid. It is the fallback watch when AgentPID is zero.
 	Parent func() int
 }
 
@@ -65,6 +68,7 @@ func Supervise(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs.StringVar(&grace, "grace", "", "the time between SIGTERM and SIGKILL")
 	fs.StringVar(&spec.CancelFile, "cancel-file", "", "the file that requests a stop")
 	fs.StringVar(&spec.ControlFile, "control", "", "the file that holds the handler's environment")
+	fs.IntVar(&spec.AgentPID, "agent-pid", 0, "the agent process to watch")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -110,11 +114,7 @@ func SuperviseHandler(spec SuperviseSpec) int {
 	if poll <= 0 {
 		poll = DefaultSupervisorPoll
 	}
-	parent := os.Getppid
-	if spec.Parent != nil {
-		parent = spec.Parent
-	}
-	agent := parent()
+	stopped := supervisorWatch(spec)
 
 	cmd := exec.Command(spec.Entry[0], spec.Entry[1:]...)
 	cmd.Dir = dir
@@ -147,7 +147,7 @@ func SuperviseHandler(spec SuperviseSpec) int {
 		case <-signals:
 			return superviseStop(cmd, wait, grace)
 		case <-ticker.C:
-			if supervisorStopRequested(spec.CancelFile, agent, parent) {
+			if stopped() {
 				return superviseStop(cmd, wait, grace)
 			}
 		}
@@ -161,17 +161,43 @@ func superviseError(w io.Writer, format string, args ...any) {
 	_, _ = fmt.Fprintf(w, "hanse-node supervise: "+format+"\n", args...)
 }
 
-// supervisorStopRequested reports whether the agent asked for a stop or
-// died. A changed parent means the agent is gone, so the handler must not
-// outlive it.
-func supervisorStopRequested(cancelFile string, agent int, parent func() int) bool {
-	if parent() != agent {
-		return true
+// supervisorWatch returns the stop condition of one supervisor run: the
+// cancel file, and the death of the agent. The agent's process ID is the
+// reliable signal, because sudo can run the supervisor as a child of its
+// own helper process; a changed parent is the fallback when no process ID
+// is given.
+func supervisorWatch(spec SuperviseSpec) func() bool {
+	cancelFile := spec.CancelFile
+	var agentGone func() bool
+	if spec.AgentPID > 0 {
+		agentGone = func() bool { return !processAlive(spec.AgentPID) }
+	} else {
+		parent := os.Getppid
+		if spec.Parent != nil {
+			parent = spec.Parent
+		}
+		agent := parent()
+		agentGone = func() bool { return parent() != agent }
 	}
-	if cancelFile == "" {
+	return func() bool {
+		if agentGone() {
+			return true
+		}
+		if cancelFile == "" {
+			return false
+		}
+		return fileExists(cancelFile)
+	}
+}
+
+// processAlive reports whether the process exists. A process the caller
+// may not signal still exists.
+func processAlive(pid int) bool {
+	if pid <= 0 {
 		return false
 	}
-	return fileExists(cancelFile)
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
 }
 
 // superviseStop sends SIGTERM to the handler's process group, waits the

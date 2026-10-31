@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -122,6 +123,36 @@ func TestSuperviseKillsTheHandlerWhenTheAgentDies(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
+		t.Fatal("the supervisor kept the handler alive after the agent exited")
+	}
+}
+
+// TestSuperviseKillsTheHandlerWhenTheAgentPIDDies covers the watch on the
+// agent process that the runner passes: the handler must not outlive the
+// agent even when sudo runs the supervisor as its own child.
+func TestSuperviseKillsTheHandlerWhenTheAgentPIDDies(t *testing.T) {
+	agent := exec.Command("sh", "-c", "sleep 1")
+	if err := agent.Start(); err != nil {
+		t.Fatalf("start the agent stand-in: %v", err)
+	}
+	done := make(chan int, 1)
+	go func() {
+		done <- SuperviseHandler(SuperviseSpec{
+			Entry:       []string{"sh", "-c", "sleep 30"},
+			ControlFile: supervisorControlFile(t, t.TempDir()),
+			Grace:       200 * time.Millisecond,
+			Poll:        20 * time.Millisecond,
+			AgentPID:    agent.Process.Pid,
+		})
+	}()
+	start := time.Now()
+	_ = agent.Wait()
+	select {
+	case <-done:
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Errorf("the supervisor stopped after %s", elapsed)
+		}
+	case <-time.After(10 * time.Second):
 		t.Fatal("the supervisor kept the handler alive after the agent exited")
 	}
 }
