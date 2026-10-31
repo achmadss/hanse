@@ -1,6 +1,7 @@
 // Command hanse-node is the node agent that runs handlers on an executor
-// node. `hanse-node join` enrolls the node once, and the agent itself then
-// runs until it is stopped.
+// node. `hanse-node join` enrolls the node once, `hanse-node install`
+// registers the agent as a system service that starts at boot, and the
+// agent itself then runs until it is stopped.
 package main
 
 import (
@@ -62,6 +63,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return runJoin(fs.Args()[1:], stdout, stderr, stateDir)
 		case "run":
 			return runAgent(fs.Args()[1:], stderr, configPath)
+		case "install":
+			// Register the service once, as root or from an elevated
+			// prompt (docs/architecture.md section 8.4).
+			return runInstall(fs.Args()[1:], stdout, stderr, configPath, stateDir)
+		case "uninstall":
+			return runUninstall(fs.Args()[1:], stdout, stderr, configPath, stateDir)
 		case "supervise":
 			// The root supervisor of one privileged handler. The node
 			// agent starts it through sudo; an operator never runs it.
@@ -83,5 +90,7 @@ func usage(w io.Writer) {
 	printf(w, "usage: hanse-node [--version] [--config <path>] [--state-dir <path>]\n")
 	printf(w, "       hanse-node run [--config <path>]\n")
 	printf(w, "       hanse-node join <gateway-url> <join-token> [--state-dir <path>] [--config <path>]\n")
+	printf(w, "       hanse-node install [--user <account>] [--config <path>] [--state-dir <path>]\n")
+	printf(w, "       hanse-node uninstall\n")
 	printf(w, "       hanse-node supervise ...  (started by the agent through sudo)\n")
 }
