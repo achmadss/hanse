@@ -340,14 +340,15 @@ func TestValidateInvalidRequests(t *testing.T) {
 			name:   "invalid arguments",
 			args:   []string{"validate", "pc", "up", "--args-json", `{"node":"node-z"}`, "--format", "json"},
 			code:   22,
-			stderr: []string{"invalid_arguments", "problem: /node: format", "known node"},
-			absent: []string{"errors: ["},
+			stderr: []string{"invalid_arguments", "errors: [", `"path":"/node"`, `"rule":"format"`, "known node"},
+			absent: []string{"problem:"},
 		},
 		{
 			name:   "wrong type",
 			args:   []string{"validate", "pc", "up", "--args-json", `{"node":"node-c","wait":"yes"}`, "--format", "json"},
 			code:   22,
-			stderr: []string{"invalid_arguments", "problem: /wait: type"},
+			stderr: []string{"invalid_arguments", "errors: [", `"path":"/wait"`, `"rule":"type"`},
+			absent: []string{"problem:"},
 		},
 		{
 			name:   "missing argument",

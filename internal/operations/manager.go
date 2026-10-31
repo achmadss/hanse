@@ -343,9 +343,11 @@ func (m *Manager) PurgeOld() (int64, error) {
 // Cancel cancels one operation (docs/architecture.md section 9.5). A
 // queued operation becomes cancelled at once. A running operation gets a
 // stop request through its context; Cancel waits for the grace period and
-// returns the record, which a fast handler has already moved to cancelled.
-// An operation that already ended is returned unchanged, so a repeated
-// cancel is safe.
+// returns the operation's current state, so a handler that exits during the
+// grace period decides its own final state (docs/handler-contract.md
+// section 5). The record may still be running when the handler has not
+// exited yet; the run stores its final state when it ends. An operation
+// that already ended is returned unchanged, so a repeated cancel is safe.
 func (m *Manager) Cancel(id string) (Record, error) {
 	m.mu.Lock()
 	rec, ok, err := m.store.Get(id)
@@ -604,8 +606,6 @@ func (m *Manager) complete(ctx context.Context, id string, resp runtime.Response
 // (docs/architecture.md section 10).
 func exitLine(state State, failure *Failure) string {
 	switch {
-	case state == StateCancelled:
-		return "cancelled: stop requested by client"
 	case failure != nil && failure.Code == herrors.Timeout.Name():
 		return "timeout: " + failure.Message
 	case failure != nil:

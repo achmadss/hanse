@@ -114,11 +114,9 @@ func (a *app) runCommand(ctx context.Context, args []string) error {
 	}
 	record, err := c.Submit(ctx, request)
 	if err != nil {
-		// A conflict names the operation that holds the concurrency slot,
-		// so the user can follow that one instead of retrying blindly
-		// (docs/architecture.md section 9.4).
-		a.printConflict(err)
-		a.printValidationProblems(err)
+		// A conflict names the operation that holds the concurrency slot
+		// as an operation_id detail line, so the user can follow that one
+		// instead of retrying blindly (docs/architecture.md section 9.4).
 		return handlerFailureOf(err)
 	}
 	if *rf.detach {
@@ -472,24 +470,4 @@ func (a *app) writeRunDetached(fm format, record client.OperationRecord) error {
 	}
 	_, err := fmt.Fprintln(a.opts.Stdout, oneLine(record.ID))
 	return err
-}
-
-// printConflict writes the running operation's ID of an operation_conflict
-// error, so the user can follow that operation instead
-// (docs/architecture.md section 9.4).
-func (a *app) printConflict(err error) {
-	if !errors.Is(err, herrors.OperationConflict) {
-		return
-	}
-	var apiErr *herrors.Error
-	if !errors.As(err, &apiErr) {
-		return
-	}
-	id, _ := apiErr.Details["operation_id"].(string)
-	if id == "" {
-		return
-	}
-	_, _ = fmt.Fprintf(a.opts.Stderr,
-		"hanse: problem: operation %s is already running; follow it with \"hanse operations show %s\"\n",
-		oneLine(id), oneLine(id))
 }

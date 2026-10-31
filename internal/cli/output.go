@@ -115,18 +115,10 @@ func writeError(w io.Writer, err error) error {
 }
 
 // printedDetailKeys returns the detail keys that the command has already
-// reported for e, so writeError does not repeat them. printConflict prints
-// the operation ID of a conflict, printValidationProblems prints the
-// argument problems, and a handler failure leads with the handler's own
-// code and message.
+// reported for e, so writeError does not repeat them. A handler failure
+// leads with the handler's own code and message.
 func printedDetailKeys(e *herrors.Error) map[string]bool {
 	printed := map[string]bool{}
-	if errors.Is(e, herrors.OperationConflict) {
-		printed["operation_id"] = true
-	}
-	if errors.Is(e, herrors.InvalidArguments) || errors.Is(e, herrors.MissingArgument) {
-		printed["errors"] = true
-	}
 	if errors.Is(e, herrors.HandlerFailed) {
 		printed["code"] = true
 		printed["message"] = true

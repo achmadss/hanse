@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/achmadss/hanse/internal/client"
-	herrors "github.com/achmadss/hanse/internal/errors"
 )
 
 // describeCommand implements describe <capability> <operation>. It prints
@@ -273,7 +272,6 @@ func (a *app) validateCommand(ctx context.Context, args []string) error {
 		Executor:   strings.TrimSpace(*executor),
 	})
 	if err != nil {
-		a.printValidationProblems(err)
 		return err
 	}
 	if fm == formatJSON {
@@ -332,35 +330,4 @@ func checkArgumentsObject(text string) error {
 		return fmt.Errorf("the arguments have data after the JSON object")
 	}
 	return nil
-}
-
-// printValidationProblems writes the argument problems of a rejected
-// request to stderr, so the reason a request failed is visible without
-// decoding the error object. The command still returns the error, which
-// carries the documented exit code.
-func (a *app) printValidationProblems(err error) {
-	var apiErr *herrors.Error
-	if !errors.As(err, &apiErr) {
-		return
-	}
-	problems, ok := apiErr.Details["errors"].([]any)
-	if !ok {
-		return
-	}
-	for _, item := range problems {
-		problem, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		path, _ := problem["path"].(string)
-		rule, _ := problem["rule"].(string)
-		message, _ := problem["message"].(string)
-		if path == "" {
-			path = "(root)"
-		}
-		if rule != "" {
-			message = rule + ": " + message
-		}
-		_, _ = fmt.Fprintf(a.opts.Stderr, "hanse: problem: %s: %s\n", oneLine(path), oneLine(message))
-	}
 }

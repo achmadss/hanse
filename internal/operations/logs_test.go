@@ -376,7 +376,8 @@ func TestLogsOfUnknownOperationAreEmpty(t *testing.T) {
 	}
 }
 
-// TestCancelLogsSystemEntry records the cancellation as one system entry.
+// TestCancelLogsSystemEntry records the cancellation as one system entry:
+// the log ends with the handler exit line, as every final state does.
 func TestCancelLogsSystemEntry(t *testing.T) {
 	dispatcher := newDispatcher()
 	dispatcher.release = make(chan struct{})
@@ -396,8 +397,12 @@ func TestCancelLogsSystemEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read logs: %v", err)
 	}
-	if !contains(lineOf(entries), "cancelled: stop requested by client") {
-		t.Errorf("lines %v have no cancellation entry", lineOf(entries))
+	lines := lineOf(entries)
+	if !contains(lines, "handler exited: cancelled") {
+		t.Errorf("lines %v have no handler exit entry", lines)
+	}
+	if last := lines[len(lines)-1]; last != "handler exited: cancelled" {
+		t.Errorf("last line %q, want the handler exit entry", last)
 	}
 }
 

@@ -106,8 +106,9 @@ func (a *Agent) Node() runtime.Node {
 
 // Execute runs one exec handler call: an operation run or an option
 // provider call. The log callback receives every stderr line as it ends; a
-// nil callback discards the lines.
-func (a *Agent) Execute(ctx context.Context, req *runtime.Request, onLog func(line string)) (runtime.Response, error) {
+// nil callback discards the lines. system receives the agent's own events,
+// such as the kill after a grace period that the handler outlived.
+func (a *Agent) Execute(ctx context.Context, req *runtime.Request, onLog, onSystem func(line string)) (runtime.Response, error) {
 	if a == nil || a.runner == nil || a.registry == nil {
 		return runtime.Response{}, herrors.New(herrors.Internal,
 			"the embedded agent is not configured", nil)
@@ -184,10 +185,25 @@ func (a *Agent) Execute(ctx context.Context, req *runtime.Request, onLog func(li
 			fmt.Sprintf("capability %q has no entry command for OS %q", req.Capability, a.os),
 			map[string]any{"capability": req.Capability, "os": a.os})
 	}
-	return a.runner.Run(ctx, runner.Spec{
+	// The manifest's grace_period overrides the Gateway default, exactly as
+	// it does for a node agent, so a stopped handler is killed after the
+	// operation's own grace period (docs/architecture.md section 9.5).
+	grace := config.ResolveTimeouts(
+		config.Timeouts{GracePeriod: a.runner.GracePeriod},
+		&config.OperationTimeouts{GracePeriod: operation.GracePeriod},
+	).GracePeriod
+	run := *a.runner
+	run.GracePeriod = grace
+	outcome := &runner.Outcome{}
+	resp, err := run.Run(ctx, runner.Spec{
 		Request: &call,
 		Entry:   entry,
 		Dir:     capability.Dir,
 		Log:     onLog,
+		Outcome: outcome,
 	})
+	if outcome.Killed && onSystem != nil {
+		onSystem(runner.KilledLine)
+	}
+	return resp, err
 }

@@ -360,6 +360,53 @@ func TestCancelRunning(t *testing.T) {
 	}
 }
 
+// lateOKDispatcher ignores the stop request briefly and then reports
+// success, like a handler that finishes its work during the grace period.
+type lateOKDispatcher struct {
+	started chan struct{}
+}
+
+// Execute waits for the stop request, finishes the work, and reports ok.
+func (d *lateOKDispatcher) Execute(ctx context.Context, _ *operations.Call) (runtime.Response, error) {
+	d.started <- struct{}{}
+	<-ctx.Done()
+	time.Sleep(20 * time.Millisecond)
+	return runtime.OK(map[string]any{"finished": true}, "finished during the grace period")
+}
+
+// TestCancelRunningHandlerFinishesOK requires a handler that reports ok
+// during the grace period to end completed, per docs/handler-contract.md
+// section 5, with the handler exit line last in the log.
+func TestCancelRunningHandlerFinishesOK(t *testing.T) {
+	d := &lateOKDispatcher{started: make(chan struct{})}
+	manager := newManager(t, d)
+
+	started, err := manager.Submit(submit("alpha", "", "tester"))
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	<-d.started
+	waitFor(t, manager, started.ID, operations.StateRunning)
+
+	final, err := manager.Cancel(started.ID)
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if final.Status != operations.StateCompleted {
+		t.Fatalf("status %q, want completed", final.Status)
+	}
+	if string(final.Result) != `{"finished":true}` {
+		t.Errorf("result %s, want the handler's result", final.Result)
+	}
+	entries, err := manager.Logs(started.ID, 0)
+	if err != nil {
+		t.Fatalf("read logs: %v", err)
+	}
+	if last := entries[len(entries)-1].Line; last != "handler exited: completed" {
+		t.Errorf("last log line %q, want the handler exit entry", last)
+	}
+}
+
 // TestEnvelope checks what dispatch receives: the executor, the deadline,
 // and the arguments.
 func TestEnvelope(t *testing.T) {

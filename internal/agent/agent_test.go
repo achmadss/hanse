@@ -80,7 +80,7 @@ func TestExecuteUnknownCapability(t *testing.T) {
 		Operation:  "say",
 		Arguments:  json.RawMessage(`{}`),
 		Deadline:   time.Now().Add(5 * time.Second),
-	}, nil)
+	}, nil, nil)
 	if !errors.Is(err, herrors.UnknownCapability) {
 		t.Fatalf("error = %v, want unknown_capability", err)
 	}
@@ -98,7 +98,7 @@ func TestExecuteMissingEntryForOS(t *testing.T) {
 		Operation:  "say",
 		Arguments:  json.RawMessage(`{"message":"hello"}`),
 		Deadline:   time.Now().Add(5 * time.Second),
-	}, nil)
+	}, nil, nil)
 	if !errors.Is(err, herrors.HandlerStartFailed) {
 		t.Fatalf("error = %v, want handler_start_failed", err)
 	}
@@ -117,7 +117,7 @@ func TestExecuteRejectsRemoteExecutor(t *testing.T) {
 		Arguments:  json.RawMessage(`{"message":"hello"}`),
 		Executor:   runtime.Node{ID: "node-b", OS: goruntime.GOOS},
 		Deadline:   time.Now().Add(5 * time.Second),
-	}, nil)
+	}, nil, nil)
 	if !errors.Is(err, herrors.ExecutorUnavailable) {
 		t.Fatalf("error = %v, want executor_unavailable", err)
 	}

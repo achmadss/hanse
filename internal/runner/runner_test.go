@@ -492,6 +492,8 @@ func TestRunGracePeriodKill(t *testing.T) {
 	runner.GracePeriod = 150 * time.Millisecond
 	spec := helperSpec(t, "stubborn", nil)
 	spec.Request.Deadline = time.Now().Add(5 * time.Second)
+	outcome := &Outcome{}
+	spec.Outcome = outcome
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		time.Sleep(50 * time.Millisecond)
@@ -504,6 +506,9 @@ func TestRunGracePeriodKill(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed < 150*time.Millisecond {
 		t.Errorf("run returned after %v, before the grace period ended", elapsed)
+	}
+	if !outcome.Killed {
+		t.Error("the outcome does not report the kill after the grace period")
 	}
 }
 

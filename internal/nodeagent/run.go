@@ -424,6 +424,13 @@ func (a *Agent) recordResult(r *run, outcome *runner.Outcome) {
 	if outcome.StopReason == agentproto.StopDeadline && !abandoned {
 		a.emitLog(r, agentproto.StreamSystem, "the deadline passed", 0)
 	}
+	if outcome.Killed {
+		// The handler ignored the stop request, so the runner killed the
+		// process tree after the grace period. Record that in the log
+		// before the result, so a follower sees it before the final state
+		// (docs/architecture.md section 10).
+		a.emitLog(r, agentproto.StreamSystem, runner.KilledLine, 0)
+	}
 	result := buildResult(r.id, outcome, abandoned, a.cfg.Now())
 	a.mu.Lock()
 	if r.forgotten {

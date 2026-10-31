@@ -461,6 +461,8 @@ sequenceDiagram
 
 The handler contract defines the stop request, the grace period, and the kill on each OS. A deadline follows the same steps, started by the agent itself, with `stop_reason` set to `deadline`.
 
+After it sends the stop request, the Gateway keeps the operation `running` and waits for the agent's result, so the handler decides its own final state: a handler that writes an `ok` response with exit code `0` during the grace period ends `completed` ([handler contract §5](handler-contract.md#5-exit-codes-and-final-states)). The wait ends when the result arrives. It is capped at the grace period plus 5 seconds, because the kill log line and the result cross a reverse proxy and a slow link; a result that arrives later is ignored, and the Gateway stores `cancelled`, or `failed` with `timeout` for a deadline.
+
 If the agent is disconnected when a client cancels, the Gateway marks the operation `cancelled` at once and logs a `system` line that says so. When the agent reconnects, the Gateway answers `abandon` for that run.
 
 ## 8. Disconnects and reconnects

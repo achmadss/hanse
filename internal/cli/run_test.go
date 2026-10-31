@@ -756,11 +756,18 @@ func TestRunConflict(t *testing.T) {
 	if code != 32 {
 		t.Fatalf("run: exit code %d, want 32; stderr %s", code, stderr)
 	}
-	if !strings.Contains(stderr, "op_running") || !strings.Contains(stderr, "already running") {
-		t.Errorf("run: stderr %q, want the running operation's ID", stderr)
+	// The stable error format is one "hanse: <code>: <message>" line plus
+	// sorted detail lines; the running operation is a detail, not a second
+	// line with another shape.
+	want := "hanse: operation_conflict: operation \"op_running\" is already running\n" +
+		"  capability: hvac\n" +
+		"  operation: set\n" +
+		"  operation_id: op_running\n"
+	if stderr != want {
+		t.Errorf("run: stderr\n%q\nwant\n%q", stderr, want)
 	}
-	if strings.Contains(stderr, "operation_id:") {
-		t.Errorf("run: stderr %q repeats the conflict operation ID", stderr)
+	if strings.Contains(stderr, "problem:") {
+		t.Errorf("run: stderr %q keeps the extra problem line", stderr)
 	}
 	if stdout != "" {
 		t.Errorf("run: stdout %q, want no output", stdout)

@@ -205,38 +205,21 @@ func TestLogsStoredJSON(t *testing.T) {
 	}
 }
 
-// TestLogsFollowExitCodes requires the operation's exit code after a
-// followed log ends, the same mapping run uses.
-func TestLogsFollowExitCodes(t *testing.T) {
-	cases := []struct {
-		id     string
-		want   int
-		stderr string
-	}{
-		{"op_done", 0, ""},
-		{"op_fail", 38, "handler_exit"},
-		{"op_cancelled", 35, "cancelled"},
-		// A capability-defined final-state code maps to handler_failed.
-		{"op_handler_code", 33, "audit_unreadable"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.id, func(t *testing.T) {
+// TestLogsFollowExitsZero requires a followed log to exit 0 for every final
+// state: the command is a query, and only run maps the state to an exit code.
+func TestLogsFollowExitsZero(t *testing.T) {
+	for _, id := range []string{"op_done", "op_fail", "op_cancelled", "op_handler_code"} {
+		t.Run(id, func(t *testing.T) {
 			_, configPath := newLogsConfig(t)
-			stdout, stderr, code := runCLI(t, []string{"logs", tc.id, "-f"}, configPath)
-			if code != tc.want {
-				t.Fatalf("logs -f: exit code %d, want %d; stderr %s", code, tc.want, stderr)
+			stdout, stderr, code := runCLI(t, []string{"logs", id, "-f"}, configPath)
+			if code != 0 {
+				t.Fatalf("logs -f: exit code %d, want 0; stderr %s", code, stderr)
+			}
+			if stderr != "" {
+				t.Errorf("logs -f: unexpected stderr %q", stderr)
 			}
 			if !strings.Contains(stdout, "stderr: ") {
 				t.Errorf("logs -f: output has no log line:\n%s", stdout)
-			}
-			if tc.stderr == "" {
-				if stderr != "" {
-					t.Errorf("logs -f: unexpected stderr %q", stderr)
-				}
-				return
-			}
-			if !strings.Contains(stderr, tc.stderr) {
-				t.Errorf("logs -f: stderr %q, want %q", stderr, tc.stderr)
 			}
 		})
 	}
@@ -248,8 +231,8 @@ func TestLogsFollowJSON(t *testing.T) {
 	_, configPath := newLogsConfig(t)
 
 	stdout, stderr, code := runCLI(t, []string{"logs", "op_fail", "-f", "--format", "json"}, configPath)
-	if code != 38 {
-		t.Fatalf("logs -f: exit code %d, want 38; stderr %s", code, stderr)
+	if code != 0 {
+		t.Fatalf("logs -f: exit code %d, want 0; stderr %s", code, stderr)
 	}
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
 	if len(lines) != 2 {
@@ -285,17 +268,17 @@ func TestLogsFollowJSON(t *testing.T) {
 }
 
 // TestLogsFollowCapabilityErrorCode requires the final status object of a
-// followed log to keep a capability-defined code, message, and details,
-// while the exit code is handler_failed.
+// followed log to keep a capability-defined code, message, and details. The
+// command exits 0 because the query succeeded.
 func TestLogsFollowCapabilityErrorCode(t *testing.T) {
 	_, configPath := newLogsConfig(t)
 
 	stdout, stderr, code := runCLI(t, []string{"logs", "op_handler_code", "-f", "--format", "json"}, configPath)
-	if code != 33 {
-		t.Fatalf("logs -f: exit code %d, want 33; stderr %s", code, stderr)
+	if code != 0 {
+		t.Fatalf("logs -f: exit code %d, want 0; stderr %s", code, stderr)
 	}
-	if !strings.Contains(stderr, "handler_failed") || !strings.Contains(stderr, "audit_unreadable") {
-		t.Errorf("logs -f: stderr %q, want handler_failed and the handler's code", stderr)
+	if stderr != "" {
+		t.Errorf("logs -f: unexpected stderr %q", stderr)
 	}
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
 	if len(lines) == 0 {

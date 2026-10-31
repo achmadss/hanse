@@ -12,8 +12,9 @@ import (
 
 // logsCommand implements logs <id> and logs <id> --follow. Without --follow
 // it prints the stored lines. With --follow it streams the log until the
-// operation ends, then exits with the operation's exit code, using the same
-// mapping as run (docs/architecture.md sections 10 and 14).
+// operation ends. Both are queries, so a successful stream exits 0 whatever
+// the operation's final state; only run maps that state to an exit code
+// (docs/architecture.md sections 10 and 12).
 func (a *app) logsCommand(ctx context.Context, args []string) error {
 	fs := newFlagSet("logs")
 	formatValue := formatFlag(fs)
@@ -60,7 +61,7 @@ func (a *app) logsCommand(ctx context.Context, args []string) error {
 		}
 		return err
 	}
-	return operationFailure(record)
+	return nil
 }
 
 // followLogs streams one operation's log and returns the final state that
