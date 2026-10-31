@@ -88,9 +88,22 @@ func TestRunCheckConfigNoCelebrationForServer(t *testing.T) {
 	}
 }
 
-func TestRunUsageWithoutCheckConfig(t *testing.T) {
+func TestRunWithoutConfigMissingExitsOne(t *testing.T) {
+	// Without a subcommand the program runs the server. A missing
+	// configuration file stops it before it opens a listener.
 	var stdout, stderr bytes.Buffer
-	code := run(nil, &stdout, &stderr)
+	code := run([]string{"--config", filepath.Join(t.TempDir(), "gateway.yaml")}, &stdout, &stderr)
+	if code != exitFail {
+		t.Fatalf("exit = %d, want %d", code, exitFail)
+	}
+	if !strings.Contains(stderr.String(), "cannot read the file") {
+		t.Errorf("stderr = %q, want the unreadable-file problem", stderr.String())
+	}
+}
+
+func TestRunUnknownArgumentPrintsUsage(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"nonsense"}, &stdout, &stderr)
 	if code != exitUse {
 		t.Fatalf("exit = %d, want %d", code, exitUse)
 	}
