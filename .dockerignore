@@ -1,0 +1,10 @@
+# Keep the build context small. The Go sources, go.mod, go.sum, config/ and
+# capabilities/ stay in: the build needs them.
+.git
+.github
+.gitignore
+.golangci.yml
+.goreleaser.yaml
+Makefile
+docs
+deploy

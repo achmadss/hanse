@@ -1,0 +1,59 @@
+# Example Docker Compose deployment of the Hanse Gateway.
+#
+# Copy config/gateway.example.yaml, config/nodes.example.yaml and
+# config/routes.example.yaml into ./config/ next to this file, adjust the
+# paths inside gateway.yaml to /etc/hanse/..., and put the capability
+# packages and secret files there too. See docs/guides/docker.md.
+#
+# Every value here is a placeholder: gateway.example.com for the public host
+# name and 192.0.2.0/24 for addresses.
+
+services:
+  gateway:
+    image: ghcr.io/achmadss/hanse-gateway:latest
+    # To build the image from this checkout instead, replace the image line
+    # with: build: { context: ../.. }
+    container_name: hanse-gateway
+    restart: unless-stopped
+
+    # The Gateway runs as uid/gid 10001 in the image and needs no write
+    # access outside /var/lib/hanse.
+    read_only: true
+    user: "10001:10001"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # Publish only on loopback, and put a TLS reverse proxy in front (see
+    # docs/guides/reverse-proxy.md). To reach the Gateway from other
+    # machines directly, serve TLS itself instead.
+    ports:
+      - "127.0.0.1:8443:8443"
+
+    # A Gateway host that is itself a Wake-on-LAN executor, or that must see
+    # the local network to run handlers, needs the host network. Then remove
+    # the ports block above and uncomment this line.
+    # network_mode: host
+
+    volumes:
+      # Configuration, capability packages, credentials, and TLS files. The
+      # directory is read-only: the Gateway never writes it.
+      - ./config:/etc/hanse:ro
+      # The history database, the enrollment database, and the tokens file.
+      - hanse-state:/var/lib/hanse
+
+    tmpfs:
+      - /tmp:size=64m
+
+    healthcheck:
+      # /healthz needs no token. The listen address in gateway.yaml must
+      # accept a request from inside the container; 0.0.0.0:8443 does.
+      test: ["CMD", "wget", "--quiet", "--output-document=/dev/null", "http://127.0.0.1:8443/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  hanse-state:
