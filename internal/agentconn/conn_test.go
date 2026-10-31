@@ -872,11 +872,12 @@ func TestCancelledRunReportsTheAgentResult(t *testing.T) {
 }
 
 // TestCancelledRunIsForgottenAfterWindow drops a cancelled run whose agent
-// never answers once the reconnect window passes. Execute waits for the
-// grace period before it reports the cancellation.
+// never answers once the reconnect window passes. Execute gives up after the
+// grace period plus the stop slack and reports the cancellation.
 func TestCancelledRunIsForgottenAfterWindow(t *testing.T) {
 	f := newFixture(t, func(cfg *Config) {
 		cfg.ReconnectWindow = 50 * time.Millisecond
+		cfg.StopSlack = 100 * time.Millisecond
 	})
 	credential := f.credential(t, "node-a")
 	ws, _ := f.connect(t, credential, hello("node-a"))
@@ -909,7 +910,9 @@ func TestCancelledRunIsForgottenAfterWindow(t *testing.T) {
 // TestDeadlineStopNamesTheDeadline requires a stop that the operation
 // deadline caused to name the deadline, not a client cancellation.
 func TestDeadlineStopNamesTheDeadline(t *testing.T) {
-	f := newFixture(t, nil)
+	f := newFixture(t, func(cfg *Config) {
+		cfg.StopSlack = 100 * time.Millisecond
+	})
 	credential := f.credential(t, "node-a")
 	ws, _ := f.connect(t, credential, hello("node-a"))
 
@@ -1088,6 +1091,18 @@ func TestNewRequiresParts(t *testing.T) {
 	}
 	if _, err := New(Config{Registry: &registry.Registry{}}); err == nil {
 		t.Error("New accepted a config without a credential check")
+	}
+}
+
+// TestStopSlackDefault keeps the Gateway's wait for a slow agent result a
+// few seconds, so a reverse proxy and a slow link do not lose the result.
+func TestStopSlackDefault(t *testing.T) {
+	f := newFixture(t, nil)
+	if got := f.hub.Config().StopSlack; got != DefaultStopSlack {
+		t.Errorf("stop slack %s, want %s", got, DefaultStopSlack)
+	}
+	if DefaultStopSlack < 5*time.Second {
+		t.Errorf("default stop slack %s is too short for a slow link", DefaultStopSlack)
 	}
 }
 

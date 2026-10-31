@@ -26,8 +26,8 @@ const DefaultResponseLimit int64 = 1 << 20
 
 // KilledLine is the system log entry of a handler that outlived its grace
 // period, so the agent killed its process tree
-// (docs/handler-contract.md section 6).
-const KilledLine = "the handler did not stop in the grace period; the agent killed it"
+// (docs/handler-contract.md section 6, docs/agent-protocol.md section 7).
+const KilledLine = "killed after the grace period"
 
 // Runner runs exec handlers. The zero value uses the documented defaults.
 // A Runner holds no per-call state, so one value serves concurrent calls.

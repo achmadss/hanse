@@ -42,6 +42,11 @@ const (
 	DefaultReconnectWindow = 5 * time.Minute
 	// DefaultGracePeriod is the time between a stop request and the kill.
 	DefaultGracePeriod = 10 * time.Second
+	// DefaultStopSlack is the time the Gateway waits, after the grace
+	// period, for the agent's result of a stopped run. The result message
+	// can cross a reverse proxy and a slow link, so it is a few seconds
+	// rather than milliseconds (docs/agent-protocol.md section 7).
+	DefaultStopSlack = 5 * time.Second
 	// DefaultResponseBytes is the handler response limit.
 	DefaultResponseBytes = 1 << 20
 	// DefaultLogLineBytes is the log line limit.
@@ -75,6 +80,11 @@ type Config struct {
 	// GracePeriod is the default time between a stop request and the
 	// kill, used when the dispatcher does not pass one.
 	GracePeriod time.Duration
+	// StopSlack is the extra time the Gateway waits, after the grace
+	// period, for the agent's result of a stopped run. Zero means
+	// DefaultStopSlack. The wait ends as soon as the result arrives, so
+	// this is only a ceiling.
+	StopSlack time.Duration
 	// Logs receives log lines and Gateway system events. Nil discards.
 	Logs LogSink
 	// Now returns the current time. Nil means time.Now. Tests inject a
@@ -166,6 +176,9 @@ func New(cfg Config) (*Hub, error) {
 	}
 	if cfg.GracePeriod <= 0 {
 		cfg.GracePeriod = DefaultGracePeriod
+	}
+	if cfg.StopSlack <= 0 {
+		cfg.StopSlack = DefaultStopSlack
 	}
 	if cfg.HelloTimeout <= 0 {
 		cfg.HelloTimeout = agentproto.HelloTimeout
@@ -265,8 +278,9 @@ func (h *Hub) Online(nodeID string) bool {
 // connection fails with ExecutorUnavailable, so the request never silently
 // runs elsewhere. A cancelled context sends a cancel message and then waits
 // for the agent's result, so a handler that finishes during the grace
-// period reports its own final state. A disconnected agent has the run
-// recorded for an abandon answer on reconnect.
+// period reports its own final state; the wait is capped at the grace period
+// plus Config.StopSlack. A disconnected agent has the run recorded for an
+// abandon answer on reconnect, and the stop returns at once.
 func (h *Hub) Execute(ctx context.Context, call *Call) (runtime.Response, error) {
 	if h == nil {
 		return runtime.Response{}, herrors.New(herrors.Internal,
@@ -320,40 +334,41 @@ func (h *Hub) Execute(ctx context.Context, call *Call) (runtime.Response, error)
 	case <-r.done:
 		return r.result()
 	case <-ctx.Done():
-		h.stop(r, ctx.Err())
+		if !h.stop(r, ctx.Err()) {
+			// The agent is disconnected, so no result can arrive: record
+			// the stop at once, as docs/agent-protocol.md section 7 says.
+			return runtime.Response{}, ctx.Err()
+		}
 		// The agent runs the handler's grace period and then reports how
 		// it ended. Wait for that result, so a handler that returns ok
 		// during the grace period ends completed
 		// (docs/handler-contract.md section 5), and the operation stays
-		// running until then (docs/architecture.md section 9.5).
+		// running until then (docs/architecture.md section 9.5). The wait
+		// ends as soon as the result arrives.
 		select {
 		case <-r.done:
 			return r.result()
-		case <-h.after(stopWait(msg)):
+		case <-h.after(h.stopWait(msg)):
 			return runtime.Response{}, ctx.Err()
 		}
 	}
 }
 
-// stopWait is how long the Gateway waits for the agent's result after it
-// sends the stop request: the handler's grace period plus time for the
-// result message to travel back. The agent starts its own grace timer when
-// the cancel message arrives, so the extra time covers that hop.
-func stopWait(msg *agentproto.Run) time.Duration {
+// stopWait is the ceiling on the Gateway's wait for the agent's result after
+// a stop request: the handler's grace period plus Config.StopSlack, which
+// covers the result message's trip back over a proxy and a slow link.
+func (h *Hub) stopWait(msg *agentproto.Run) time.Duration {
 	grace := time.Duration(msg.GracePeriod) * time.Millisecond
-	return grace + stopResultSlack
+	return grace + h.cfg.StopSlack
 }
-
-// stopResultSlack is the allowance after the grace period for the agent's
-// result message.
-const stopResultSlack = 250 * time.Millisecond
 
 // stop cancels one run. A connected agent gets a cancel message; a
 // disconnected one has the run marked for abandon, so the agent stops it
 // after it reconnects (docs/agent-protocol.md sections 7 and 8.2). cause is
 // the dispatch context's error, which names whether a client cancelled the
-// run or its deadline passed.
-func (h *Hub) stop(r *run, cause error) {
+// run or its deadline passed. sent reports that the cancel message reached a
+// connected agent, so a result can still follow.
+func (h *Hub) stop(r *run, cause error) (sent bool) {
 	h.mu.Lock()
 	c := h.conns[r.node]
 	h.mu.Unlock()
@@ -368,15 +383,16 @@ func (h *Hub) stop(r *run, cause error) {
 		} else {
 			h.system(r.id, "the client cancelled the operation; a stop request was sent to the agent")
 		}
-		return
+		return true
 	}
 	r.markAbandoned()
 	h.forgetAfter(r)
 	if deadline {
 		h.system(r.id, "the agent is disconnected: the operation reached its deadline and the agent is told to abandon it after it reconnects")
-		return
+		return false
 	}
 	h.system(r.id, "the agent is disconnected: the operation is cancelled and the agent is told to abandon it after it reconnects")
+	return false
 }
 
 // forgetAfter drops a cancelled or abandoned run once a reconnect can no
