@@ -397,7 +397,7 @@ OPERATION  PRIVILEGED  DESCRIPTION
 files      no          Walk a directory tree and report how many files and bytes it holds
 node       no          Report the declared details of one node
 Installed capability "audit" in capabilities/audit.
-Reloaded the Gateway: 1 capabilities.
+Reloaded the Gateway: 2 capabilities.
 ```
 
 The CLI reloads with the login from `hanse login`. When the CLI is not logged in or the Gateway is unreachable, it warns that the change takes effect after a reload or restart instead. In that case, copy the directory into `capabilities/` by hand and send the Gateway `SIGHUP`.
@@ -584,11 +584,11 @@ Finished:         2026-10-31T02:25:04Z
 Error:
   Code:     not_a_directory
   Message:  /home/you/hanse-demo/demo-data/notes.txt is not a directory
-hanse: handler_failed: /home/you/hanse-demo/demo-data/notes.txt is not a directory
+hanse: handler_failed: not_a_directory: /home/you/hanse-demo/demo-data/notes.txt is not a directory ([code operation_id message])
 exit code: 33
 ```
 
-The CLI exits with code `33` (`handler_failed`). The operation's error keeps the handler's own code, `not_a_directory`, with its message and details.
+The names in parentheses are the error's detail keys, in no fixed order. The CLI exits with code `33` (`handler_failed`). The operation's error keeps the handler's own code, `not_a_directory`, with its message and details.
 
 ## 7. Change it
 
