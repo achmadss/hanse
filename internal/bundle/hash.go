@@ -53,13 +53,62 @@ func Files(root string) ([]string, error) {
 // agent-protocol.md section 5.1 defines, for the paths Files listed. On
 // Windows every file counts as mode 644.
 func Hash(root string, files []string) (string, error) {
-	lines := sha256.New()
+	modes := make(map[string]string, len(files))
 	for _, rel := range files {
 		path := filepath.FromSlash(filepath.Join(root, rel))
 		mode, err := fileMode(path)
 		if err != nil {
 			return "", err
 		}
+		modes[rel] = mode
+	}
+	return hashFiles(root, files, modes)
+}
+
+// HashDir lists and hashes one capability or cache directory.
+func HashDir(root string) (string, error) {
+	files, err := Files(root)
+	if err != nil {
+		return "", err
+	}
+	return Hash(root, files)
+}
+
+// HashWithModes hashes one unpacked bundle from the entry modes recorded
+// beside it, instead of the modes the local file system reports. The agent
+// uses the modes an archive recorded, so a bundle built on Linux or macOS
+// verifies on Windows too (agent-protocol.md sections 5.1 and 5.2).
+//
+// modes holds one `755` or `644` value per file, keyed by the relative
+// path Files reports. Every file of the directory must appear in modes, and
+// every entry of modes must be a file of the directory.
+func HashWithModes(root string, modes map[string]string) (string, error) {
+	files, err := Files(root)
+	if err != nil {
+		return "", err
+	}
+	if len(files) != len(modes) {
+		return "", herrors.New(herrors.HandlerIntegrity,
+			fmt.Sprintf("the bundle directory holds %d files, but %d entry modes are recorded", len(files), len(modes)), nil)
+	}
+	for rel, mode := range modes {
+		if err := checkMode(rel, mode); err != nil {
+			return "", err
+		}
+	}
+	return hashFiles(root, files, modes)
+}
+
+// hashFiles writes the bundle hash lines of files with the given modes.
+func hashFiles(root string, files []string, modes map[string]string) (string, error) {
+	lines := sha256.New()
+	for _, rel := range files {
+		mode, ok := modes[rel]
+		if !ok {
+			return "", herrors.New(herrors.HandlerIntegrity,
+				fmt.Sprintf("no entry mode is recorded for %q", rel), nil)
+		}
+		path := filepath.FromSlash(filepath.Join(root, rel))
 		contentHash := sha256.New()
 		if err := hashFile(path, contentHash); err != nil {
 			return "", err
@@ -72,13 +121,24 @@ func Hash(root string, files []string) (string, error) {
 	return "sha256:" + hex.EncodeToString(lines.Sum(nil)), nil
 }
 
-// HashDir lists and hashes one capability or cache directory.
-func HashDir(root string) (string, error) {
-	files, err := Files(root)
-	if err != nil {
-		return "", err
+// checkMode rejects an entry mode other than `755` and `644`.
+func checkMode(rel, mode string) error {
+	if mode != "755" && mode != "644" {
+		return herrors.New(herrors.HandlerIntegrity,
+			fmt.Sprintf("%q has entry mode %q, which is not 755 or 644", rel, mode), nil)
 	}
-	return Hash(root, files)
+	return nil
+}
+
+// EntryMode renders the bundle entry mode of one file, from the permission
+// bits of its content: `755` when any execute bit is set, `644` otherwise
+// (agent-protocol.md section 5.1). The agent reads the mode of a downloaded
+// file from the archive header, and the Gateway reads it from the file.
+func EntryMode(perm fs.FileMode) string {
+	if perm&0o111 != 0 {
+		return "755"
+	}
+	return "644"
 }
 
 // hashFile feeds one file's content into h.
@@ -96,19 +156,19 @@ func hashFile(path string, h io.Writer) error {
 	return nil
 }
 
-// fileMode renders the bundle entry mode of one file: 755 when it has an
-// execute bit in its permission bits, 644 otherwise. On Windows every
-// file counts as 644.
+// fileMode renders the bundle entry mode of one file on disk. On Windows
+// the file permission bits hold no execute bit, so every file counts as
+// 644.
 func fileMode(path string) (string, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
 		return "", herrors.New(herrors.Internal,
 			fmt.Sprintf("%s: %s", errPath(path), err), nil)
 	}
-	if runtime.GOOS != "windows" && fi.Mode().Perm()&0111 != 0 {
-		return "755", nil
+	if runtime.GOOS == "windows" {
+		return "644", nil
 	}
-	return "644", nil
+	return EntryMode(fi.Mode().Perm()), nil
 }
 
 // errPath renders a filesystem path for an error message.

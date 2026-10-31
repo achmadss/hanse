@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -64,7 +65,8 @@ func TestUnpackAcceptsRegularFiles(t *testing.T) {
 		archiveEntry{name: "manifest.yaml", body: "version: 1\n"},
 		archiveEntry{name: "bin/handler.sh", body: "#!/bin/sh\n", mode: 0o755},
 	)
-	if err := Unpack(archive, dest, DefaultMaxUnpackedBytes); err != nil {
+	entries, err := Unpack(archive, dest, DefaultMaxUnpackedBytes)
+	if err != nil {
 		t.Fatalf("unpack: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dest, "bin", "handler.sh"))
@@ -73,6 +75,34 @@ func TestUnpackAcceptsRegularFiles(t *testing.T) {
 	}
 	if string(data) != "#!/bin/sh\n" {
 		t.Errorf("content %q", data)
+	}
+	want := map[string]string{"manifest.yaml": "644", "bin/handler.sh": "755"}
+	if got := entryModes(entries); !reflect.DeepEqual(got, want) {
+		t.Errorf("entry modes %v, want %v", got, want)
+	}
+}
+
+// TestUnpackRecordsAnyExecuteBit covers the mode rule of section 5.1: a
+// header mode with any execute bit counts as 755 on every OS, so a bundle
+// built on Linux keeps its modes in the archive the agent reads.
+func TestUnpackRecordsAnyExecuteBit(t *testing.T) {
+	dest := t.TempDir()
+	archive := makeArchive(t,
+		archiveEntry{name: "manifest.yaml", body: "version: 1\n", mode: 0o640},
+		archiveEntry{name: "handler.sh", body: "#!/bin/sh\n", mode: 0o744},
+		archiveEntry{name: "notes.txt", body: "notes\n", mode: 0o600},
+	)
+	entries, err := Unpack(archive, dest, DefaultMaxUnpackedBytes)
+	if err != nil {
+		t.Fatalf("unpack: %v", err)
+	}
+	want := map[string]string{
+		"manifest.yaml": "644",
+		"handler.sh":    "755",
+		"notes.txt":     "644",
+	}
+	if got := entryModes(entries); !reflect.DeepEqual(got, want) {
+		t.Errorf("entry modes %v, want %v", got, want)
 	}
 }
 
@@ -97,7 +127,7 @@ func TestUnpackRejectsUnsafeArchives(t *testing.T) {
 	}
 	for name, archive := range cases {
 		t.Run(name, func(t *testing.T) {
-			err := Unpack(archive, t.TempDir(), DefaultMaxUnpackedBytes)
+			_, err := Unpack(archive, t.TempDir(), DefaultMaxUnpackedBytes)
 			if !errors.Is(err, ErrUnsafeArchive) {
 				t.Fatalf("unpack error %v, want ErrUnsafeArchive", err)
 			}
@@ -111,7 +141,7 @@ func TestUnpackRejectsOversizedArchive(t *testing.T) {
 		archiveEntry{name: "one", body: "12345"},
 		archiveEntry{name: "two", body: "12345"},
 	)
-	err := Unpack(archive, t.TempDir(), 8)
+	_, err := Unpack(archive, t.TempDir(), 8)
 	if !errors.Is(err, ErrUnsafeArchive) {
 		t.Fatalf("unpack error %v, want ErrUnsafeArchive", err)
 	}

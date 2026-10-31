@@ -23,53 +23,71 @@ const DefaultMaxUnpackedBytes int64 = 64 << 20
 // or an archive over the size limit.
 var ErrUnsafeArchive = errors.New("the bundle archive is not safe to unpack")
 
+// Entry is one regular file that Unpack wrote: its path relative to the
+// destination, with `/` as the separator, and the bundle entry mode the
+// archive recorded for it (`755` or `644`).
+//
+// The agent verifies a downloaded bundle with these modes, not with the
+// modes its own file system reports, so a bundle built on Linux or macOS
+// verifies on Windows too (docs/agent-protocol.md sections 5.1 and 5.2).
+type Entry struct {
+	Path string
+	Mode string
+}
+
 // Unpack reads a gzip-compressed tar archive into dest, which must be an
 // empty directory the caller created. It rejects absolute paths, paths
 // that contain `..`, links, device files, and an archive whose unpacked
-// size exceeds maxBytes (docs/agent-protocol.md section 5.2).
-func Unpack(gz io.Reader, dest string, maxBytes int64) error {
+// size exceeds maxBytes (docs/agent-protocol.md section 5.2). It returns
+// the entry modes the archive recorded for the files it wrote.
+func Unpack(gz io.Reader, dest string, maxBytes int64) ([]Entry, error) {
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxUnpackedBytes
 	}
 	reader, err := gzip.NewReader(gz)
 	if err != nil {
-		return fmt.Errorf("%w: it is not a gzip archive: %v", ErrUnsafeArchive, err)
+		return nil, fmt.Errorf("%w: it is not a gzip archive: %v", ErrUnsafeArchive, err)
 	}
 	defer func() { _ = reader.Close() }()
 	archive := tar.NewReader(reader)
 	var total int64
+	var entries []Entry
 	for {
 		header, err := archive.Next()
 		if errors.Is(err, io.EOF) {
-			return nil
+			return entries, nil
 		}
 		if err != nil {
-			return fmt.Errorf("%w: %v", ErrUnsafeArchive, err)
+			return nil, fmt.Errorf("%w: %v", ErrUnsafeArchive, err)
 		}
 		rel, err := safeName(header.Name)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		switch header.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(filepath.Join(dest, rel), 0o755); err != nil {
-				return err
+				return nil, err
 			}
 		case tar.TypeReg:
 			if header.Size < 0 {
-				return fmt.Errorf("%w: %q has a negative size", ErrUnsafeArchive, header.Name)
+				return nil, fmt.Errorf("%w: %q has a negative size", ErrUnsafeArchive, header.Name)
 			}
 			total += header.Size
 			if total > maxBytes {
-				return fmt.Errorf("%w: it holds more than %d bytes", ErrUnsafeArchive, maxBytes)
+				return nil, fmt.Errorf("%w: it holds more than %d bytes", ErrUnsafeArchive, maxBytes)
 			}
 			if err := writeFile(dest, rel, archive, header); err != nil {
-				return err
+				return nil, err
 			}
+			entries = append(entries, Entry{
+				Path: filepath.ToSlash(rel),
+				Mode: EntryMode(os.FileMode(header.Mode)),
+			})
 		case tar.TypeSymlink, tar.TypeLink:
-			return fmt.Errorf("%w: %q is a link", ErrUnsafeArchive, header.Name)
+			return nil, fmt.Errorf("%w: %q is a link", ErrUnsafeArchive, header.Name)
 		default:
-			return fmt.Errorf("%w: %q is not a regular file or directory", ErrUnsafeArchive, header.Name)
+			return nil, fmt.Errorf("%w: %q is not a regular file or directory", ErrUnsafeArchive, header.Name)
 		}
 	}
 }
