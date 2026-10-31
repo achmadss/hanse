@@ -19,7 +19,10 @@ var errSyntax = errors.New("not an address")
 type GatewayConfig struct {
 	// Version is the file format version; it must be 1.
 	Version int
-	// Node is the node ID in nodes.yaml that is the Gateway host.
+	// Node is the node ID in nodes.yaml that is the Gateway host. Empty
+	// means the Gateway runs no embedded agent, so every exec run,
+	// including one for the machine the Gateway runs on, goes to a node
+	// agent (docs/configuration.md §3.2).
 	Node string
 	// PublicURL is the URL that clients and node agents use to reach the
 	// Gateway.
@@ -231,9 +234,9 @@ func checkGateway(g *GatewayConfig, file string, problems *Problems) {
 	if g.Version != 1 {
 		*problems = append(*problems, Problem{file, "version", "must be 1"})
 	}
-	if g.Node == "" {
-		*problems = append(*problems, Problem{file, "node", "is required"})
-	} else if !ValidID(g.Node) {
+	// `node` is optional: without it the Gateway builds no embedded agent
+	// and every exec run goes to a node agent (docs/configuration.md §3.2).
+	if g.Node != "" && !ValidID(g.Node) {
 		*problems = append(*problems, Problem{file, "node", "must be a valid node ID: lowercase letters, digits, \"_\" and \"-\", starting with a letter"})
 	}
 	checkPublicURL(g, file, problems)

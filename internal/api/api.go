@@ -107,6 +107,10 @@ type server struct {
 	keepAlive time.Duration
 	agents    *agentconn.Hub
 	bundles   BundleSource
+	// embeddedNode is the node ID the Gateway runs handlers for inside its
+	// own process, from gateway.yaml's `node`. Empty means the Gateway has
+	// no embedded agent.
+	embeddedNode string
 	// optionProviders are the handler-backed option providers of the
 	// capabilities this Gateway loaded.
 	optionProviders OptionProviders
@@ -116,11 +120,17 @@ type server struct {
 }
 
 // connectAgent answers GET /v1/agent/connect: the hub authenticates the
-// node credential, upgrades the connection, and runs the agent protocol.
+// node credential, upgrades the connection, and runs the agent protocol. A
+// credential of the Gateway host node is refused first when the Gateway
+// runs an embedded agent for it (docs/architecture.md §8).
 func (s *server) connectAgent(w http.ResponseWriter, r *http.Request) {
 	if s.agents == nil {
 		writeError(w, herrors.New(herrors.Internal,
 			"the agent connection hub is not available", nil))
+		return
+	}
+	if err := s.refuseEmbeddedNode(r); err != nil {
+		writeError(w, err)
 		return
 	}
 	s.agents.ServeConnect(w, r)

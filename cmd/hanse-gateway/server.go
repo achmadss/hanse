@@ -128,22 +128,32 @@ func startGateway(ctx context.Context, configPath string, opts startOptions) (*g
 			slog.String("message", warning.Message))
 	}
 
-	embedded, err := agent.New(agent.Config{
-		Node:           embeddedNode(cfg),
-		Registry:       reg,
-		ResponseLimit:  sizeValue(cfg.Gateway.Limits.ResponseSize),
-		GracePeriod:    durationValue(cfg.Gateway.Timeouts.GracePeriod),
-		OptionsTimeout: durationValue(cfg.Gateway.Timeouts.Options),
-		EnvAllow:       cfg.Gateway.Handlers.EnvAllow,
-		WorkRoot:       cfg.Gateway.Paths.StateDir,
-	})
-	if err != nil {
-		return fail(err)
-	}
 	timeouts := timeoutsOf(&cfg.Gateway)
-	execDispatch, err := operations.NewExecDispatcher(operations.ExecConfig{Registry: reg, Agent: embedded})
-	if err != nil {
-		return fail(err)
+	// The embedded agent exists only when gateway.yaml names the host node.
+	// Without it the Gateway runs no handler in its own process: every exec
+	// run, including one for the machine the Gateway runs on, goes to that
+	// node's agent (docs/architecture.md §8).
+	var embedded *agent.Agent
+	if cfg.Gateway.Node != "" {
+		embedded, err = agent.New(agent.Config{
+			Node:           embeddedNode(cfg),
+			Registry:       reg,
+			ResponseLimit:  sizeValue(cfg.Gateway.Limits.ResponseSize),
+			GracePeriod:    durationValue(cfg.Gateway.Timeouts.GracePeriod),
+			OptionsTimeout: durationValue(cfg.Gateway.Timeouts.Options),
+			EnvAllow:       cfg.Gateway.Handlers.EnvAllow,
+			WorkRoot:       cfg.Gateway.Paths.StateDir,
+		})
+		if err != nil {
+			return fail(err)
+		}
+	}
+	var execDispatch *operations.ExecDispatcher
+	if embedded != nil {
+		execDispatch, err = operations.NewExecDispatcher(operations.ExecConfig{Registry: reg, Agent: embedded})
+		if err != nil {
+			return fail(err)
+		}
 	}
 	httpDispatch, err := operations.NewHTTPDispatcher(operations.HTTPConfig{
 		Registry:       reg,
@@ -180,15 +190,17 @@ func startGateway(ctx context.Context, configPath string, opts startOptions) (*g
 	if err != nil {
 		return fail(err)
 	}
+	agentDispatcher := operations.NewAgentDispatcher(hub, reg, timeouts)
+	dispatch := &dispatcher{
+		registry: reg,
+		host:     cfg.Gateway.Node,
+		exec:     execDispatch,
+		http:     httpDispatch,
+		agent:    agentDispatcher,
+	}
 	manager, err := operations.New(operations.Config{
-		Registry: reg,
-		Dispatcher: &dispatcher{
-			registry: reg,
-			host:     cfg.Gateway.Node,
-			exec:     execDispatch,
-			http:     httpDispatch,
-			agent:    operations.NewAgentDispatcher(hub, reg, timeouts),
-		},
+		Registry:     reg,
+		Dispatcher:   dispatch,
 		Timeouts:     timeouts,
 		Store:        store,
 		LogStore:     store,
@@ -232,7 +244,11 @@ func startGateway(ctx context.Context, configPath string, opts startOptions) (*g
 	}
 	handler := api.New(reg, manager, enrollService,
 		api.WithAgentHub(hub),
-		api.WithOptionProviders(api.OptionProviders{Exec: execDispatch, HTTP: httpDispatch}),
+		api.WithEmbeddedNode(cfg.Gateway.Node),
+		// Exec option providers follow the same executor routing as an
+		// operation, so they run in process only for the embedded node and
+		// on the executor's agent otherwise (docs/handler-contract.md §8).
+		api.WithOptionProviders(api.OptionProviders{Exec: dispatch, HTTP: httpDispatch}),
 		api.WithReadiness(g.readyz))
 	g.server = &http.Server{
 		Handler:           guard(tokens, handler),
@@ -276,6 +292,8 @@ func startGateway(ctx context.Context, configPath string, opts startOptions) (*g
 	log.Info("gateway listening",
 		slog.String("address", g.Addr),
 		slog.String("public_url", cfg.Gateway.PublicURL),
+		slog.String("host_node", cfg.Gateway.Node),
+		slog.Bool("embedded_agent", embedded != nil),
 		slog.Bool("tls", useTLS))
 
 	go func() {

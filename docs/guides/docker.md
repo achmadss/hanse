@@ -4,8 +4,20 @@ The repository ships a multi-stage `Dockerfile` that builds a static
 `hanse-gateway` binary and runs it as an unprivileged user. This guide shows
 the image, the volumes, and the Compose example.
 
+The recommended layout puts the Gateway in a container and runs handlers on
+the real host:
+
+- The Gateway container sets no `node` in `gateway.yaml`. It runs no embedded
+  agent and no handler in its own process.
+- The host runs `hanse-node` as a systemd service, enrolls it with
+  `hanse-gateway node enroll`, and connects it to the published loopback port
+  or through the TLS proxy.
+- The host node is listed in `nodes.yaml` and in `routes.yaml` like any other
+  node.
+
 Every value in this guide is a placeholder: `gateway.example.com` for the
-public host name and `192.0.2.0/24` for addresses.
+public host name, `192.0.2.0/24` for addresses, and `gateway-host` for the
+node ID of the machine that runs the container.
 
 The example Compose file is
 [`deploy/docker/compose.yaml`](../../deploy/docker/compose.yaml).
@@ -61,6 +73,43 @@ paths:
 auth:
   tokens_file: /var/lib/hanse/tokens.json
 ```
+
+Leave `node` out. The example file starts with `node: gateway`, so delete or
+comment that line: the Gateway then runs no handler in its own process. Every
+`exec` handler runs on a node agent, including the handlers of the host.
+
+List the host as a node in `nodes.yaml`:
+
+```yaml
+version: 1
+
+nodes:
+  gateway-host:
+    name: Gateway host
+    os: linux
+    arch: amd64
+    roles: [server]
+    address: 192.0.2.10
+```
+
+The example files call this node `gateway`. Either keep that ID or rename it
+in `nodes.yaml`, in `routes.yaml`, and in the join command below; this guide
+uses `gateway-host`.
+
+Route capabilities to it in `routes.yaml`, like to any other node:
+
+```yaml
+version: 1
+
+capabilities:
+  echo:
+    executors: [gateway-host]
+    default_executor: gateway-host
+```
+
+An `http` capability needs the Gateway host node, which a Gateway without
+`node` does not have. The Gateway refuses to start when `routes.yaml` routes
+one; run `http` capabilities on a Gateway that sets `node`.
 
 The state directory must be writable by uid 10001. When you use a bind mount
 instead of a named volume, set the owner:
@@ -150,44 +199,161 @@ token, so it must not be pointed at a route that requires one.
 
 `docker compose stop` sends `SIGTERM` to the Gateway, which stops accepting
 requests, waits up to `timeouts.grace_period`, marks interrupted operations
-as failed with `gateway_restart`, and closes the stores. A handler that the
-embedded agent started is not cancelled by that sequence. The container
-runtime then stops the whole container, so the handler never outlives the
-container; `init: true` in the example adds a small PID 1 that reaps it and
-forwards the signal to the Gateway. A remote `exec` handler on a node agent
-is unaffected: its agent still owns that process tree.
+as failed with `gateway_restart`, and closes the stores. The recommended
+layout starts no handler inside the container, so the container stop affects
+no handler. A `hanse-node` handler on the host keeps running: its agent owns
+that process tree and stops the run on its own schedule. `init: true` in the
+example still gives the container a small PID 1 that forwards the signal.
 
-### Wake-on-LAN and the host network
+## 5. Enroll and run the host node
 
-A Gateway host that is itself an executor for Wake-on-LAN must send the magic
-packet on the physical network. Bridge networking puts the container on a
-private network, so the broadcast never reaches the machine to wake. Use the
-host network for that deployment:
+The host runs `hanse-node`, an ordinary executor node. It sends handlers to
+the host kernel, the network, and `sudo`, none of which the container has.
 
-```yaml
-services:
-  gateway:
-    # ...
-    network_mode: host
-    # Remove the ports block: host networking publishes nothing.
+### Install the agent
+
+Build it from the same checkout and install it next to the Gateway binary:
+
+```console
+$ go build -trimpath -o hanse-node ./cmd/hanse-node
+$ sudo install -m 0755 hanse-node /usr/local/bin/hanse-node
+$ hanse-node --version
 ```
 
-The container then shares the host's interfaces, and the `echo` or `pc`
-handler that sends the magic packet reaches the LAN. The same applies to a
-handler that must see the local subnet, such as one that runs an ARP scan or
-binds a fixed local address.
+Create a system account and the directories the agent uses:
 
-`network_mode: host` also means the Gateway listens on the host's port
-directly. Keep `listen: 127.0.0.1:8443` and put the TLS proxy on the host, or
-serve TLS from the container with `listen: 0.0.0.0:8443`.
+```console
+$ sudo useradd --system --no-create-home --home-dir /var/lib/hanse-node \
+    --shell /usr/sbin/nologin hanse-node
+$ sudo install -d -o hanse-node -g hanse-node -m 0700 /var/lib/hanse-node
+$ sudo install -d -o root -g hanse-node -m 0750 /etc/hanse-node
+```
 
-## 5. Volumes and permissions
+Write `/etc/hanse-node/agent.yaml`. Set `gateway_url` to the URL the host
+uses to reach the Gateway, and `state_dir` to the agent's state directory:
+
+```yaml
+version: 1
+
+gateway_url: http://127.0.0.1:8443
+# ca_file: /etc/hanse-node/ca.pem
+
+state_dir: /var/lib/hanse-node
+
+handlers:
+  env_allow: []
+
+elevation:
+  enabled: false
+```
+
+Keep the file readable by the agent's account and writable only by root: the
+agent refuses to start when another account can change it.
+
+```console
+$ sudo chown root:hanse-node /etc/hanse-node/agent.yaml
+$ sudo chmod 0640 /etc/hanse-node/agent.yaml
+```
+
+See [docs/configuration.md section 7](../configuration.md#7-agentyaml) for
+every field.
+
+### Print a join token
+
+Run the enrollment command in the container, so it writes to the same state
+volume the Gateway reads:
+
+```console
+$ cd deploy/docker
+$ docker compose exec gateway hanse-gateway node enroll gateway-host
+join token for gateway-host (one use, expires 2026-10-31T12:15:00Z):
+
+  hanse-node join https://gateway.example.com hjt_<token>
+
+Run that command on the node. This token is shown only once.
+```
+
+The command refuses whenever `gateway.yaml` sets `node` to the same ID: that
+Gateway host already runs its handlers in its embedded agent.
+
+The printed command uses `public_url`. The Gateway host can use the published
+loopback port instead, which avoids the proxy for this one step; the next
+section shows that form.
+
+### Join and start the service
+
+On the host, join as the agent's account, using the URL the agent will use to
+connect, then install a systemd unit:
+
+```console
+$ sudo -u hanse-node hanse-node join \
+    http://127.0.0.1:8443 hjt_<token> --state-dir /var/lib/hanse-node
+```
+
+The agent stores the `hnc_` credential in `/var/lib/hanse-node` and prints
+the file name, never the credential.
+
+```ini
+# /etc/systemd/system/hanse-node.service
+[Unit]
+Description=Hanse node agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=hanse-node
+Group=hanse-node
+ExecStart=/usr/local/bin/hanse-node run --config /etc/hanse-node/agent.yaml
+Restart=on-failure
+RestartSec=2s
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```console
+$ sudo systemctl daemon-reload
+$ sudo systemctl enable --now hanse-node
+$ systemctl status hanse-node
+```
+
+`KillMode=control-group` is systemd's default and is kept explicitly: after
+the agent exits, systemd stops the handlers it started. Privileged operations
+need an agent account that may use `sudo`; see
+[docs/architecture.md section 8.5](../architecture.md#85-privileged-operations).
+
+### Connect to the Gateway
+
+The agent connects over one of two paths:
+
+| Path | `gateway_url` and join URL | Use when |
+|---|---|---|
+| Published loopback port | `http://127.0.0.1:8443` | The agent runs on the same host as the container. Plain HTTP to a loopback address is allowed, and the port is published only on `127.0.0.1`. |
+| TLS proxy | `https://gateway.example.com` | Other nodes, and the host node, connect through the proxy. The proxy must pass the WebSocket upgrade; see [Run the Gateway behind a TLS reverse proxy](reverse-proxy.md). |
+
+For a container that serves TLS itself and publishes only on loopback, use
+`https://127.0.0.1:8443` and point `ca_file` at the CA that signed the
+certificate, because the certificate names the public host.
+
+Check that the node is online:
+
+```console
+$ hanse login --url http://127.0.0.1:8443 --token hst_<token>
+$ hanse nodes
+```
+
+The host node then appears like every other node, and capabilities routed to
+it run their handlers on the host.
+
+## 6. Volumes and permissions
 
 | Container path | Mode | Holds |
 |---|---|---|
 | `/etc/hanse` | read-only | `gateway.yaml`, `nodes.yaml`, `routes.yaml`, `capabilities/`, `credentials/`, `tls/` |
 | `/var/lib/hanse` | read-write | History database, enrollment database, `tokens.json` |
-| `/tmp` | tmpfs (Compose example) | Nothing persistent; the embedded agent works under the state directory. |
+| `/tmp` | tmpfs (Compose example) | Nothing persistent; a Gateway without `node` starts no handler process. |
 
 Run the image with `read_only: true` as the example does. The only paths the
 Gateway writes are inside `/var/lib/hanse`, which the state volume mounts.
@@ -195,7 +361,7 @@ Gateway writes are inside `/var/lib/hanse`, which the state volume mounts.
 Do not mount the state directory from a network file system. SQLite needs
 working file locks and a local file system.
 
-## 6. Upgrades
+## 7. Upgrades
 
 ```console
 $ docker compose build --pull
@@ -218,7 +384,11 @@ $ docker run --rm \
     hanse-gateway:local --check-config --config /etc/hanse/gateway.yaml
 ```
 
-## 7. Troubleshooting
+The same applies to the host agent: install the new `hanse-node` binary and
+restart `hanse-node.service`. A run that was in flight is resumed or
+abandoned as the agent protocol defines.
+
+## 8. Troubleshooting
 
 | Symptom | Cause |
 |---|---|
@@ -226,4 +396,7 @@ $ docker run --rm \
 | Container exits 1 with `configuration problem(s)` | The file is invalid; the message names the file and the field. Run `--check-config`. |
 | `refusing to listen on ... without TLS` | `listen` is not loopback and `allow_insecure_http` is false. |
 | Health check fails but the log says `gateway listening` | The health check uses the wrong address or scheme. Probe the configured listen address; with TLS, use `https` and `--no-check-certificate`. See section 4. |
-| Wake-on-LAN does nothing | The container is not on the host network. See section 4. |
+| An `exec` run fails with `executor_unavailable` | The executor's node agent is not connected. Check `systemctl status hanse-node` and the URL in `agent.yaml`. A Gateway without `node` never runs the handler itself. |
+| `node ... is the Gateway host` when enrolling | `gateway.yaml` still sets `node`. Remove it to run every `exec` handler on a node agent. |
+| Wake-on-LAN does nothing | In this layout the magic packet comes from `hanse-node` on the host, so check that service first. Bridge networking of the container no longer matters; host networking is needed only by an embedded agent that sends the packet itself. |
+| A `hanse-node` on the host cannot reach the joined URL | The port is published only on loopback; use `127.0.0.1`, or enroll through the TLS proxy. |

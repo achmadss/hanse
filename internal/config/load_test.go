@@ -547,6 +547,15 @@ func TestLoadValidationRules(t *testing.T) {
 			},
 		},
 		{
+			name: "gateway node is optional",
+			files: func() map[string]entry {
+				f := baseFiles()
+				f["gateway.yaml"] = entry{content: strings.Replace(gwBase, "node: gateway\n", "", 1)}
+				return f
+			},
+			want: nil,
+		},
+		{
 			name: "gateway node names an unknown node",
 			files: func() map[string]entry {
 				f := baseFiles()

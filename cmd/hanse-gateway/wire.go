@@ -105,15 +105,19 @@ func embeddedNode(cfg *config.Config) runtime.Node {
 }
 
 // dispatcher routes one validated call to the runtime its capability
-// declares. An exec capability runs on the embedded agent when the resolved
-// executor is the Gateway host node and on the node agent otherwise
-// (docs/architecture.md sections 7.2 and 7.3).
+// declares. An exec capability runs on the embedded agent when the Gateway
+// has one and the resolved executor is the Gateway host node; every other
+// exec call goes to the executor's node agent, which includes every exec
+// call when gateway.yaml sets no `node` (docs/architecture.md sections 7.2,
+// 7.3, and 8).
 type dispatcher struct {
 	registry *registry.Registry
-	host     string
-	exec     *operations.ExecDispatcher
-	http     *operations.HTTPDispatcher
-	agent    *operations.AgentDispatcher
+	// host is gateway.yaml's `node`. Empty means the Gateway has no
+	// embedded agent, so no exec call runs in its own process.
+	host  string
+	exec  *operations.ExecDispatcher
+	http  *operations.HTTPDispatcher
+	agent *operations.AgentDispatcher
 }
 
 // Execute runs one call on its runtime.
@@ -136,7 +140,11 @@ func (d *dispatcher) Execute(ctx context.Context, call *operations.Call) (runtim
 	case registry.KindHTTP:
 		return d.http.Execute(ctx, call)
 	case registry.KindExec:
-		if call.Request.Executor.ID == d.host {
+		if d.host != "" && call.Request.Executor.ID == d.host {
+			if d.exec == nil {
+				return runtime.Response{}, herrors.New(herrors.Internal,
+					fmt.Sprintf("the Gateway has no embedded agent for host node %q", d.host), nil)
+			}
 			return d.exec.Execute(ctx, call)
 		}
 		return d.agent.Execute(ctx, call)

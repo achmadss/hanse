@@ -8,6 +8,15 @@ agent's WebSocket connection, over HTTPS.
 The values here are placeholders: `gateway.example.com` for the host name
 and `192.0.2.10` for the Gateway host.
 
+The guide covers both Gateway layouts:
+
+- **Embedded agent.** `gateway.yaml` sets `node`. The Gateway runs that
+  host's `exec` handlers itself, and no node agent connects for that ID.
+- **Node agent only.** `gateway.yaml` sets no `node`, such as for the Gateway
+  in a container. Every node agent connects through the proxy, including the
+  one on the machine that runs the Gateway. The proxy is then the only public
+  entry point for the host node as well.
+
 ## 1. Put the Gateway behind the proxy
 
 Choose one of the two layouts below.
@@ -163,6 +172,17 @@ $ hanse-node join https://gateway.example.com hjt_<token>
 The agent stores the returned `hnc_` credential and connects to
 `wss://gateway.example.com/v1/agent/connect`. Caddy sees an ordinary
 `GET` request with an `Upgrade` header and proxies it to the Gateway.
+
+When the Gateway sets no `node`, enroll the machine that runs it like any
+other node. List it in `nodes.yaml` and `routes.yaml`, then run the same two
+commands on that host. Its agent uses the public URL as well, so the proxy
+must stay reachable from the Gateway host. A host that shares the network with
+the Gateway can use the published loopback port instead; see the
+[Docker guide](docker.md#connect-to-the-gateway).
+
+Enrolling the node that `gateway.yaml`'s `node` names fails with the
+`forbidden` code: the embedded agent is already that node's executor. Remove
+`node` from `gateway.yaml` when the host should run a node agent.
 
 ## 4. Verify the proxy
 

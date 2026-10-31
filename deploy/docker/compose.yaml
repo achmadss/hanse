@@ -1,9 +1,15 @@
 # Example Docker Compose deployment of the Hanse Gateway.
 #
+# Recommended layout: the Gateway runs in this container with no `node` in
+# gateway.yaml, and the host runs hanse-node as a node agent that joins with
+# `hanse-gateway node enroll`. Every exec handler then runs on a node agent,
+# including the handlers of the host, so no handler runs in this container.
+#
 # Copy config/gateway.example.yaml, config/nodes.example.yaml and
 # config/routes.example.yaml into ./config/ next to this file, adjust the
-# paths inside gateway.yaml to /etc/hanse/..., and put the capability
-# packages and secret files there too. See docs/guides/docker.md.
+# paths inside gateway.yaml to /etc/hanse/..., delete or comment out its
+# `node` line, and list the host node in nodes.yaml and routes.yaml. Put the
+# capability packages and secret files there too. See docs/guides/docker.md.
 #
 # Every value here is a placeholder: gateway.example.com for the public host
 # name and 192.0.2.0/24 for addresses.
@@ -20,9 +26,9 @@ services:
     image: hanse-gateway:local
     container_name: hanse-gateway
     restart: unless-stopped
-    # A tiny init is PID 1: it reaps handler processes and forwards SIGTERM
-    # to the Gateway. The container runtime kills a handler that outlives
-    # the Gateway when the container stops.
+    # A tiny init is PID 1: it forwards SIGTERM and reaps any process. A
+    # Gateway without `node` starts no handler, so it mainly forwards the
+    # signal.
     init: true
 
     # The Gateway runs as uid/gid 10001 in the image and needs no write
@@ -40,9 +46,11 @@ services:
     ports:
       - "127.0.0.1:8443:8443"
 
-    # A Gateway host that is itself a Wake-on-LAN executor, or that must see
-    # the local network to run handlers, needs the host network. Then remove
-    # the ports block above and uncomment this line.
+    # A Gateway with no `node` runs no handler itself, so it needs no host
+    # network. Wake-on-LAN and other LAN handlers run on the host through
+    # its hanse-node agent. Keep host networking only for an older layout
+    # that still sets `node` and runs LAN handlers in the embedded agent:
+    # remove the ports block above and uncomment this line.
     # network_mode: host
 
     volumes:

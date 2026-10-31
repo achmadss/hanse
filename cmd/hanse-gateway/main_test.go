@@ -45,6 +45,44 @@ func TestRunCheckConfigValidExitsZero(t *testing.T) {
 	}
 }
 
+// TestRunCheckConfigWithoutNode requires `node` to be optional: a Gateway
+// that runs no embedded agent validates like any other.
+func TestRunCheckConfigWithoutNode(t *testing.T) {
+	dir := t.TempDir()
+	writeNoNodeTree(t, dir, filepath.Join(dir, "ran-in-process"))
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--check-config", "--config", filepath.Join(dir, "gateway.yaml")}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("exit = %d, want %d\nstdout: %s\nstderr: %s", code, exitOK, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "configuration is valid") {
+		t.Errorf("stdout = %q, want it to report a valid configuration", stdout.String())
+	}
+}
+
+// TestRunCheckConfigUnknownNode keeps the reference check: an optional
+// `node` that names no node in nodes.yaml is still a problem.
+func TestRunCheckConfigUnknownNode(t *testing.T) {
+	dir := configFixture(t, "")
+	path := filepath.Join(dir, "gateway.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := strings.Replace(string(data), "node: gateway", "node: ghost", 1)
+	if err := os.WriteFile(path, []byte(changed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--check-config", "--config", path}, &stdout, &stderr)
+	if code != exitFail {
+		t.Fatalf("exit = %d, want %d", code, exitFail)
+	}
+	if !strings.Contains(stderr.String(), `node "ghost" does not exist`) {
+		t.Errorf("stderr = %q, want the unknown-node problem", stderr.String())
+	}
+}
+
 func TestRunCheckConfigProblemsExitOne(t *testing.T) {
 	dir := configFixture(t, "timeuouts:\n  operation: 5m\n")
 	var stdout, stderr bytes.Buffer

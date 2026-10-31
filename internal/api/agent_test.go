@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,13 @@ import (
 // joinFixture returns a handler wired with a fresh enrollment store and a
 // clock the test can move forward.
 func joinFixture(t *testing.T) (http.Handler, *enroll.Service, func(time.Duration)) {
+	t.Helper()
+	return joinFixtureWith(t)
+}
+
+// joinFixtureWith is joinFixture with extra API options, such as the
+// embedded node the Gateway runs itself.
+func joinFixtureWith(t *testing.T, options ...Option) (http.Handler, *enroll.Service, func(time.Duration)) {
 	t.Helper()
 	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
 	service, err := enroll.Open(enroll.Options{
@@ -25,7 +33,7 @@ func joinFixture(t *testing.T) (http.Handler, *enroll.Service, func(time.Duratio
 	}
 	t.Cleanup(func() { _ = service.Close() })
 	advance := func(d time.Duration) { now = now.Add(d) }
-	return New(newFixture(t), nil, service), service, advance
+	return New(newFixture(t), nil, service, options...), service, advance
 }
 
 // postJoin sends one join request.
@@ -128,6 +136,37 @@ func TestJoinAgentExpiredToken(t *testing.T) {
 	}
 	if code := codeOf(t, body); code != "join_token_invalid" {
 		t.Errorf("expired token code = %q, want join_token_invalid", code)
+	}
+}
+
+// TestJoinAgentRefusesEmbeddedNode proves the Gateway refuses a join token
+// for the node it runs itself: that node already has the embedded agent as
+// its executor. The token stays unused, so the operator can enroll the node
+// after removing `node` from gateway.yaml.
+func TestJoinAgentRefusesEmbeddedNode(t *testing.T) {
+	handler, service, _ := joinFixtureWith(t, WithEmbeddedNode("gateway"))
+	in := joinInput{
+		Protocol:     AgentProtocolV1,
+		JoinToken:    joinToken(t, service, "gateway"),
+		AgentVersion: "1.0.0",
+		OS:           "linux",
+		Arch:         "amd64",
+	}
+	rec, body := postJoin(t, handler, in)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("embedded node status = %d, want 403, body %s", rec.Code, body)
+	}
+	if code := codeOf(t, body); code != "forbidden" {
+		t.Errorf("embedded node code = %q, want forbidden", code)
+	}
+	if !strings.Contains(string(body), "embedded agent") {
+		t.Errorf("body = %s, want it to name the embedded agent", body)
+	}
+	// A Gateway without `node` accepts the same token afterwards: the
+	// refusal consumed nothing.
+	open := New(newFixture(t), nil, service)
+	if rec, body := postJoin(t, open, in); rec.Code != http.StatusOK {
+		t.Fatalf("join after the refusal status = %d, want 200, body %s", rec.Code, body)
 	}
 }
 

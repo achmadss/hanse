@@ -99,6 +99,26 @@ func TestNodeEnrollUnknownNode(t *testing.T) {
 	}
 }
 
+// TestNodeEnrollRefusesGatewayHost requires a token for the node that
+// gateway.yaml's `node` names to be refused: that node already runs its
+// handlers in the embedded agent.
+func TestNodeEnrollRefusesGatewayHost(t *testing.T) {
+	configPath, _ := nodeFixture(t)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"node", "enroll", "gateway", "--config", configPath}, &stdout, &stderr)
+	if code != exitFail {
+		t.Fatalf("exit = %d, want %d", code, exitFail)
+	}
+	if stdout.String() != "" {
+		t.Errorf("stdout = %q, want nothing: no token may exist for the Gateway host", stdout.String())
+	}
+	for _, want := range []string{`node "gateway" is the Gateway host`, "embedded agent", "Remove `node`"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr = %q, want it to hold %q", stderr.String(), want)
+		}
+	}
+}
+
 // TestNodeRevokeInvalidatesCredential enrolls a node through the store,
 // revokes it with the command, and requires the credential to fail
 // afterwards.

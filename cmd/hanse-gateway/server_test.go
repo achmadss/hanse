@@ -8,7 +8,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -19,7 +21,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/achmadss/hanse/internal/agentconn"
+	"github.com/achmadss/hanse/internal/auth"
 	"github.com/achmadss/hanse/internal/config"
+	herrors "github.com/achmadss/hanse/internal/errors"
+	"github.com/achmadss/hanse/internal/operations"
+	"github.com/achmadss/hanse/internal/registry"
+	"github.com/achmadss/hanse/internal/runtime"
 )
 
 // startTestGateway starts a Gateway on a loopback port the operating system
@@ -209,17 +217,25 @@ func TestGracefulShutdown(t *testing.T) {
 // writeConfigTree writes a minimal Gateway configuration with the given
 // extra gateway.yaml lines. Placeholder addresses only: 192.0.2.0/24 is
 // reserved for documentation.
+// writeConfigTree writes gateway.yaml with node: gateway, nodes.yaml
+// holding that node, an empty routes.yaml, and the directories they name.
 func writeConfigTree(t *testing.T, dir, extra string) {
 	t.Helper()
-	gw := "version: 1\nnode: gateway\npaths:\n" +
-		"  nodes: nodes.yaml\n  routes: routes.yaml\n" +
-		"  capabilities:\n    - " + dir + "/capabilities\n" +
-		"  credentials_dir: " + dir + "/credentials\n  state_dir: " + dir + "/state\n" +
-		extra
-	nodes := "version: 1\nnodes:\n  gateway:\n    os: linux\n    arch: amd64\n"
-	routes := "version: 1\ncapabilities: {}\n"
+	writeConfigFiles(t, dir, "version: 1\nnode: gateway\npaths:\n"+
+		"  nodes: nodes.yaml\n  routes: routes.yaml\n"+
+		"  capabilities:\n    - "+dir+"/capabilities\n"+
+		"  credentials_dir: "+dir+"/credentials\n  state_dir: "+dir+"/state\n"+
+		extra,
+		"version: 1\nnodes:\n  gateway:\n    os: linux\n    arch: amd64\n",
+		"version: 1\ncapabilities: {}\n")
+}
+
+// writeConfigFiles writes gateway.yaml, nodes.yaml, and routes.yaml into
+// dir and creates the directories gateway.yaml names.
+func writeConfigFiles(t *testing.T, dir, gateway, nodes, routes string) {
+	t.Helper()
 	for name, content := range map[string]string{
-		"gateway.yaml": gw,
+		"gateway.yaml": gateway,
 		"nodes.yaml":   nodes,
 		"routes.yaml":  routes,
 	} {
@@ -307,6 +323,256 @@ func TestStartGatewayRefusesABadCertificate(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "TLS certificate") {
 		t.Errorf("error = %q, want it to name the TLS certificate", err)
+	}
+}
+
+// codeOfBody reads the error code of one API error response.
+func codeOfBody(t *testing.T, body []byte) string {
+	t.Helper()
+	var e struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(body, &e); err != nil {
+		t.Fatalf("decode the error body %s: %v", body, err)
+	}
+	return e.Code
+}
+
+// echoManifest is the exec capability of the tests without an embedded
+// agent: it has no built-in executor, so only a node agent can run it.
+const echoManifest = `version: 1
+id: echo
+name: Echo
+description: Print a line from a node
+contract: hanse.handler/v1
+
+handler:
+  kind: exec
+  entry:
+    linux: [sh, handler.sh]
+
+operations:
+  say:
+    description: Write a marker file and print a line
+    arguments:
+      type: object
+      additionalProperties: false
+      properties:
+        message:
+          type: string
+          description: The text to print
+    options:
+      message: provider
+`
+
+// writeNoNodeTree writes a Gateway configuration without `node` and one
+// exec capability routed to node-a, which has no agent connection. The
+// handler creates marker when it runs, so a test can prove that it never
+// ran in the Gateway process.
+func writeNoNodeTree(t *testing.T, dir, marker string) {
+	t.Helper()
+	writeConfigFiles(t, dir,
+		"version: 1\npublic_url: http://127.0.0.1:8443\nlisten: 127.0.0.1:8443\npaths:\n"+
+			"  nodes: nodes.yaml\n  routes: routes.yaml\n"+
+			"  capabilities:\n    - "+dir+"/capabilities\n"+
+			"  credentials_dir: "+dir+"/credentials\n  state_dir: "+dir+"/state\n",
+		"version: 1\nnodes:\n  node-a:\n    os: linux\n    arch: amd64\n",
+		"version: 1\ncapabilities:\n  echo:\n    executors: [node-a]\n    default_executor: node-a\n")
+	capDir := filepath.Join(dir, "capabilities", "echo")
+	if err := os.MkdirAll(capDir, 0o755); err != nil {
+		t.Fatalf("create the capability directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(capDir, "manifest.yaml"), []byte(echoManifest), 0o644); err != nil {
+		t.Fatalf("write the manifest: %v", err)
+	}
+	handler := "#!/bin/sh\ntouch '" + marker + "'\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(capDir, "handler.sh"), []byte(handler), 0o644); err != nil {
+		t.Fatalf("write the handler: %v", err)
+	}
+}
+
+// TestGatewayWithoutNodeStarts requires the Gateway to accept a
+// configuration without `node` and to serve the API.
+func TestGatewayWithoutNodeStarts(t *testing.T) {
+	dir := t.TempDir()
+	writeNoNodeTree(t, dir, filepath.Join(dir, "ran-in-process"))
+	ctx, cancel := context.WithCancel(context.Background())
+	g, err := startGateway(ctx, filepath.Join(dir, "gateway.yaml"), startOptions{
+		listen: "127.0.0.1:0",
+		stderr: io.Discard,
+	})
+	if err != nil {
+		cancel()
+		t.Fatalf("start the Gateway without node: %v", err)
+	}
+	defer func() {
+		cancel()
+		if err := <-g.Done(); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	}()
+	if status, body := probeURL(t, "http://"+g.Addr+"/healthz"); status != http.StatusOK || body != "ok\n" {
+		t.Errorf("GET /healthz = %d %q, want 200 %q", status, body, "ok\n")
+	}
+	if status, body := probeURL(t, "http://"+g.Addr+"/readyz"); status != http.StatusOK || body != "ready\n" {
+		t.Errorf("GET /readyz = %d %q, want 200 %q", status, body, "ready\n")
+	}
+}
+
+// startNoNodeGateway starts the Gateway of writeNoNodeTree with one API
+// token and returns it with that token.
+func startNoNodeGateway(t *testing.T, dir string) (*gateway, string) {
+	t.Helper()
+	store, err := auth.LoadStore(filepath.Join(dir, "state", "tokens.json"))
+	if err != nil {
+		t.Fatalf("load the token store: %v", err)
+	}
+	token, err := store.Add("admin", nil)
+	if err != nil {
+		t.Fatalf("add an API token: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	g, err := startGateway(ctx, filepath.Join(dir, "gateway.yaml"), startOptions{
+		listen: "127.0.0.1:0",
+		stderr: io.Discard,
+	})
+	if err != nil {
+		cancel()
+		t.Fatalf("start the Gateway without node: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-g.Done():
+			if err != nil {
+				t.Errorf("shutdown: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("the Gateway did not stop")
+		}
+	})
+	return g, token
+}
+
+// TestGatewayWithoutNodeSendsExecToTheNodeAgent requires an exec run for a
+// node without a connection to fail with executor_unavailable, and never to
+// run in the Gateway process.
+func TestGatewayWithoutNodeSendsExecToTheNodeAgent(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran-in-process")
+	writeNoNodeTree(t, dir, marker)
+	g, token := startNoNodeGateway(t, dir)
+
+	request, err := http.NewRequest(http.MethodPost, "http://"+g.Addr+"/v1/operations",
+		strings.NewReader(`{"capability":"echo","operation":"say","arguments":{}}`))
+	if err != nil {
+		t.Fatalf("build the request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("submit the operation: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read the response: %v", err)
+	}
+	// Executor resolution refuses an offline node before anything runs, with
+	// the executor_unavailable code of docs/architecture.md §14. The Gateway
+	// never falls back to its own process.
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("submit status = %d, want 503, body %s", response.StatusCode, body)
+	}
+	if code := codeOfBody(t, body); code != "executor_unavailable" {
+		t.Errorf("submit code = %q, want executor_unavailable, body %s", code, body)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("the handler ran in the Gateway process (marker %s: %v)", marker, statErr)
+	}
+}
+
+// TestGatewayWithoutNodeOptionsGoToTheNodeAgent requires an exec option
+// provider call to follow the same route as a run: to the executor's node
+// agent, never to the Gateway process.
+func TestGatewayWithoutNodeOptionsGoToTheNodeAgent(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran-in-process")
+	writeNoNodeTree(t, dir, marker)
+	g, token := startNoNodeGateway(t, dir)
+
+	request, err := http.NewRequest(http.MethodGet,
+		"http://"+g.Addr+"/v1/operations/echo/say/options/message", nil)
+	if err != nil {
+		t.Fatalf("build the request: %v", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("request the options: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read the response: %v", err)
+	}
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("options status = %d, want 503, body %s", response.StatusCode, body)
+	}
+	if code := codeOfBody(t, body); code != "executor_unavailable" {
+		t.Errorf("options code = %q, want executor_unavailable, body %s", code, body)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("the option provider ran in the Gateway process (marker %s: %v)", marker, statErr)
+	}
+}
+
+// TestDispatcherWithoutEmbeddedAgentUsesTheAgentPath calls the dispatcher
+// directly, past executor resolution, and requires an exec call for any node
+// to go to the node agent path. A Gateway without `node` has no exec
+// dispatcher at all, so the only possible outcome is the agent's answer.
+func TestDispatcherWithoutEmbeddedAgentUsesTheAgentPath(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran-in-process")
+	writeNoNodeTree(t, dir, marker)
+
+	cfg, problems, err := config.Load(filepath.Join(dir, "gateway.yaml"))
+	if err != nil || len(problems) > 0 {
+		t.Fatalf("load the configuration: %v, problems: %v", err, problems)
+	}
+	reg, _, err := registry.Load(registry.Options{
+		Dirs:  cfg.Gateway.Paths.Capabilities,
+		Input: registryInput(cfg),
+	})
+	if err != nil {
+		t.Fatalf("load the registry: %v", err)
+	}
+	hub, err := agentconn.New(agentconn.Config{
+		Registry: reg,
+		Verify:   func(string) (string, error) { return "", herrors.New(herrors.AuthenticationFailed, "", nil) },
+	})
+	if err != nil {
+		t.Fatalf("build the hub: %v", err)
+	}
+	d := &dispatcher{
+		registry: reg,
+		agent:    operations.NewAgentDispatcher(hub, reg, config.Timeouts{}),
+	}
+	_, err = d.Execute(context.Background(), &operations.Call{Request: &runtime.Request{
+		ID:         "op_test",
+		Capability: "echo",
+		Operation:  "say",
+		Executor:   runtime.Node{ID: "node-a"},
+	}})
+	if !errors.Is(err, herrors.ExecutorUnavailable) {
+		t.Fatalf("exec on node-a = %v, want executor_unavailable", err)
+	}
+	if !strings.Contains(err.Error(), "no agent connection") {
+		t.Errorf("error = %q, want the node agent's answer", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("the handler ran in the Gateway process (marker %s: %v)", marker, statErr)
 	}
 }
 

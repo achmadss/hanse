@@ -58,7 +58,7 @@ Both programs accept `--config <path>` to use another file.
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `version` | integer | required | `1` |
-| `node` | ID | required | The node in `nodes.yaml` that is the Gateway host. Its handlers run in the Gateway's embedded agent. |
+| `node` | ID | none | The node in `nodes.yaml` that is the Gateway host. When it is set, that node's `exec` handlers run in the Gateway's embedded agent. When it is left out, the Gateway builds no embedded agent and every `exec` handler runs on a node agent. |
 | `public_url` | URL | required | The URL that clients and node agents use to reach the Gateway. `hanse-gateway node enroll` prints it in the join command. |
 | `listen` | host:port | `127.0.0.1:8443` | The address the API listens on. |
 | `tls.cert_file`, `tls.key_file` | path | none | The TLS certificate and key, in PEM format. Set both or neither. |
@@ -90,7 +90,9 @@ Both programs accept `--config <path>` to use another file.
 
 - Without TLS, the Gateway listens only on a loopback address, unless `allow_insecure_http` is `true`.
 - `public_url` must use `https`, unless its host is a loopback address.
-- `node` must name an enabled node in `nodes.yaml`.
+- `node` is optional. When it is set, it must name an enabled node in `nodes.yaml`, and the Gateway refuses a `hanse-node` enrollment or connection for that same node: one node never has two executors.
+- When `node` is left out, the Gateway starts no embedded agent. Every `exec` handler runs on a node agent, including the handlers of the machine the Gateway runs on. An offline node fails with `executor_unavailable`; the Gateway never runs the handler in its own process.
+- Without `node` there is no Gateway host node, so an `http` capability has no eligible executor. A `routes.yaml` that routes one stops startup with a problem naming the missing host node.
 
 ### 3.3 Example
 
@@ -98,8 +100,12 @@ Both programs accept `--config <path>` to use another file.
 # Hanse Gateway configuration. See docs/configuration.md.
 version: 1
 
-# The node in nodes.yaml that is this Gateway host. Its handlers run in the
-# Gateway's embedded agent.
+# The node in nodes.yaml that is this Gateway host. Its exec handlers run in
+# the Gateway's embedded agent, and this machine needs no separate hanse-node.
+#
+# Leave it out to run no handler in the Gateway process: every exec handler
+# then runs on a node agent, including the handlers of this machine. That is
+# the layout for a Gateway in a container. See docs/guides/docker.md.
 node: gateway
 
 # The URL that clients and node agents use to reach the Gateway.
@@ -169,7 +175,11 @@ log:
 | `nodes.<id>.enabled` | boolean | `true` | A disabled node runs nothing, cannot be a target, and cannot connect. |
 | `nodes.<id>.attributes` | map | `{}` | Free-form values for capabilities, such as a MAC address. Handlers receive them in the request envelope. |
 
-Nodes have no connection settings, because each node's agent connects to the Gateway. A node that is only a target, such as a machine that other nodes wake or shut down, needs no agent. It stays `offline` and can never be an executor, but requests can still name it in a `hanse:node` argument. Attributes must not hold secrets, because every handler that targets the node receives them.
+Nodes have no connection settings, because each node's agent connects to the Gateway. A node that only acts as a target, such as a machine that other nodes wake or shut down, needs no agent. It stays `offline` and can never be an executor, but requests can still name it in a `hanse:node` argument.
+
+When `gateway.yaml` sets no `node`, the machine that runs the Gateway is an ordinary executor: list it in `nodes.yaml` and in the capability's list in `routes.yaml`, then run `hanse-node` on it like on any other node.
+
+Attributes must not hold secrets, because every handler that targets the node receives them.
 
 ### 4.2 Example
 
@@ -236,7 +246,7 @@ nodes:
 
 - A default executor must be in the eligible list of its level.
 - An operation's list must be a subset of the capability's list. `"*"` at operation level means the capability's whole list.
-- The Gateway makes `http` handler calls itself, so an `http` capability's list may contain only the Gateway host node, named by `node` in `gateway.yaml`. `"*"` means that node only.
+- The Gateway makes `http` handler calls itself, so an `http` capability's list may contain only the Gateway host node, named by `node` in `gateway.yaml`. `"*"` means that node only. A Gateway without `node` has no host node, so it cannot route an `http` capability.
 - A capability that `routes.yaml` does not mention has no eligible executors. The Gateway logs a warning at startup, and every request for it fails with `Executor not eligible`.
 - A request can run an operation only on a node from its eligible list. A request that names any other node fails with `Executor not eligible`, even if that node runs an agent.
 
@@ -517,7 +527,7 @@ The Gateway validates all its configuration at startup and refuses to start when
 The checks include:
 
 - Every file has `version: 1`, and every key is known.
-- Every ID is valid and unique, and every reference points to something that exists: nodes in `routes.yaml`, `gateway.yaml`'s `node`, secrets in operations, and arguments in `concurrency.key`, `options`, and `node_filters`.
+- Every ID is valid and unique, and every reference points to something that exists: nodes in `routes.yaml`, `gateway.yaml`'s `node` when it is set, secrets in operations, and arguments in `concurrency.key`, `options`, and `node_filters`.
 - Every argument schema compiles, and its top level is `type: object`.
 - `privileged` appears only on `exec` operations.
 - An `http` capability lists no executor other than the Gateway host node.

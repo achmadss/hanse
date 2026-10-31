@@ -34,6 +34,13 @@ type agentFixture struct {
 // indirection breaks the cycle.
 func newAgentFixture(t *testing.T) *agentFixture {
 	t.Helper()
+	return newAgentFixtureWith(t)
+}
+
+// newAgentFixtureWith is newAgentFixture with extra API options, such as the
+// embedded node the Gateway runs itself.
+func newAgentFixtureWith(t *testing.T, options ...Option) *agentFixture {
+	t.Helper()
 	reg := newFixture(t)
 	var service *enroll.Service
 	hub, err := agentconn.New(agentconn.Config{
@@ -54,7 +61,7 @@ func newAgentFixture(t *testing.T) *agentFixture {
 		t.Fatalf("open enrollment store: %v", err)
 	}
 	t.Cleanup(func() { _ = service.Close() })
-	handler := New(reg, nil, service, WithAgentHub(hub))
+	handler := New(reg, nil, service, append([]Option{WithAgentHub(hub)}, options...)...)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	return &agentFixture{handler: handler, reg: reg, service: service, hub: hub, server: server}
@@ -181,6 +188,32 @@ func TestAgentConnectRejectsBadCredential(t *testing.T) {
 	}
 	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status %v, want 401", resp)
+	}
+}
+
+// TestAgentConnectRefusesEmbeddedNode proves the Gateway refuses a node
+// credential for the node it runs itself: the embedded agent is already that
+// node's executor, so a node agent would make two.
+func TestAgentConnectRefusesEmbeddedNode(t *testing.T) {
+	f := newAgentFixtureWith(t, WithEmbeddedNode("node-a"))
+	credential := f.credential(t, "node-a")
+	ws, resp, err := f.dialAgent(t, credential)
+	if err == nil {
+		_ = ws.Close()
+		t.Fatal("the embedded node opened an agent connection")
+	}
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status %v, want 403", resp)
+	}
+	if body, readErr := io.ReadAll(resp.Body); readErr == nil {
+		if code := codeOf(t, body); code != "forbidden" {
+			t.Errorf("code = %q, want forbidden", code)
+		}
+	}
+	// The refusal happened before the upgrade, so the node never came
+	// online.
+	if f.hub.Online("node-a") {
+		t.Error("node-a is online after a refused connection")
 	}
 }
 
