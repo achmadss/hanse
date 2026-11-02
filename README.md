@@ -7,12 +7,6 @@
 
 Hanse is a small, self-hosted platform. A central **Gateway** publishes **capabilities**. A capability is a named group of operations, such as `pc.up` or `backup.run`. Clients discover these operations and run them on the **nodes** (machines) you allow. The Gateway checks every argument against a schema, picks the machine, runs the handler, and keeps the result and the logs.
 
-## Why Hanse?
-
-- **Capabilities, not shell access.** Clients can only run the operations you package. The Gateway has no endpoint that runs arbitrary commands, so an AI agent or a script gets exactly the actions you allow.
-- **The CLI learns from the Gateway.** `hanse` reads every capability, schema, node, and valid value from the Gateway, so a new capability works in the CLI with no CLI change. This makes it easy for AI agents to discover what they can do.
-- **One small server.** The Gateway is a single Go binary with an embedded SQLite database. It needs no message broker and no database server. Nodes connect out to it over a WebSocket, so they need no open inbound ports.
-
 ## Features
 
 - **Handlers in any language.** A handler is an `exec` program (JSON on stdin, JSON on stdout) or an `http` service.
@@ -23,28 +17,6 @@ Hanse is a small, self-hosted platform. A central **Gateway** publishes **capabi
 - **Privileged operations.** An operation can run with administrator rights after a password check at run time: `sudo` on Linux and macOS, the Windows logon API on Windows. The password is never stored.
 - **Cancellation, timeouts, and concurrency limits** on every operation.
 - **Runs as a service.** The Gateway runs under systemd or Docker. `hanse-node install` sets up the node agent as a systemd, launchd, or Windows service.
-
-## How it fits together
-
-```
- hanse CLI / script / AI agent
-              │  HTTPS + bearer token
-              ▼
-        Hanse Gateway ── capabilities, routes, history
-         │          │
- embedded agent    WebSocket (agent dials out)
- (Gateway host)     │
-                    ▼
-               hanse-node  (each executor node)
-```
-
-The repository builds three binaries:
-
-| Binary | Runs on | Purpose |
-|---|---|---|
-| `hanse-gateway` | One server | The Gateway: API, routing, validation, history. It can also run handlers for its own machine. |
-| `hanse-node` | Each executor node | The node agent: it connects to the Gateway and runs handlers there. |
-| `hanse` | Anywhere | The CLI client. |
 
 ## Quickstart
 
@@ -197,14 +169,7 @@ For a real deployment, use one of these guides:
 
 ## Contributing
 
-Issues and pull requests are welcome. Before you open a pull request, run these checks from the repository root; all must pass:
-
-```sh
-gofmt -l .                # must print nothing
-go vet ./...
-go test -race ./...
-go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...
-```
+See [Contributing](CONTRIBUTING.md).
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) for commit messages, for example `feat(cli): ...` or `fix(api): ...`.
 
