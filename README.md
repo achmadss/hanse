@@ -171,8 +171,6 @@ For a real deployment, use one of these guides:
 
 See [Contributing](CONTRIBUTING.md).
 
-Use [Conventional Commits](https://www.conventionalcommits.org/) for commit messages, for example `feat(cli): ...` or `fix(api): ...`.
-
 ## License
 
 [MIT](LICENSE)
