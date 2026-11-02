@@ -5,19 +5,6 @@
 [![CI](https://github.com/achmadss/hanse/actions/workflows/ci.yml/badge.svg)](https://github.com/achmadss/hanse/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Hanse is a small, self-hosted platform. A central **Gateway** publishes **capabilities**. A capability is a named group of operations, such as `pc.up` or `backup.run`. Clients discover these operations and run them on the **nodes** (machines) you allow. The Gateway checks every argument against a schema, picks the machine, runs the handler, and keeps the result and the logs.
-
-## Features
-
-- **Handlers in any language.** A handler is an `exec` program (JSON on stdin, JSON on stdout) or an `http` service.
-- **Strict validation.** Every argument is checked against JSON Schema on the Gateway, and the CLI turns the schema into flags.
-- **Routing.** `routes.yaml` controls which nodes may run each capability, and which node runs it by default.
-- **Live logs.** You can stream a handler's stderr as it runs, with automatic reconnects and secret redaction.
-- **History.** Every operation is stored with its status, result, and logs. Idempotency keys stop a retry from running an action twice.
-- **Privileged operations.** An operation can run with administrator rights after a password check at run time: `sudo` on Linux and macOS, the Windows logon API on Windows. The password is never stored.
-- **Cancellation, timeouts, and concurrency limits** on every operation.
-- **Runs as a service.** The Gateway runs under systemd or Docker. `hanse-node install` sets up the node agent as a systemd, launchd, or Windows service.
-
 ## Quickstart
 
 This walkthrough runs everything on one Linux or macOS machine, on loopback, without root. It starts a Gateway, enrolls one node, and runs the bundled `echo` capability on that node. It builds the binaries from source with Go 1.27 or later; with the [release binaries](#installation), skip step 1 and copy `capabilities/` from the `hanse-gateway` archive instead.
